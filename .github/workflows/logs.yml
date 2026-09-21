@@ -1,0 +1,142 @@
+name: logs
+
+# Reads the Cloud Run service's logs and prints them into the run's own log.
+#
+# It exists so a cloud session can answer a question about the running app
+# without holding Google Cloud credentials: this session has none and gets none
+# (see CLAUDE.md), so the read happens here, where Workload Identity Federation
+# already provides a keyless identity, and Claude dispatches this workflow and
+# reads the output back through the GitHub API.
+#
+# Dispatch-only. Nothing about this runs on a push or a pull request, and
+# workflow_dispatch is only offered for workflows present on the default branch —
+# so this file does nothing until it is merged to main.
+on:
+  workflow_dispatch:
+    inputs:
+      freshness:
+        description: "How far back to read (gcloud duration, e.g. 30m, 6h, 2d)"
+        type: string
+        default: "1h"
+      limit:
+        description: "Maximum entries, newest first"
+        type: string
+        default: "200"
+      severity:
+        description: "Minimum severity"
+        type: choice
+        default: ANY
+        options: [ANY, INFO, WARNING, ERROR, CRITICAL]
+      filter:
+        # The free-form escape hatch. Without it, every new question about the
+        # logs would need an input added here and merged to main before it could
+        # be asked once.
+        description: 'Extra Cloud Logging filter, ANDed with the rest (e.g. textPayload:"ECONNREFUSED")'
+        type: string
+        default: ""
+      service:
+        description: "Cloud Run service name"
+        type: string
+        default: "power-meter-web"
+
+concurrency:
+  # Deliberately NOT the infra workflow's group. That one is repo-wide and never
+  # cancels, because every run of it touches one Pulumi state object; joining it
+  # would mean a log read waits behind a deploy, and a deploy waits behind a log
+  # read. This job touches no shared state, so it only needs to not pile up.
+  group: logs
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # to mint the OIDC token for WIF
+  # No pull-requests: write. This workflow posts nothing.
+
+jobs:
+  read:
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+    steps:
+      # No checkout: nothing here reads a repository file, and the job's whole
+      # value is how fast it comes back.
+
+      - uses: google-github-actions/auth@v2
+        id: auth
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          # Not the deployer. This account holds roles/logging.viewer and
+          # nothing else. Its address is deterministic rather than a sixth
+          # repository variable — infra/index.ts fixes the accountId, so
+          # changing it there means changing it here.
+          service_account: power-meter-log-reader@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com
+
+      # The runner image ships the gcloud CLI, so setup-gcloud would only be
+      # re-configuring what is already there. What is still needed is pointing
+      # gcloud at the credential the auth step wrote: it exports
+      # GOOGLE_APPLICATION_CREDENTIALS for client libraries, which the CLI does
+      # not read on its own. If this ever breaks, google-github-actions/setup-gcloud@v2
+      # in place of this step does the same thing more slowly.
+      - name: Activate the credential for gcloud
+        run: gcloud auth login --cred-file="${{ steps.auth.outputs.credentials_file_path }}" --quiet
+
+      - name: Read logs
+        env:
+          SERVICE: ${{ inputs.service }}
+          FRESHNESS: ${{ inputs.freshness }}
+          LIMIT: ${{ inputs.limit }}
+          SEVERITY: ${{ inputs.severity }}
+          EXTRA: ${{ inputs.filter }}
+        run: |
+          set -euo pipefail
+
+          # Inputs are interpolated through the environment, never into the
+          # script text: a dispatch input is attacker-controlled in the general
+          # case, and a filter string containing a quote would otherwise end the
+          # quoting and run as shell.
+          filter="resource.type=\"cloud_run_revision\" resource.labels.service_name=\"${SERVICE}\""
+          if [ "${SEVERITY}" != "ANY" ]; then
+            filter="${filter} severity>=${SEVERITY}"
+          fi
+          if [ -n "${EXTRA}" ]; then
+            filter="${filter} ${EXTRA}"
+          fi
+
+          echo "Filter: ${filter}"
+          echo "Freshness: ${FRESHNESS}, limit: ${LIMIT}"
+          echo
+
+          # Read once, render twice. json is the copy Claude reads back through
+          # the API — it carries the fields a terse line drops (revision,
+          # httpRequest, jsonPayload, trace) and needs no guessing about which
+          # payload field a given entry used.
+          gcloud logging read "${filter}" \
+            --project "${PROJECT_ID}" \
+            --freshness "${FRESHNESS}" \
+            --limit "${LIMIT}" \
+            --order desc \
+            --format json > entries.json
+
+          count="$(jq 'length' entries.json)"
+          echo "Entries: ${count}"
+          echo
+
+          if [ "${count}" = "0" ]; then
+            echo "No entries matched. The service scales to zero, so a quiet window is"
+            echo "normal — widen freshness before concluding anything is wrong."
+          fi
+
+          echo "----- entries (json) -----"
+          cat entries.json
+
+          # The human-readable copy, capped: the step summary rejects anything
+          # over 1MB, and losing the summary would also lose the header above it.
+          {
+            echo "### Logs: ${SERVICE} (last ${FRESHNESS}, ${count} entries)"
+            echo
+            echo '```'
+            jq -r '.[] | "\(.timestamp) \(.severity // "DEFAULT") \(.textPayload // (.jsonPayload | if . then tostring else "" end))"' \
+              entries.json | head -c 900000
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

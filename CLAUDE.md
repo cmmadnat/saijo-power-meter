@@ -33,6 +33,8 @@ on fixture data; no meter data flows yet.
 | `scripts/check-boundaries.mjs` | Enforces the dependency rule. Runs first in CI. |
 | `.github/workflows/check.yml` | Application checks. Holds no cloud credentials. |
 | `.github/workflows/infra.yml` | Being retired. Applies the stack until a Cloud Build run has gone green. |
+| `.github/workflows/logs.yml` | Reads the Cloud Run service's logs on dispatch. Runs no Pulumi and holds a read-only identity. |
+| `.github/workflows/build-logs.yml` | Reads a Cloud Build run's status and log on dispatch. Same identity, same reason. |
 | `docs/architecture/delivery-pipeline.md` | Why builds run on Cloud Build, and what that cost. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
 | `docs/requirements/` | The frozen spec: the MQTT protocol, the meter registry, and the four screens. |
@@ -60,30 +62,42 @@ the pipeline. The shape in one line: the trigger holds a thin inline build, step
 and every later step runs a script from `ci/` in that clone — so pipeline logic is ordinary reviewed
 code and only its skeleton is a Pulumi resource.
 
-**A Cloud Build run reports to nobody — the log has to be fetched.** A webhook trigger
-posts no check, no status and no comment, so the preview and any failure detail live only
-in the build log. Pulling that log into GitHub is a separate workflow, built elsewhere and
-not in this repository; what this side owes it is a handle and an identity. Builds are
-tagged with the commit they built (`gcloud builds list --filter "tags=<sha>"`, then
-`gcloud builds log <id>`), and `infra/index.ts` declares a `build-log-reader` service
-account holding `cloudbuild.builds.viewer` and `logging.viewer` and nothing else,
-reachable by WIF through the pool `bootstrap.sh` already created. That pool now stays
-rather than being deleted with `infra.yml`. Do not widen that account, and do not hand a
-log reader the deployer.
+**Reading any log works the same way round: dispatch a workflow, read its output back.** The session
+cannot query Google Cloud, so two dispatch-only workflows do it, both authenticating as
+`power-meter-log-reader` — one account holding `roles/logging.viewer` and
+`roles/cloudbuild.builds.viewer`, and nothing else, so neither job can deploy.
 
-**`ci/step.sh` and `ci/report.sh` exist because Cloud Build has no `if: always()`.** Every
-real step runs under the wrapper, which captures its output and swallows its exit code;
-the report step then always runs, ends the log with a step-by-step verdict and the last 80
-lines of whatever failed, and exits non-zero itself so a red build reads as red. A step
-that never ran is reported as "did not run", never as a pass. The one failure that cannot
-summarise itself is a failed clone, since `report.sh` lives in the repository it would
-have cloned.
+- `.github/workflows/logs.yml` — the running app. "What is the deployed service doing."
+- `.github/workflows/build-logs.yml` — a Cloud Build run, its status and full log. "Why did the
+  deploy fail." Builds are tagged with the commit they built, so a SHA is the handle; blank finds
+  the most recent, and `failed_only` finds the last red one.
+
+Both cost a CI round trip per read, which is why one wide read beats several narrow ones, and why
+`logs.yml` takes a free-form `filter`. Their concurrency groups are deliberately *not* `infra`: a
+log read must never queue behind a deploy, least of all the read that explains why the deploy
+failed. Every read also copies log lines into the Actions run log, which has its own retention and
+audience — worth revisiting when real meter data and the passcode gate land.
+
+**Nothing reports a Cloud Build result back to GitHub, and that is the standing gap.** A webhook
+trigger posts no check, no status and no comment, so a pull request whose deploy failed looks
+entirely clean. The absence of a red mark is not evidence the deploy worked — dispatch
+`build-logs.yml` and look. Do not widen the reader account to close this; a reporting path would be
+a separate decision with a separate credential.
+
+**`ci/step.sh` and `ci/report.sh` exist because Cloud Build has no `if: always()`.** Every real step
+runs under the wrapper, which captures its output and swallows its exit code; the report step then
+always runs, ends the log with a step-by-step verdict and the last 80 lines of whatever failed, and
+exits non-zero itself so a red build reads as red. That ordering is why `build-logs.yml` shows the
+log's *tail* in its summary. A step that never ran is reported as "did not run", never as a pass.
+The one failure that cannot summarise itself is a failed clone, since `report.sh` lives in the
+repository it would have cloned.
 
 **`.github/workflows/infra.yml` is still there and still applies on main.** That is temporary and
 deliberate: the triggers are Pulumi resources, so something has to apply the stack that creates
-them. It goes once a Cloud Build preview and apply have both gone green, and the WIF section of
-`bootstrap.sh` goes with it. `check.yml` is staying — it holds no cloud credentials, and moving it
-would blur the split that keeps a failing unit test from looking like a failing apply.
+them. It goes once a Cloud Build preview and apply have both gone green. The WIF section of
+`bootstrap.sh` stays — both log workflows authenticate through it. `check.yml` is staying too: it
+holds no cloud credentials, and moving it would blur the split that keeps a failing unit test from
+looking like a failing apply.
 
 **CI is the only thing that runs Pulumi at all.** Two things in `ci/pulumi.sh` look like they could
 be simplified and must not be: stack creation stays on `pulumi stack ls` rather than `stack select`,

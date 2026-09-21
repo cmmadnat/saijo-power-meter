@@ -15,3 +15,9 @@ config:
   # GOOGLE_PROJECT (from the GCP_PROJECT_ID repository variable), so the same
   # program can target another project without editing this file.
   gcp:disableGlobalProjectWarning: "true"
+  # Which repository's Actions runs may impersonate the log-reader service
+  # account, and the Workload Identity Federation pool holding the provider that
+  # mints their tokens. Both match bootstrap.sh (GITHUB_REPO and POOL_ID); the
+  # program falls back to these same values if a new stack omits them.
+  saijo-power-meter:githubRepository: cmmadnat/saijo-power-meter
+  saijo-power-meter:wifPoolId: github

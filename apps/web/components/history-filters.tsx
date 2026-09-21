@@ -18,9 +18,9 @@ export interface HistoryFiltersProps {
 }
 
 const field =
-  "h-9 border border-input bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50";
+  "h-9 border border-input bg-background px-2 text-sm text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50";
 const label =
-  "font-mono text-[11px] uppercase tracking-wider text-muted-foreground";
+  "font-mono text-2xs uppercase tracking-wider text-muted-foreground";
 
 export function HistoryFilters({
   departments,
@@ -93,12 +93,12 @@ export function HistoryFilters({
 
       <button
         type="submit"
-        className="h-9 border border-primary bg-primary px-4 text-sm font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        className="h-9 border border-primary bg-primary px-4 text-sm font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
       >
         แสดง
       </button>
 
-      <p className="ms-auto max-w-[36ch] font-mono text-[11px] text-muted-foreground">
+      <p className="ms-auto max-w-[36ch] font-mono text-2xs text-muted-foreground">
         Asia/Bangkok. The end is exclusive: a reading at exactly the end time
         belongs to the next window.
       </p>

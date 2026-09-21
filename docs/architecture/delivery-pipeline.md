@@ -63,8 +63,8 @@ comment — a webhook trigger has no channel back to GitHub, because the GitHub 
 would provide one is the thing this setup exists to avoid. Whatever wants to surface a
 build log in GitHub has to come and fetch it.
 
-**That fetching is a separate workflow's job, and is not in this repository.** What the
-pipeline owes it is two things: a log worth pulling, and a way to find the right one.
+**That fetching is `.github/workflows/build-logs.yml`'s job.** What the pipeline owes it is two
+things: a log worth pulling, and a way to find the right one.
 
 ### Finding the build
 
@@ -79,26 +79,30 @@ gcloud builds log <build-id> --project <project>
 Builds log to Cloud Logging, not a bucket, so `builds list` and `builds log` are two
 different permissions.
 
-### The identity to fetch with
+### The identity to fetch with, and the workflow that uses it
 
-`infra/index.ts` declares a `build-log-reader` service account carrying exactly
-`cloudbuild.builds.viewer` and `logging.viewer`, and nothing else. It is deliberately not
-the deployer: a log reader that can also deploy is not something to hand to a workflow.
+`.github/workflows/build-logs.yml` is that fetcher. Dispatch-only, it resolves a build from a
+commit SHA (or takes an explicit build id, or finds the most recent, or the most recent
+*failed* one), then prints the build record and its full log into its own run log and step
+summary. A cloud session dispatches it and reads the result back through the GitHub API —
+the same trick `logs.yml` uses for the running application's logs, and deliberately the
+same shape.
 
-It is reachable by Workload Identity Federation through the pool `bootstrap.sh` already
-created — keyless, and scoped by attribute condition to this repository alone. The stack
-exports what a workflow needs to authenticate:
+It authenticates as `power-meter-log-reader`, the account `logs.yml` already introduced,
+which carries `roles/logging.viewer` and `roles/cloudbuild.builds.viewer` and nothing else.
+One account rather than two: a third service account with the same shape and a narrower
+name would be a third thing to audit for no gain. It is deliberately not the deployer —
+the whole value is that a job reading logs cannot deploy a revision, push an image, or
+touch the state bucket.
 
-```
-buildLogReader.serviceAccount   the account to impersonate
-buildLogReader.wifProvider      the provider to present a GitHub OIDC token to
-```
-
-Neither is a secret. Both are useless without satisfying the pool's attribute condition,
-which only this repository can do.
+Listing a build and reading its log are two separate permissions, which is why both roles
+are there: `cloudbuild.builds.viewer` for the record and its status,
+`logging.viewer` for the log itself, since builds log to Cloud Logging rather than a
+bucket.
 
 This is the reason the Workload Identity Federation section of `bootstrap.sh` **stays**.
-It was going to be deleted along with `infra.yml`; it now has a second, narrower purpose.
+It was going to be deleted along with `infra.yml`; both log workflows authenticate through
+it.
 
 ### Making the log worth pulling
 
@@ -162,11 +166,13 @@ now runs the pipeline, so a README-only commit costs a build. A wasted build, no
 deploy — the image is content-addressed by commit and Pulumi no-ops on an unchanged
 stack.
 
-**Nothing reports back to GitHub.** `pulumi/actions` posted the preview as a comment, and
-GitHub posted the check, both for free. A webhook trigger can do neither. The preview and
-the failure detail live in the build log, and getting them in front of a reviewer is a
-separate workflow's job — see *The build log* above for the handle and the identity it
-needs. This is the largest thing the migration gave up.
+**Nothing reports back to GitHub, and this is still true.** `pulumi/actions` posted the
+preview as a comment, and GitHub posted the check, both for free. A webhook trigger can do
+neither, so a pull request whose deploy failed looks entirely clean — no red mark, nothing.
+`build-logs.yml` makes the failure *readable on request*; it does not make it *announce
+itself*. Someone still has to think to look. This remains the largest thing the migration
+gave up, and closing it properly would mean a credential that can write to GitHub, which
+is a separate decision.
 
 ## Two invariants that cost a failed apply to learn
 

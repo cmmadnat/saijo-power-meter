@@ -21,6 +21,10 @@ const services = [
     "cloudbuild.googleapis.com",
     "secretmanager.googleapis.com",
     "apikeys.googleapis.com",
+    // On by default in every project, declared anyway: the logs workflows are
+    // useless without it, and a project where someone turned it off should fail
+    // here rather than in a job that reads zero entries and looks healthy.
+    "logging.googleapis.com",
 ].map(
     (service) =>
         new gcp.projects.Service(service.split(".")[0], {
@@ -115,6 +119,67 @@ new gcp.cloudrunv2.ServiceIamMember("web-public", {
     member: "allUsers",
 });
 
+// --- Reading the application's logs from CI ----------------------------------
+//
+// This session holds no Google Cloud credentials and does not get any: CI is the
+// only thing with an identity that can reach the project. Reading Cloud Run logs
+// therefore goes through .github/workflows/logs.yml, which authenticates as the
+// account below over the same Workload Identity Federation provider the deployer
+// uses.
+//
+// It is a second account rather than roles/logging.viewer on the deployer,
+// because the point is what the logs job *cannot* do. The deployer carries nine
+// admin roles; a job that only ever reads log entries should not be able to
+// deploy a revision, push an image, or touch the state bucket.
+const wifPoolId = new pulumi.Config().get("wifPoolId") ?? "github";
+const githubRepository =
+    new pulumi.Config().get("githubRepository") ?? "cmmadnat/saijo-power-meter";
+
+const logReader = new gcp.serviceaccount.Account(
+    "log-reader",
+    {
+        // Deterministic on purpose. .github/workflows/logs.yml derives this
+        // address from GCP_PROJECT_ID rather than reading a sixth repository
+        // variable, so there is no setup step between applying this and the
+        // workflow working. Changing accountId means changing the workflow.
+        accountId: "power-meter-log-reader",
+        displayName: "Power Meter log reader (GitHub Actions)",
+    },
+    { dependsOn: services },
+);
+
+// Log entries only. Not privateLogViewer: that one adds data-access logs, which
+// no question about the application needs and which are the sensitive ones.
+new gcp.projects.IAMMember("log-reader-viewer", {
+    project: logReader.project,
+    role: "roles/logging.viewer",
+    member: pulumi.interpolate`serviceAccount:${logReader.email}`,
+});
+
+// The same account also reads Cloud Build, because a build log is the other
+// thing this session cannot see for itself and the alternative was a third
+// service account with the same shape. Listing a build and reading its log are
+// two separate permissions — logging.viewer above covers the log, this covers
+// the build record and its status.
+new gcp.projects.IAMMember("log-reader-builds", {
+    project: logReader.project,
+    role: "roles/cloudbuild.builds.viewer",
+    member: pulumi.interpolate`serviceAccount:${logReader.email}`,
+});
+
+// Lets the repository's Actions runs impersonate the account, with no key. The
+// principal set is scoped to this one repository — the provider's attribute
+// condition (set in bootstrap.sh) already refuses tokens from any other, and
+// this binding is the second half of that pairing.
+const project = gcp.organizations.getProject({});
+new gcp.serviceaccount.IAMMember("log-reader-wif", {
+    serviceAccountId: logReader.name,
+    role: "roles/iam.workloadIdentityUser",
+    member: pulumi.interpolate`principalSet://iam.googleapis.com/projects/${project.then(
+        (p) => p.number,
+    )}/locations/global/workloadIdentityPools/${wifPoolId}/attribute.repository/${githubRepository}`,
+});
+
 export const webUrl = web.uri;
 export const webServiceAccount = webIdentity.email;
 
@@ -147,9 +212,10 @@ if (!projectId) {
     );
 }
 
-// Overridable so the same program can drive a fork without a code change, for
-// the same reason the project is not pinned in Pulumi.dev.yaml.
-const repoSlug = process.env.GITHUB_REPO ?? "cmmadnat/saijo-power-meter";
+// The same `githubRepository` the log reader is scoped to, deliberately not a
+// second source of truth: the repository the pipeline builds and the repository
+// allowed to read its logs must be one value, or they drift apart silently.
+const repoSlug = githubRepository;
 const stateBucket = process.env.PULUMI_STATE_BUCKET ?? `${projectId}-pulumi-state`;
 const kmsKey = `projects/${projectId}/locations/${region}/keyRings/pulumi/cryptoKeys/state`;
 
@@ -363,59 +429,6 @@ const applyTrigger = new gcp.cloudbuild.Trigger(
     { dependsOn: services },
 );
 
-// ---------------------------------------------------------------------------
-// Reading a build log from outside
-// ---------------------------------------------------------------------------
-// A webhook trigger's run announces itself nowhere: no check, no status, no
-// comment. Whatever wants to show a build log in GitHub has to come and fetch
-// it, and fetching needs an identity.
-//
-// This is that identity, and it is deliberately not the deployer. A log reader
-// that can also deploy is a log reader nobody should be handing to a workflow;
-// these two roles can read builds and their logs and do nothing else.
-const logReaderPool = process.env.WIF_POOL_ID ?? "github";
-const projectNumber = pulumi.output(gcp.organizations.getProject({})).number;
-
-const logReader = new gcp.serviceaccount.Account(
-    "build-log-reader",
-    {
-        accountId: "build-log-reader",
-        displayName: "Reads Cloud Build logs (no deploy rights)",
-    },
-    { dependsOn: services },
-);
-
-for (const [name, role] of [
-    ["builds", "roles/cloudbuild.builds.viewer"],
-    // Builds log to Cloud Logging, not a bucket — see buildOptions above — so
-    // listing a build and reading its log are two different permissions.
-    ["logs", "roles/logging.viewer"],
-]) {
-    new gcp.projects.IAMMember(`log-reader-${name}`, {
-        project: projectId,
-        role,
-        member: pulumi.interpolate`serviceAccount:${logReader.email}`,
-    });
-}
-
-// Reuses the Workload Identity Federation pool bootstrap.sh created for GitHub
-// Actions. That pool was going to be deleted along with infra.yml; it stays,
-// because this is now what it is for — keyless, repository-scoped, and pointed
-// at an account that cannot deploy.
-new gcp.serviceaccount.IAMMember("log-reader-wif", {
-    serviceAccountId: logReader.name,
-    role: "roles/iam.workloadIdentityUser",
-    member: pulumi.interpolate`principalSet://iam.googleapis.com/projects/${projectNumber}/locations/global/workloadIdentityPools/${logReaderPool}/attribute.repository/${repoSlug}`,
-});
-
-// Everything a workflow needs to authenticate and find a build. Not secret: a
-// WIF provider path and a service account email are useless without the pool's
-// attribute condition being satisfied, which only this repository can do.
-export const buildLogReader = {
-    serviceAccount: logReader.email,
-    wifProvider: pulumi.interpolate`projects/${projectNumber}/locations/global/workloadIdentityPools/${logReaderPool}/providers/github-oidc`,
-};
-
 export const pipelineTriggers = {
     preview: previewTrigger.name,
     apply: applyTrigger.name,
@@ -425,3 +438,5 @@ export const pipelineTriggers = {
 // program never sees — it lives in Secret Manager and is created outside. Run
 // scripts/print-webhooks.sh to get the two URLs ready to paste into GitHub.
 export const pipelineApiKey = pulumi.secret(webhookKey.keyString);
+export const logReaderServiceAccount = logReader.email;
+export const webServiceName = web.name;

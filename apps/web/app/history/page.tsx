@@ -50,7 +50,7 @@ export default async function HistoryPage(props: PageProps<"/history">) {
   );
 
   const headCell =
-    "border-b border-border bg-card px-2 py-2 text-start font-mono text-[11px] font-normal uppercase tracking-wider text-muted-foreground";
+    "border-b border-border bg-card px-2 py-2 text-start font-mono text-2xs font-normal uppercase tracking-wider text-muted-foreground";
   const cell = "px-2 py-1.5 align-middle";
   const numeric = `${cell} text-right font-mono tabular-nums`;
 
@@ -84,7 +84,7 @@ export default async function HistoryPage(props: PageProps<"/history">) {
 
       <section className="flex flex-col gap-4">
         <div className="overflow-x-auto border border-border">
-          <table className="w-full min-w-[900px] border-collapse text-sm">
+          <table className="w-full min-w-225 border-collapse text-sm">
             <caption className="sr-only">
               Energy consumed and running hours per meter, {window}
             </caption>
@@ -128,7 +128,7 @@ export default async function HistoryPage(props: PageProps<"/history">) {
                     <td className={`${cell} font-mono whitespace-nowrap`}>
                       {row.meterNumber}
                       {silent && (
-                        <span className="ms-2 font-mono text-[11px] text-muted-foreground">
+                        <span className="ms-2 font-mono text-2xs text-muted-foreground">
                           no readings
                         </span>
                       )}
@@ -156,7 +156,7 @@ export default async function HistoryPage(props: PageProps<"/history">) {
               <tr className="border-t border-border">
                 <td
                   colSpan={4}
-                  className={`${cell} font-mono text-[11px] uppercase tracking-wider text-muted-foreground`}
+                  className={`${cell} font-mono text-2xs uppercase tracking-wider text-muted-foreground`}
                 >
                   {table.rows.length} meters · {window}
                 </td>
