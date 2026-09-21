@@ -3,6 +3,17 @@
 Status: **agreed in outline.** Rate, retention, scope, auth and timezone are settled (see Answered).
 One blocker remains before step 7 can go live, and it needs an answer from the customer: see Still open.
 
+## Build log
+
+Progress, evidence and per-step verification are recorded as a published artifact, updated as each
+step lands: **https://claude.ai/artifact/31tF2FwCTTJ8LPAkU4ZPCF**
+
+It carries each step's status, the files that shipped, the exact commands to re-verify it, what the
+step turned up, and — from step 1 onward — a screenshot of the application as it stood at that
+point. The step definitions mirror this document; status and evidence live in the artifact's own
+store, so the log updates without the page being rewritten. It is private to the repository owner
+until shared.
+
 ## What the old app actually did
 
 Findings from reading `reference/` (looked at, not copied) and `reference doc/`:
