@@ -92,5 +92,18 @@ generated from the customer workbook by `tools/extract-meters.py` — plus the
 reading entity and the running-vs-standby rule. `packages/application` holds the
 ports the plan already commits to.
 
-`packages/infrastructure` does not exist yet. It arrives with the first real
-adapter, at the store step. Creating it empty now would be ceremony.
+`packages/infrastructure` arrived with the first adapter, as intended: the MQTT
+payload decoder, the scale-factor table it applies, and the fixture data the
+screens are built against. The two fixture classes implement the
+`ReadingRepository` and `LatestReadingStore` ports, so the store step replaces
+an argument rather than a call site.
+
+Two things about it are worth knowing before touching it:
+
+- **The decoder is the piece both deployables share verbatim.** Changing how a
+  field is scaled changes stored history and the live screen together, which is
+  the entire reason it lives in one place.
+- **`src/mqtt/scaling.ts` is where the unanswered question is parked.** Each
+  factor carries its confidence and the evidence behind it, and the two that are
+  still guesses have tests asserting the guess — so the day the customer's real
+  payload arrives, the change is loud.

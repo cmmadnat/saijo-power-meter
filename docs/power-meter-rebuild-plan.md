@@ -106,24 +106,34 @@ changes in this PR.
 *Verify:* `npm run build` and `npm run lint` clean; dark and light both render; `--radius: 0px` is
 visible (square corners) and Oxanium is actually loading, not a system fallback.
 
-### Step 2 — Domain model + fixtures — *partly landed*
-Started early, because setting up the layering meant the entities had somewhere to live: the meter
-registry, the `Reading` entity and the running-vs-standby rule are in `packages/domain` with tests,
-and the ports are in `packages/application`. The decoder and the fixture generator remain.
-TypeScript types for a reading (meter id, timestamp, 3×V, 3×A, PF, kW, kWh), the meter registry
-type, and a **decoder** that turns a raw station payload into readings — this is where the implied
-decimal scaling lives, in one tested function with the scale factors as named constants in one
-table, so the unanswered ones are a one-line change when the customer confirms them. Voltage is
-`data / 10` (documented). Current, power, PF and energy are **assumptions until open question 1 is
-answered** and must be marked as such in the code. The decoder also flags a decreasing energy
-counter rather than silently accepting it. Plus a fixture generator producing plausible multi-hour
-data for all 55 commissioned meters. Uncommissioned slots are dropped at decode time using the
-registry, not rendered as meters reading zero.
+### Step 2 — Domain model + fixtures — **done**
+Shipped in two parts. First the layering, pulled forward because the entities needed somewhere to
+live: the meter registry, the `Reading` entity and the running-vs-standby rule in `packages/domain`,
+the ports in `packages/application`. Then `packages/infrastructure`, which is the rest of it:
 
-*Verify:* unit tests on the decoder, including `2325 → 232.5 V` (the one documented conversion);
-every assumed scale factor has a test asserting the assumption so it fails loudly when changed;
-fixtures cover an idle meter, a running meter, a meter that crosses the 0.1 kW standby threshold, an
-offline meter, and an energy-counter reset.
+- `src/mqtt/scaling.ts` — every divisor in one table, each carrying its confidence
+  (`documented` / `inferred` / `assumed`) and the evidence behind it. `unconfirmedScales()` names the
+  two still open, so step 7's startup check can refuse a live broker while they are.
+- `src/mqtt/payload.ts` — tolerates the workbook's `"M1PF":095`, which is not valid JSON, and the
+  quoted `"095"` the device may really send. Nothing else malformed is tolerated.
+- `src/mqtt/decoder.ts` — station payload in, readings out. Uncommissioned slots are dropped rather
+  than shown reading zero; a meter missing a field is skipped whole rather than emitted
+  half-populated; `StationDecoder` holds the last energy counter per meter and flags a decrease.
+- `src/fixtures/generate.ts` — deterministic multi-hour data for all 55 commissioned meters, with
+  `toStationPayload` as the decoder's exact inverse (which is also how step 7's local broker replay
+  gets its data).
+- `src/fixtures/repository.ts` — those fixtures behind the `ReadingRepository` and
+  `LatestReadingStore` ports, so step 8 swaps an argument rather than a call site.
+
+*Verified:* 37 tests in the package. `2321 → 232.1 V`, the one documented conversion; each assumed
+factor has a test asserting the assumption; the workbook's own sample decodes to 5 readings and 3
+dropped slots on station 01 and to 55 readings across all nine; a decreasing counter raises an issue
+and still yields the reading. Fixtures cover an idle meter, a running meter, one that crosses the
+0.1 kW standby threshold in both directions, one that goes silent partway, and exactly one
+energy-counter reset.
+
+*Left for step 3:* the four screens from the PDF as `docs/requirements/power-meter-ui.md` — step 0's
+one outstanding item, and it belongs with the screens rather than ahead of them.
 
 ### Step 3 — Real time table (screen 1)
 The table, reading fixtures. Sort, department filter, stale/offline indicator, the exact columns
