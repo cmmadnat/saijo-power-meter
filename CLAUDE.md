@@ -30,7 +30,7 @@ on fixture data; no meter data flows yet.
 | `scripts/check-boundaries.mjs` | Enforces the dependency rule. Runs first in CI. |
 | `.github/workflows/check.yml` | Application checks. Holds no cloud credentials. |
 | `.github/workflows/infra.yml` | Builds and pushes the web image, then runs Pulumi. Preview on PR, apply on `main`. |
-| `.github/workflows/logs.yml` | Reads the Cloud Run service's logs on dispatch. Runs no Pulumi and holds a read-only identity. |
+| `.github/workflows/logs.yml` | Reads the Cloud Run service's logs, on dispatch or a `/logs` comment. Runs no Pulumi and holds a read-only identity. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
 | `docs/requirements/` | The frozen spec: the MQTT protocol, the meter registry, and the four screens. |
 | `reference doc/`, root `.xlsx` | Customer specifications — the source those requirements were read from. |
@@ -51,16 +51,36 @@ is expected — it fails on missing credentials, not on a broken program. To see
 a PR.
 
 **Reading the running application's logs works the same way round.** The session cannot query Cloud
-Logging, so `.github/workflows/logs.yml` does it: dispatch-only, authenticating as
-`power-meter-log-reader`, which holds `roles/logging.viewer` and nothing else. Claude dispatches it
-and reads the output back through the GitHub API, so "read the log" is a request that can be made
-here in chat — at the cost of a CI round trip per read, which is why it takes a free-form `filter`
-input and why one wide read beats several narrow ones. Two things about it are deliberate: it is a
-second service account rather than a role added to the deployer, because the value is that the logs
-job cannot deploy; and its concurrency group is *not* `infra`, or a log read would queue behind a
-deploy and vice versa. Every read also copies application log lines into the Actions run log, which
-has its own retention and audience — worth revisiting when real meter data and the passcode gate
-land.
+Logging, so `.github/workflows/logs.yml` does it, authenticating as `power-meter-log-reader`, which
+holds `roles/logging.viewer` and nothing else. Claude reads the output back through the GitHub API,
+so "read the log" is a request that can be made here in chat — at the cost of a CI round trip per
+read, which is why the command takes a free-form filter and why one wide read beats several narrow
+ones.
+
+**A session cannot start it by dispatching it.** `workflow_dispatch` needs `actions: write`, and a
+session's GitHub token answers `403 Resource not accessible by integration` — measured, both before
+and after the workflow reached `main`, so it is the token and not the registration. What a session
+can do is comment, so the workflow also triggers on `issue_comment`:
+
+```
+/logs                    /logs 6h ERROR                    /logs freshness=2d -- textPayload:"ECONNREFUSED"
+```
+
+Issue #12 is the channel for those; any issue or PR works. Four things about this are deliberate:
+
+- **The guard is `author_association`** in `OWNER`/`MEMBER`/`COLLABORATOR`. Without it, anyone able
+  to comment could start runs against the project. It cannot tell a session from its owner — a
+  session's comments are authored by the account that authorized it — and that is the intent.
+- **The comment body is never interpolated into a `run:` block.** It reaches the parser through the
+  environment, because `${{ github.event.comment.body }}` in a script is the standard way a comment
+  becomes shell.
+- **It is a second service account, not a role on the deployer.** The deployer holds nine admin
+  roles; the value is that the logs job cannot deploy a revision, push an image or touch state.
+- **Its concurrency group is not `infra`**, or a log read would queue behind a deploy and a deploy
+  behind a log read.
+
+Every read also copies application log lines into the Actions run log, which has its own retention
+and audience — worth revisiting when real meter data and the passcode gate land.
 
 **CI is the only thing that runs Pulumi at all.** That invariant is what makes the workflow's
 concurrency group (repo-wide, not per-ref) sufficient to keep two runs off one state object. Two
