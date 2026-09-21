@@ -248,3 +248,23 @@
   --series-7: #9085e9;
   --series-8: #e66767;
 }
+
+/* ---------------------------------------------------------------------------
+   Light-mode muted foreground, raised for contrast.
+
+   The registry's value, oklch(0.4091 0 0), reaches only 4.09:1 against --card
+   (#b0b0b0) — under the 4.5:1 floor, and it is carried by the smallest text in
+   the product: the 11px mono column headers on the sticky table head, the
+   control labels, the axis ticks and the offline row's readings. Doom 64's light
+   mode is a mid-grey rather than white, so a token that would pass on a white
+   card does not pass here.
+
+   oklch(0.3700 0 0) is the smallest step that clears it: 4.81:1 on --card and
+   6.50:1 on --background, still a neutral grey and still visibly quieter than
+   --foreground. Dark mode already passes (5.49:1 on --card) and is untouched,
+   which is why this is scoped with :not(.dark) — a bare :root here would come
+   after the .dark block and win at equal specificity.
+   --------------------------------------------------------------------------- */
+:root:not(.dark) {
+  --muted-foreground: oklch(0.3700 0 0);
+}
