@@ -120,7 +120,13 @@ test("a meter that has stopped reporting keeps its numbers and loses its status"
   assert.equal(never?.status, "offline");
   assert.equal(never?.reading, null);
   assert.equal(never?.ageMs, null);
-  assert.deepEqual(table.counts, { live: 1, stale: 1, offline: 2, running: 3 });
+  assert.deepEqual(table.counts, {
+    live: 1,
+    stale: 1,
+    offline: 2,
+    running: 3,
+    reporting: 2,
+  });
 });
 
 test("running is the domain's standby rule, not a hard-coded threshold", async () => {
@@ -177,4 +183,83 @@ test("the real registry yields all 55 rows", async () => {
   assert.equal(table.rows.length, 55);
   assert.equal(table.departments.length, 5);
   assert.equal(table.counts.offline, 55);
+});
+
+test("total load counts the meters that are still reporting, not the offline ones", async () => {
+  const registry = MeterRegistry.of([
+    meter({ meterId: "s01m1", slot: 1, keyPrefix: "M1" }),
+    meter({ meterId: "s01m2", slot: 2, keyPrefix: "M2" }),
+    meter({ meterId: "s01m3", slot: 3, keyPrefix: "M3" }),
+  ]);
+
+  const table = await realtimeTable({
+    registry,
+    latest: store([
+      reading("s01m1", new Date(NOW.getTime() - 5_000), 40), // live
+      reading("s01m2", new Date(NOW.getTime() - 60_000), 30), // stale
+      // Silent for an hour, still drawing 90 kW the last time anyone heard.
+      reading("s01m3", new Date(NOW.getTime() - 3_600_000), 90),
+    ]),
+    clock,
+  });
+
+  assert.equal(table.counts.reporting, 2);
+  assert.equal(table.counts.offline, 1);
+  // The offline meter's 90 kW is history: adding it would overstate "now" by
+  // exactly the meter that stopped saying what it was doing.
+  assert.equal(table.totalActivePowerKw, 70);
+});
+
+test("department loads carry their own census and sum to the fleet total", async () => {
+  const registry = MeterRegistry.of([
+    meter({ meterId: "s01m1", slot: 1, keyPrefix: "M1", department: "ผลิต โลหะ" }),
+    meter({ meterId: "s01m2", slot: 2, keyPrefix: "M2", department: "ผลิต โลหะ" }),
+    meter({ meterId: "s01m3", slot: 3, keyPrefix: "M3", department: "ส่วนกลาง" }),
+  ]);
+
+  const table = await realtimeTable({
+    registry,
+    latest: store([
+      reading("s01m1", new Date(NOW.getTime() - 5_000), 40),
+      reading("s01m2", new Date(NOW.getTime() - 5_000), 0.05), // idle, below standby
+      reading("s01m3", new Date(NOW.getTime() - 5_000), 12),
+    ]),
+    clock,
+  });
+
+  assert.deepEqual(table.byDepartment, [
+    {
+      department: "ผลิต โลหะ",
+      meters: 2,
+      reporting: 2,
+      running: 1,
+      activePowerKw: 40.05,
+    },
+    {
+      department: "ส่วนกลาง",
+      meters: 1,
+      reporting: 1,
+      running: 1,
+      activePowerKw: 12,
+    },
+  ]);
+
+  const summed = table.byDepartment.reduce((s, d) => s + d.activePowerKw, 0);
+  assert.equal(summed, table.totalActivePowerKw);
+});
+
+test("a fleet with nothing reporting is zero load, not an empty summary", async () => {
+  const table = await realtimeTable({
+    registry: MeterRegistry.fromWorkbook(),
+    latest: store([]),
+    clock,
+  });
+
+  assert.equal(table.totalActivePowerKw, 0);
+  assert.equal(table.counts.reporting, 0);
+  assert.equal(table.byDepartment.length, 5);
+  assert.equal(
+    table.byDepartment.reduce((s, d) => s + d.meters, 0),
+    55,
+  );
 });

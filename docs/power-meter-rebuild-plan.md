@@ -192,8 +192,9 @@ changed.
 beside the plot; 8 series × 24 h loads in ~0.8 s and the crosshair reads all eight at once; the
 legend is present on every chart in both themes and the values never depend on colour (direct end
 labels where lines end clear of each other, a crosshair readout, and a table view of the same
-numbers — which is what the light-mode contrast warning against Doom 64's mid-grey surface
-obliges); the energy series climbs monotonically across 24 h, and the note under it says why; the
+numbers — which the light-mode contrast warning obliged on Doom 64's mid-grey surface, and which is
+kept now that Light Green's white card lets every slot clear 3:1); the energy series climbs
+monotonically across 24 h, and the note under it says why; the
 palette passes the lightness, chroma, CVD-separation and normal-vision checks in both modes against
 this theme's own surfaces.
 
@@ -232,16 +233,59 @@ strength and drops the other seven to 0.18 opacity, checked in the browser; 8 se
 loads in ~0.8 s; both themes, 1920×1080 and 1024×768, no page-level horizontal scroll, no console
 errors.
 
-### Step 5 — History (screen 4)
-Department + date/time range filters, table of Total Energy (kWh) and running hours (Hr:min). All
-day boundaries and picker values in **Asia/Bangkok**; instants stored UTC, converted at the edges.
-Total energy = last kWh reading − first kWh reading in the window, **with counter-reset handling**.
-Running hours = time above standby level. Both computed client-side over fixtures for now, in pure
-functions that move to the backend unchanged in step 8.
+### Step 5 — History (screen 4) — **done**
+Department + date/time range filters, table of Total Energy (kWh) and running hours (Hr:min), all
+boundaries in **Asia/Bangkok** with instants kept UTC underneath. Shipped:
 
-*Verify:* hand-computed expected values on a small fixture match to the minute; a counter reset
-inside the window does not produce a negative total; empty range and single-reading range both
-behave.
+- `packages/application/src/history.ts` — one pass over the readings stream produces both
+  quantities. Total energy is the last value of `consumptionFrom()`, the same walk the energy chart
+  plots, so the counter-reset rule has one implementation rather than two. Running time sums the
+  gaps between readings, each credited to the state at its start.
+- `apps/web/lib/history-source.ts` — the third and last of the fixture adapters, and the only place
+  the Bangkok offset is applied. Thailand has had no daylight saving since 1920, so a picker value
+  converts by appending `+07:00`, which is exact rather than approximately right.
+- `apps/web/components/history-filters.tsx` and `apps/web/app/history/page.tsx` — the filter row as
+  the mock-up lays it out, and the six specified columns. A plain `<form method="get">`: this
+  screen's whole state is five values that belong in the URL anyway, so it needs no client component
+  and works with no JavaScript at all.
+
+**A gap longer than three minutes is not running time.** Running hours read a sampled signal, and
+the honest reading of a silence is that nothing is known through it — not that the machine kept
+running at whatever it was last seen doing. The cap matches the offline threshold. The energy the
+counter accumulated meanwhile is still counted, because the counter carries it.
+
+*Verified:* nine hand-computed tests in `history.test.ts` — minute-by-minute energy and running
+time, a counter reset inside the window that does not go negative, a meter with no readings, a
+single reading (zero consumption, not null), a gap past the cap, the department filter, the
+half-open boundary, and an inverted range that is rejected. Built and run: an 08:00–17:00 window
+over the 55 fixtures totals 12 938.9 kWh and 332:12, with continuously-running meters at 8:59 of a
+nine-hour window; screenshots taken in both themes, and the malformed-range fallback checked.
+
+### Step 5b — Fleet strip and department grouping — **done**
+Not in the specification, and not in this plan until it was asked for: two additions to the Real
+time screen that make 55 rows readable. Shipped:
+
+- `packages/application/src/realtime.ts` — `totalActivePowerKw` and `byDepartment`, summed where the
+  rows are built. Aggregates are data, not presentation: the same numbers head the bands and the
+  strip, and a second summation in the component would have been free to disagree.
+- `apps/web/components/fleet-strip.tsx` — reporting out of 55 with a square per meter, total load,
+  running against idle and silent, the freshness split, and the busiest department.
+- `apps/web/components/realtime-table.tsx` — department bands carrying each department's census and
+  its kW subtotal, on by default, dismissable, with sorting applied inside a band.
+
+**Offline meters do not count toward total load.** Their last reading stays on screen — that is the
+point of showing it — but it is history, and adding an hour-old 90 kW into a figure labelled "now"
+would overstate the factory by exactly the meters that have stopped saying what they are doing.
+
+**The strip carries nothing that needs history.** The design sketch had an "energy today" tile and a
+sparkline; both need a baseline or a window, neither is available from the latest reading per meter,
+and putting a warehouse query behind a screen that refreshes every ten seconds is a cost decision
+for step 8 rather than a detail to slip in here.
+
+*Verified:* three tests on the aggregates — an offline meter's kW excluded from the total, per
+department census and loads that sum to the fleet figure, and an all-silent fleet that reads zero
+rather than empty. Built and run in both themes: strip and bands on 55 fixture meters, subtotals
+matching the strip's total.
 
 **← At this point the customer can review the whole app and we have changed no infrastructure.**
 
@@ -286,8 +330,15 @@ soak with flat memory; rollup totals reconcile against raw; cost per day measure
 Replace fixture calls with API routes / server components. The step-5 aggregation functions move
 server-side unchanged. Fixtures stay as the test fixtures.
 
-*Verify:* every screen matches its step 3–5 behaviour against real stored data; p95 page load
-measured; the four screens are the only thing that changed.
+**Finish the fleet strip here.** Step 5b left two tiles out — energy since the start of the shift,
+and a sparkline of total load across the last hour — because both need a baseline or a window, and
+the latest-reading-per-meter store has neither. Once the warehouse exists they are one query each;
+the open question is what that query costs behind a screen that refreshes every ten seconds, which
+is answerable then and not now. The design they complete is on the canvas the build log links.
+
+*Verify:* every screen matches its step 3–5b behaviour against real stored data; p95 page load
+measured; the four screens are the only thing that changed; the strip's two deferred tiles read the
+warehouse, with the cost of that refresh measured rather than assumed.
 
 ### Step 9 — Passcode gate
 A single shared passcode, checked server-side against Secret Manager, httpOnly + secure session

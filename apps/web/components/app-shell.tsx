@@ -52,7 +52,7 @@ export function AppShell({
                     "border px-3 py-1.5 font-mono text-xs uppercase tracking-wider transition-colors",
                     active
                       ? "border-primary bg-primary text-primary-foreground"
-                      : "border-border text-muted-foreground hover:border-primary hover:text-foreground",
+                      : "border-border text-muted-foreground hover:border-accent-strong hover:text-foreground",
                   ].join(" ")}
                 >
                   {item.label}

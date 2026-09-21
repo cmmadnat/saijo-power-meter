@@ -15,9 +15,9 @@ Greenfield. Two kinds of material sit alongside the code, and they pull in oppos
 
 Built so far: the Google Cloud footprint as Pulumi code, the pipeline that builds and applies it,
 the frontend shell — scaffolded, themed, and deployed to Cloud Run so there is a live URL from the
-start — the domain model, the MQTT payload decoder and the fixture generator, and the three
-real-time screens: the table and the two charts, all on fixture data. Only History is still a
-placeholder; no meter data flows yet.
+start — the domain model, the MQTT payload decoder and the fixture generator, and all four
+specified screens: the 55-meter table, the kW and kWh charts, and History. Every one of them runs
+on fixture data; no meter data flows yet.
 
 | Path | What it is |
 | --- | --- |
@@ -143,13 +143,26 @@ The plan this follows is `docs/power-meter-rebuild-plan.md`, with per-step evide
 in the build log it links to. Steps 0 and 1 are done, and the deploy step was pulled forward so
 there is a live URL to look at from the start.
 
-Two things about the **Doom 64** theme are deliberate and should survive review: `--radius` is
-`0px`, so square corners are the design and not an oversight; and it names Oxanium (sans), Source
-Code Pro (mono) and Georgia (serif) without installing them. The first two are loaded via
-`next/font` in `apps/web/app/layout.tsx`, with the theme's font tokens pointed at the resulting CSS
-variables in a block appended to `apps/web/app/globals.css` — the registry's own values are left
-untouched, so re-applying the theme does not clobber the wiring. Georgia is already a system stack
-and needs nothing. Primary is `#b71c1c`, secondary `#556b2f`.
+The theme is **Light Green** (tweakcn, by Alexander VQ), which replaced Doom 64 — that one was
+picked for looks, and its light mode put page and panels 0.09 apart in lightness, which is what made
+every chart on it read flat. Light Green grounds the page at `#fbfcf8` with white cards and
+`#0f172a` ink, and `#020617` / `#0f172a` in dark. Three things about it are deliberate:
+
+- It names Inter (sans), JetBrains Mono (mono) and Georgia (serif) without installing them. The
+  first two are loaded via `next/font` in `apps/web/app/layout.tsx`, with the theme's font tokens
+  pointed at the resulting CSS variables in a block appended to `apps/web/app/globals.css` — the
+  registry's own values are left untouched, so re-applying the theme does not clobber the wiring.
+- `--radius` is `0.25rem`, not the theme's published `1rem`: 16px corners on a 15-column, 55-row
+  table read soft, and the density is the point. Square corners are no longer the design.
+- **Primary `#aff33e` is a fill, never an ink.** Lime reaches 1.34:1 on the white card, so a lime
+  border, sort arrow or focus ring is invisible; black on lime is 15.71:1, so a selected chip stays
+  lime-filled. Where the brand hue has to be text or a border, `--accent-strong` (`#4d7c0f` light,
+  the lime itself in dark) carries it, and `--ring` follows the same rule.
+
+**Freshness no longer borrows interface tokens.** live / stale / offline used to be `--secondary`,
+`--destructive` and `--primary`, which only worked while primary was a red. They are now
+`--status-live`, `--status-stale` and `--status-offline`, a reserved role that is never a
+categorical slot and never shared with chrome, checked against the card in both modes.
 
 Working in `apps/web` has two traps, both hit once already:
 
@@ -163,22 +176,41 @@ Working in `apps/web` has two traps, both hit once already:
   traced in at all. There is no hoisted `node_modules` beside it — tracing puts everything under
   `apps/web`. The Dockerfile flattens this; changing either setting means re-checking it.
 
-Steps 0–4 are done: the spec is frozen into `docs/requirements/` (including all four screens, in
+Steps 0–5 are done: the spec is frozen into `docs/requirements/` (including all four screens, in
 `power-meter-ui.md`), the shell is deployed, the domain model, decoder and fixtures are in place with
-tests, and the Real time route carries screens 1–3 — the 55-meter table and the kW and kWh charts —
-on those fixtures. Remaining, in order: the History screen, then the store, the MQTT ingester, and
-the passcode gate.
+tests, the Real time route carries screens 1–3 — the 55-meter table and the kW and kWh charts — and
+History carries screen 4, all on those fixtures. Remaining, in order: the store, the MQTT ingester,
+wiring the screens to real data, and the passcode gate.
 
-**The screens read their data through two files, `apps/web/lib/realtime-source.ts` and
-`apps/web/lib/series-source.ts`.** They are the only places that know the numbers are fixtures:
-everything above them goes through a use case in `packages/application` and a port. Step 8 replaces
-those two files, not the screens — keep it that way, and do not reach for `generateFixtures` from a
-component.
+**The screens read their data through three files, `apps/web/lib/realtime-source.ts`,
+`apps/web/lib/series-source.ts` and `apps/web/lib/history-source.ts`.** They are the only places
+that know the numbers are fixtures: everything above them goes through a use case in
+`packages/application` and a port. Step 8 replaces those three files, not the screens — keep it that
+way, and do not reach for `generateFixtures` from a component.
+
+**The fleet strip and the department bands are additions to the specification, and both are
+flagged to the customer.** Their numbers — `totalActivePowerKw` and `byDepartment` — are summed in
+`realtimeTable`, not in the components, so the strip and the bands cannot disagree. Two rules ride
+with them: an offline meter's last reading is history and is excluded from "total load now", and
+there is no energy subtotal on a band, because summing cumulative counters yields only how long a
+department's meters have been installed. The strip deliberately carries nothing that needs history
+— no energy-today tile, no sparkline — because that would put a warehouse query behind a screen
+that refreshes every ten seconds.
+
+**History's two quantities come from `packages/application/src/history.ts`, and its running-hours
+rule is a judgement worth keeping.** Total energy is the last value of the same `consumptionFrom()`
+walk the energy chart plots, reset rule included — do not write a second one. Running time sums the
+gaps between readings, each credited to the state at its start, and a gap longer than three minutes
+counts for nothing: a silence says nothing was observed, not that the machine kept running. The
+fixture adapter raises that cap to twice its own sampling interval, because a long window is
+sampled coarsely and every gap would otherwise exceed it; at step 8 it goes back to the default.
 
 **Chart colours are the eight `--series-N` tokens in `globals.css`, not the theme's `--chart-1..5`.**
-They were validated as a categorical set against this theme's own surfaces — lightness band, chroma
-floor, CVD separation, normal-vision separation — and the light-mode contrast warning against Doom
-64's mid-grey is why every chart also ships a legend, direct end labels and a table view. A series
+They were re-validated as a categorical set against Light Green's own surfaces — lightness band,
+chroma floor, CVD separation, normal-vision separation, and now contrast too: on the white card
+slots 3, 4 and 5 had to darken to `#07a874`, `#cb8400` and `#dc7099` to clear 3:1, after which the
+validator passes every check, which it never did on Doom 64. Dark mode passed unchanged. The
+relief that the old warning obliged — a legend, direct end labels and a table view — stays. A series
 holds its slot when other series are removed, which is why the chart selection is eight slots with
 holes rather than a list. Changing any of that means re-running the validation, not just picking a
 nicer colour.

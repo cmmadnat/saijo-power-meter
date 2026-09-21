@@ -3,6 +3,7 @@ import {
   RealtimeCharts,
   type SelectableMeter,
 } from "@/components/realtime-charts";
+import { FleetStrip } from "@/components/fleet-strip";
 import {
   RealtimeTable,
   type RealtimeTableRow,
@@ -95,9 +96,19 @@ export default async function RealTimePage(props: PageProps<"/">) {
         </p>
       </header>
 
+      <FleetStrip
+        counts={table.counts}
+        totalActivePowerKw={table.totalActivePowerKw}
+        byDepartment={table.byDepartment}
+        meterCount={table.rows.length}
+        statuses={table.rows.map((row) => row.status)}
+        asOf={formatClock(table.at)}
+      />
+
       <RealtimeTable
         rows={rows}
         departments={table.departments}
+        byDepartment={table.byDepartment.map((d) => ({ ...d }))}
         asOf={formatClock(table.at)}
         counts={table.counts}
       />

@@ -159,7 +159,7 @@ export function RealtimeCharts({
                 "border px-2.5 py-1 text-xs transition-colors",
                 active
                   ? "border-primary bg-primary text-primary-foreground"
-                  : "border-border text-muted-foreground hover:border-primary hover:text-foreground",
+                  : "border-border text-muted-foreground hover:border-accent-strong hover:text-foreground",
               ].join(" ")}
             >
               {window.label}

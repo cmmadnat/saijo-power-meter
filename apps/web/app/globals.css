@@ -7,10 +7,10 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: "Oxanium", sans-serif;
-  --font-mono: "Source Code Pro", monospace;
-  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
-  --radius: 0px;
+  --font-sans: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+  --font-serif: Georgia, serif;
+  --radius: 0.25rem;
   --tracking-tighter: calc(var(--tracking-normal) - 0.05em);
   --tracking-tight: calc(var(--tracking-normal) - 0.025em);
   --tracking-wide: calc(var(--tracking-normal) + 0.025em);
@@ -63,6 +63,18 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+  --color-series-1: var(--series-1);
+  --color-series-2: var(--series-2);
+  --color-series-3: var(--series-3);
+  --color-series-4: var(--series-4);
+  --color-series-5: var(--series-5);
+  --color-series-6: var(--series-6);
+  --color-series-7: var(--series-7);
+  --color-series-8: var(--series-8);
+  --color-status-live: var(--status-live);
+  --color-status-stale: var(--status-stale);
+  --color-status-offline: var(--status-offline);
+  --color-accent-strong: var(--accent-strong);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -73,114 +85,114 @@
 }
 
 :root {
-  --radius: 0px;
-  --background: oklch(0.8452 0 0);
-  --foreground: oklch(0.2393 0 0);
-  --card: oklch(0.7572 0 0);
-  --card-foreground: oklch(0.2393 0 0);
-  --popover: oklch(0.7572 0 0);
-  --popover-foreground: oklch(0.2393 0 0);
-  --primary: oklch(0.5016 0.1887 27.4816);
-  --primary-foreground: oklch(1.0000 0 0);
-  --secondary: oklch(0.4955 0.0896 126.1858);
-  --secondary-foreground: oklch(1.0000 0 0);
-  --muted: oklch(0.7826 0 0);
-  --muted-foreground: oklch(0.4091 0 0);
-  --accent: oklch(0.5880 0.0993 245.7394);
-  --accent-foreground: oklch(1.0000 0 0);
-  --destructive: oklch(0.7076 0.1975 46.4558);
-  --border: oklch(0.4313 0 0);
-  --input: oklch(0.4313 0 0);
-  --ring: oklch(0.5016 0.1887 27.4816);
-  --chart-1: oklch(0.5016 0.1887 27.4816);
-  --chart-2: oklch(0.4955 0.0896 126.1858);
-  --chart-3: oklch(0.5880 0.0993 245.7394);
-  --chart-4: oklch(0.7076 0.1975 46.4558);
-  --chart-5: oklch(0.5656 0.0431 40.4319);
-  --sidebar: oklch(0.7572 0 0);
-  --sidebar-foreground: oklch(0.2393 0 0);
-  --sidebar-primary: oklch(0.5016 0.1887 27.4816);
-  --sidebar-primary-foreground: oklch(1.0000 0 0);
-  --sidebar-accent: oklch(0.5880 0.0993 245.7394);
-  --sidebar-accent-foreground: oklch(1.0000 0 0);
-  --sidebar-border: oklch(0.4313 0 0);
-  --sidebar-ring: oklch(0.5016 0.1887 27.4816);
-  --destructive-foreground: oklch(0 0 0);
-  --font-sans: "Oxanium", sans-serif;
-  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
-  --font-mono: "Source Code Pro", monospace;
+  --radius: 0.25rem;
+  --background: #fbfcf8;
+  --foreground: #0f172a;
+  --card: #ffffff;
+  --card-foreground: #0f172a;
+  --popover: #ffffff;
+  --popover-foreground: #0f172a;
+  --primary: #aff33e;
+  --primary-foreground: #000000;
+  --secondary: #334155;
+  --secondary-foreground: #f8fafc;
+  --muted: #f1f5f9;
+  --muted-foreground: #64748b;
+  --accent: #f0fdf4;
+  --accent-foreground: #166534;
+  --destructive: #ef4444;
+  --border: #e2e8f0;
+  --input: #e2e8f0;
+  --ring: #aff33e;
+  --chart-1: #aff33e;
+  --chart-2: #334155;
+  --chart-3: #22c55e;
+  --chart-4: #64748b;
+  --chart-5: #94a3b8;
+  --sidebar: #ffffff;
+  --sidebar-foreground: #0f172a;
+  --sidebar-primary: #aff33e;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: #f8fafc;
+  --sidebar-accent-foreground: #0f172a;
+  --sidebar-border: #f1f5f9;
+  --sidebar-ring: #aff33e;
+  --destructive-foreground: #ffffff;
+  --font-sans: Inter, system-ui, sans-serif;
+  --font-serif: Georgia, serif;
+  --font-mono: "JetBrains Mono", monospace;
   --shadow-color: hsl(0 0% 0%);
-  --shadow-opacity: 0.4;
-  --shadow-blur: 4px;
+  --shadow-opacity: 0.05;
+  --shadow-blur: 20px;
   --shadow-spread: 0px;
   --shadow-offset-x: 0px;
-  --shadow-offset-y: 2px;
-  --letter-spacing: 0em;
+  --shadow-offset-y: 8px;
+  --letter-spacing: -0.01em;
   --spacing: 0.25rem;
-  --shadow-2xs: 0px 2px 4px 0px hsl(0 0% 0% / 0.20);
-  --shadow-xs: 0px 2px 4px 0px hsl(0 0% 0% / 0.20);
-  --shadow-sm: 0px 2px 4px 0px hsl(0 0% 0% / 0.40), 0px 1px 2px -1px hsl(0 0% 0% / 0.40);
-  --shadow: 0px 2px 4px 0px hsl(0 0% 0% / 0.40), 0px 1px 2px -1px hsl(0 0% 0% / 0.40);
-  --shadow-md: 0px 2px 4px 0px hsl(0 0% 0% / 0.40), 0px 2px 4px -1px hsl(0 0% 0% / 0.40);
-  --shadow-lg: 0px 2px 4px 0px hsl(0 0% 0% / 0.40), 0px 4px 6px -1px hsl(0 0% 0% / 0.40);
-  --shadow-xl: 0px 2px 4px 0px hsl(0 0% 0% / 0.40), 0px 8px 10px -1px hsl(0 0% 0% / 0.40);
-  --shadow-2xl: 0px 2px 4px 0px hsl(0 0% 0% / 1.00);
-  --tracking-normal: 0em;
+  --shadow-2xs: 0px 8px 20px 0px hsl(0 0% 0% / 0.03);
+  --shadow-xs: 0px 8px 20px 0px hsl(0 0% 0% / 0.03);
+  --shadow-sm: 0px 8px 20px 0px hsl(0 0% 0% / 0.05), 0px 1px 2px -1px hsl(0 0% 0% / 0.05);
+  --shadow: 0px 8px 20px 0px hsl(0 0% 0% / 0.05), 0px 1px 2px -1px hsl(0 0% 0% / 0.05);
+  --shadow-md: 0px 8px 20px 0px hsl(0 0% 0% / 0.05), 0px 2px 4px -1px hsl(0 0% 0% / 0.05);
+  --shadow-lg: 0px 8px 20px 0px hsl(0 0% 0% / 0.05), 0px 4px 6px -1px hsl(0 0% 0% / 0.05);
+  --shadow-xl: 0px 8px 20px 0px hsl(0 0% 0% / 0.05), 0px 8px 10px -1px hsl(0 0% 0% / 0.05);
+  --shadow-2xl: 0px 8px 20px 0px hsl(0 0% 0% / 0.13);
+  --tracking-normal: -0.01em;
 }
 
 .dark {
-  --background: oklch(0.2178 0 0);
-  --foreground: oklch(0.9067 0 0);
-  --card: oklch(0.2850 0 0);
-  --card-foreground: oklch(0.9067 0 0);
-  --popover: oklch(0.2850 0 0);
-  --popover-foreground: oklch(0.9067 0 0);
-  --primary: oklch(0.6083 0.2090 27.0276);
-  --primary-foreground: oklch(1.0000 0 0);
-  --secondary: oklch(0.6423 0.1467 133.0145);
-  --secondary-foreground: oklch(0 0 0);
-  --muted: oklch(0.2645 0 0);
-  --muted-foreground: oklch(0.7058 0 0);
-  --accent: oklch(0.7482 0.1235 244.7492);
-  --accent-foreground: oklch(0 0 0);
-  --destructive: oklch(0.7839 0.1719 68.0943);
-  --border: oklch(0.4091 0 0);
-  --input: oklch(0.4091 0 0);
-  --ring: oklch(0.6083 0.2090 27.0276);
-  --chart-1: oklch(0.6083 0.2090 27.0276);
-  --chart-2: oklch(0.6423 0.1467 133.0145);
-  --chart-3: oklch(0.7482 0.1235 244.7492);
-  --chart-4: oklch(0.7839 0.1719 68.0943);
-  --chart-5: oklch(0.6471 0.0334 40.7963);
-  --sidebar: oklch(0.1913 0 0);
-  --sidebar-foreground: oklch(0.9067 0 0);
-  --sidebar-primary: oklch(0.6083 0.2090 27.0276);
-  --sidebar-primary-foreground: oklch(1.0000 0 0);
-  --sidebar-accent: oklch(0.7482 0.1235 244.7492);
-  --sidebar-accent-foreground: oklch(0 0 0);
-  --sidebar-border: oklch(0.4091 0 0);
-  --sidebar-ring: oklch(0.6083 0.2090 27.0276);
-  --destructive-foreground: oklch(0 0 0);
-  --radius: 0px;
-  --font-sans: "Oxanium", sans-serif;
-  --font-serif: ui-serif, Georgia, Cambria, "Times New Roman", Times, serif;
-  --font-mono: "Source Code Pro", monospace;
+  --background: #020617;
+  --foreground: #f8fafc;
+  --card: #0f172a;
+  --card-foreground: #f8fafc;
+  --popover: #0f172a;
+  --popover-foreground: #f8fafc;
+  --primary: #aff33e;
+  --primary-foreground: #000000;
+  --secondary: #1e293b;
+  --secondary-foreground: #f8fafc;
+  --muted: #1e293b;
+  --muted-foreground: #94a3b8;
+  --accent: #14532d;
+  --accent-foreground: #aff33e;
+  --destructive: #991b1b;
+  --border: #1e293b;
+  --input: #1e293b;
+  --ring: #aff33e;
+  --chart-1: #aff33e;
+  --chart-2: #3b82f6;
+  --chart-3: #22c55e;
+  --chart-4: #a855f7;
+  --chart-5: #f59e0b;
+  --sidebar: #020617;
+  --sidebar-foreground: #f8fafc;
+  --sidebar-primary: #aff33e;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: #1e293b;
+  --sidebar-accent-foreground: #f8fafc;
+  --sidebar-border: #1e293b;
+  --sidebar-ring: #aff33e;
+  --destructive-foreground: #ffffff;
+  --radius: 0.25rem;
+  --font-sans: Inter, system-ui, sans-serif;
+  --font-serif: Georgia, serif;
+  --font-mono: "JetBrains Mono", monospace;
   --shadow-color: hsl(0 0% 0%);
-  --shadow-opacity: 0.6;
-  --shadow-blur: 5px;
+  --shadow-opacity: 0.4;
+  --shadow-blur: 25px;
   --shadow-spread: 0px;
   --shadow-offset-x: 0px;
-  --shadow-offset-y: 2px;
-  --letter-spacing: 0em;
+  --shadow-offset-y: 10px;
+  --letter-spacing: -0.01em;
   --spacing: 0.25rem;
-  --shadow-2xs: 0px 2px 5px 0px hsl(0 0% 0% / 0.30);
-  --shadow-xs: 0px 2px 5px 0px hsl(0 0% 0% / 0.30);
-  --shadow-sm: 0px 2px 5px 0px hsl(0 0% 0% / 0.60), 0px 1px 2px -1px hsl(0 0% 0% / 0.60);
-  --shadow: 0px 2px 5px 0px hsl(0 0% 0% / 0.60), 0px 1px 2px -1px hsl(0 0% 0% / 0.60);
-  --shadow-md: 0px 2px 5px 0px hsl(0 0% 0% / 0.60), 0px 2px 4px -1px hsl(0 0% 0% / 0.60);
-  --shadow-lg: 0px 2px 5px 0px hsl(0 0% 0% / 0.60), 0px 4px 6px -1px hsl(0 0% 0% / 0.60);
-  --shadow-xl: 0px 2px 5px 0px hsl(0 0% 0% / 0.60), 0px 8px 10px -1px hsl(0 0% 0% / 0.60);
-  --shadow-2xl: 0px 2px 5px 0px hsl(0 0% 0% / 1.50);
+  --shadow-2xs: 0px 10px 25px 0px hsl(0 0% 0% / 0.20);
+  --shadow-xs: 0px 10px 25px 0px hsl(0 0% 0% / 0.20);
+  --shadow-sm: 0px 10px 25px 0px hsl(0 0% 0% / 0.40), 0px 1px 2px -1px hsl(0 0% 0% / 0.40);
+  --shadow: 0px 10px 25px 0px hsl(0 0% 0% / 0.40), 0px 1px 2px -1px hsl(0 0% 0% / 0.40);
+  --shadow-md: 0px 10px 25px 0px hsl(0 0% 0% / 0.40), 0px 2px 4px -1px hsl(0 0% 0% / 0.40);
+  --shadow-lg: 0px 10px 25px 0px hsl(0 0% 0% / 0.40), 0px 4px 6px -1px hsl(0 0% 0% / 0.40);
+  --shadow-xl: 0px 10px 25px 0px hsl(0 0% 0% / 0.40), 0px 8px 10px -1px hsl(0 0% 0% / 0.40);
+  --shadow-2xl: 0px 10px 25px 0px hsl(0 0% 0% / 1.00);
 }
 
 @layer base {
@@ -193,46 +205,55 @@
   }
 }
 /* ---------------------------------------------------------------------------
-   Application overrides, applied after the Doom 64 registry block above.
+   Application overrides, applied after the Light Green registry block above.
 
-   The theme names its faces as bare family strings ("Oxanium", "Source Code
-   Pro") but does not install them. app/layout.tsx loads both through
-   next/font, which self-hosts each one and exposes it as a CSS variable; these
-   two lines point the theme's font tokens at those variables so the Tailwind
-   font-sans / font-mono utilities resolve to the real, loaded faces instead of
-   silently falling back. The registry's own values are left untouched.
+   The theme names its faces as bare family strings ("Inter", "JetBrains Mono")
+   but does not install them. app/layout.tsx loads both through next/font, which
+   self-hosts each one and exposes it as a CSS variable; these two lines point
+   the theme's font tokens at those variables so the Tailwind font-sans /
+   font-mono utilities resolve to the real, loaded faces instead of silently
+   falling back. The registry's own values are left untouched, so re-applying
+   the theme does not clobber the wiring.
    --------------------------------------------------------------------------- */
 :root {
-  --font-sans: var(--font-oxanium), ui-sans-serif, system-ui, sans-serif;
-  --font-mono: var(--font-source-code-pro), ui-monospace, monospace;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
 }
 
 /* ---------------------------------------------------------------------------
    Series colours for the real-time charts.
 
-   Not the theme's own --chart-1..5: those are five slots, two of them below the
-   chroma floor at which a hue stops carrying identity, and they were never
-   validated as a categorical set. These are the eight-slot palette from the
-   data-visualisation guidance, each mode stepped for its own surface and
-   checked with its validator against this theme's card colour (#b0b0b0 light,
-   #2a2a2a dark): lightness band, chroma floor, CVD separation under simulated
-   protanopia and deuteranopia, and normal-vision separation all pass in both
-   modes.
+   Not the theme's own --chart-1..5: those are lime, slate, green, purple and
+   grey — lime reaches 1.34:1 on the white card, so it disappears as a line, and
+   lime sits beside green in the same list. They were never validated as a
+   categorical set. These are the eight-slot palette from the data-visualisation
+   guidance, each mode stepped for its own surface and checked with that
+   guidance's validator against this theme's card colour (#ffffff light,
+   #0f172a dark).
 
-   Contrast against the light surface warns below 3:1 — Doom 64's light mode is
-   a mid-grey, not white — so the charts ship the relief that warning requires:
-   a legend on every chart, direct end labels, and a table view of the same
-   numbers. Colour is never the only way to read a value.
+   Light mode moved with the theme. On Doom 64's mid-grey card three slots sat
+   below 3:1; on white they sat lower still, so slots 3, 4 and 5 were darkened
+   to the smallest step that clears the floor — #1baf7a → #07a874, #eda100 →
+   #cb8400, #e87ba4 → #dc7099. The validator then reports ALL CHECKS PASS
+   including contrast, which Doom 64 never managed: lightness band, chroma
+   floor, CVD separation under simulated protanopia and deuteranopia (worst
+   adjacent pair ΔE 9.3), normal-vision separation (worst 17.2) and 3:1 against
+   the surface. Dark mode passes unchanged on #0f172a and is untouched.
+
+   The relief those charts already ship — a legend, direct end labels and a
+   table view of the same numbers — stays regardless: colour is never the only
+   way to read a value.
 
    Slots are assigned per meter and held, so removing one series never repaints
-   the others.
+   the others. Re-run the check before changing any of these:
+   node scripts/validate_palette.js "<the eight>" --mode light --surface "#ffffff"
    --------------------------------------------------------------------------- */
 :root {
   --series-1: #2a78d6;
   --series-2: #eb6834;
-  --series-3: #1baf7a;
-  --series-4: #eda100;
-  --series-5: #e87ba4;
+  --series-3: #07a874;
+  --series-4: #cb8400;
+  --series-5: #dc7099;
   --series-6: #008300;
   --series-7: #4a3aa7;
   --series-8: #e34948;
@@ -250,21 +271,40 @@
 }
 
 /* ---------------------------------------------------------------------------
-   Light-mode muted foreground, raised for contrast.
+   Status colours, and the accent where it has to carry ink.
 
-   The registry's value, oklch(0.4091 0 0), reaches only 4.09:1 against --card
-   (#b0b0b0) — under the 4.5:1 floor, and it is carried by the smallest text in
-   the product: the 11px mono column headers on the sticky table head, the
-   control labels, the axis ticks and the offline row's readings. Doom 64's light
-   mode is a mid-grey rather than white, so a token that would pass on a white
-   card does not pass here.
+   Freshness — live, stale, offline — used to borrow --secondary, --destructive
+   and --primary. That worked while primary was a red. Light Green's primary is
+   lime, which cannot mean "offline", and its secondary is a slate. Status is
+   also a reserved role in the data-visualisation guidance: it is never a
+   categorical slot and never shares a token with interface chrome. So the three
+   states get their own tokens, each checked against the card it sits on:
 
-   oklch(0.3700 0 0) is the smallest step that clears it: 4.81:1 on --card and
-   6.50:1 on --background, still a neutral grey and still visibly quieter than
-   --foreground. Dark mode already passes (5.49:1 on --card) and is untouched,
-   which is why this is scoped with :not(.dark) — a bare :root here would come
-   after the .dark block and win at equal specificity.
+     light, on #ffffff   live 5.02:1   stale 5.02:1   offline 4.83:1
+     dark,  on #0f172a   live 7.83:1   stale 8.31:1   offline 4.74:1
+
+   They are hue-separated and lightness-separated, and every marker still prints
+   its word beside it, so colour alone never carries the state.
+
+   --accent-strong exists because lime is a fill colour, not an ink: #aff33e is
+   1.34:1 on white, so a lime sort arrow or a lime outline is invisible. Black
+   on lime is 15.71:1, which is why a selected chip stays lime-filled. Where the
+   brand hue has to be text or a border in light mode, it is #4d7c0f (4.99:1);
+   dark mode can use the lime itself (13.36:1 on #0f172a). --ring follows the
+   same rule, so the focus ring is visible on both grounds.
    --------------------------------------------------------------------------- */
-:root:not(.dark) {
-  --muted-foreground: oklch(0.3700 0 0);
+:root {
+  --status-live: #15803d;
+  --status-stale: #b45309;
+  --status-offline: #dc2626;
+  --accent-strong: #4d7c0f;
+  --ring: #4d7c0f;
+}
+
+.dark {
+  --status-live: #22c55e;
+  --status-stale: #f59e0b;
+  --status-offline: #ef4444;
+  --accent-strong: #aff33e;
+  --ring: #aff33e;
 }

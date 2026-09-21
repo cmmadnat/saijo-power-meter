@@ -6,6 +6,17 @@ export type {
 } from "./ports.ts";
 export { systemClock } from "./ports.ts";
 export type {
+  HistoryRow,
+  HistoryTable,
+  HistoryTableInput,
+} from "./history.ts";
+export {
+  DEFAULT_MAX_RUN_GAP_MS,
+  formatRunningHours,
+  historyTable,
+} from "./history.ts";
+export type {
+  DepartmentLoad,
   FreshnessThresholds,
   MeterStatus,
   RealtimeRow,
