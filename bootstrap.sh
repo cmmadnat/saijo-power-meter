@@ -13,6 +13,12 @@
 #
 # Everything else belongs in infra/. Re-running is safe.
 #
+# The pipeline that consumes all this is Cloud Build, not GitHub Actions; its
+# own one-time setup is scripts/setup-cloud-build.sh, which runs after this.
+# The Workload Identity Federation section below is what remains of the Actions
+# setup, and it is here only until .github/workflows/infra.yml is deleted —
+# nothing but that workflow uses it.
+#
 # Usage: PROJECT_ID=your-project ./bootstrap.sh
 
 set -euo pipefail
@@ -107,6 +113,8 @@ ROLES=(
   roles/iam.serviceAccountAdmin          # create the app's runtime identity
   roles/iam.serviceAccountUser           # actAs, to deploy Run as that identity
   roles/resourcemanager.projectIamAdmin  # bind roles to it
+  roles/cloudbuild.builds.editor         # declare the pipeline's own triggers
+  roles/serviceusage.apiKeysAdmin        # the webhook triggers' API key
 )
 log "Granting project roles"
 for role in "${ROLES[@]}"; do
@@ -195,8 +203,14 @@ or with the gh CLI:
   gh variable set GCP_DEPLOYER_SA  --repo ${GITHUB_REPO} --body "${SA_EMAIL}"
   gh variable set GCP_WIF_PROVIDER --repo ${GITHUB_REPO} --body "${POOL_NAME}/providers/${PROVIDER_ID}"
 
-Then open a pull request touching infra/ — the workflow posts a preview on it,
-and merging to main applies.
+Then run the Cloud Build setup, which is what actually builds and deploys:
+
+  PROJECT_ID=${PROJECT_ID} ./scripts/setup-cloud-build.sh
+
+The five variables above are only for .github/workflows/infra.yml, which exists
+to apply the stack that creates the Cloud Build pipeline in the first place.
+Once a Cloud Build run has gone green, that workflow and these variables both
+go away.
 OUT
 
 if [[ "$IMPERSONATION_OK" != true ]]; then

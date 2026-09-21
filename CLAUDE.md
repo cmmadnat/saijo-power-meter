@@ -23,13 +23,17 @@ on fixture data; no meter data flows yet.
 | --- | --- |
 | `infra/` | Pulumi program (TypeScript) — every Google Cloud resource except the bootstrap ones. |
 | `bootstrap.sh` | One-time, run in Cloud Shell. Creates only what Pulumi cannot create for itself. |
+| `scripts/setup-cloud-build.sh` | One-time, after `bootstrap.sh`. The pipeline's secrets and its two extra roles. |
+| `scripts/print-webhooks.sh` | Prints the two webhook URLs to paste into GitHub. |
+| `ci/` | What the Cloud Build steps run: `image.sh`, `pulumi.sh`, `comment-pr.sh`. |
 | `packages/domain` | Entities and rules. Imports nothing. |
 | `packages/application` | Use cases and the port interfaces they need. Imports domain only. |
 | `packages/infrastructure` | Adapters: the MQTT payload decoder, the scale-factor table, fixture data. |
 | `apps/web` | Next.js + shadcn/ui frontend. Deployed to Cloud Run. |
 | `scripts/check-boundaries.mjs` | Enforces the dependency rule. Runs first in CI. |
 | `.github/workflows/check.yml` | Application checks. Holds no cloud credentials. |
-| `.github/workflows/infra.yml` | Builds and pushes the web image, then runs Pulumi. Preview on PR, apply on `main`. |
+| `.github/workflows/infra.yml` | Being retired. Applies the stack until a Cloud Build run has gone green. |
+| `docs/architecture/delivery-pipeline.md` | Why builds run on Cloud Build, and what that cost. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
 | `docs/requirements/` | The frozen spec: the MQTT protocol, the meter registry, and the four screens. |
 | `reference doc/`, root `.xlsx` | Customer specifications — the source those requirements were read from. |
@@ -42,19 +46,32 @@ follows from that:
 
 **This session never holds Google Cloud credentials, and never applies infrastructure.** Claude
 edits the Pulumi program and typechecks it; a pull request gets a `pulumi preview` posted as a
-comment; merging to `main` applies it. CI authenticates with Workload Identity Federation, so no
-service-account key exists anywhere to leak.
+comment; merging to `main` applies it.
 
 So `pulumi up` is never the right command to reach for here, and a failed `pulumi preview` in-session
 is expected — it fails on missing credentials, not on a broken program. To see a real preview, open
 a PR.
 
-**CI is the only thing that runs Pulumi at all.** That invariant is what makes the workflow's
-concurrency group (repo-wide, not per-ref) sufficient to keep two runs off one state object. Two
-things in `.github/workflows/infra.yml` look like they could be simplified and must not be: the
-concurrency group stays repo-wide, and stack creation stays on `pulumi stack ls` rather than
-`stack select`, because selecting a stack that does not exist takes a lock in the state bucket and
-abandons it. Both cost a failed apply to learn.
+**Builds and deploys run on Cloud Build, not GitHub Actions**, so that GitHub is a git remote and
+nothing more: it holds a read-only deploy key and two webhooks, and no identity that can change this
+project. The reasoning, the three things this is worse at than the workflow was, and the cutover
+that is still pending are all in `docs/architecture/delivery-pipeline.md`; read it before touching
+the pipeline. The shape in one line: the trigger holds a thin inline build, step one clones the repo,
+and every later step runs a script from `ci/` in that clone — so pipeline logic is ordinary reviewed
+code and only its skeleton is a Pulumi resource.
+
+**`.github/workflows/infra.yml` is still there and still applies on main.** That is temporary and
+deliberate: the triggers are Pulumi resources, so something has to apply the stack that creates
+them. It goes once a Cloud Build preview and apply have both gone green, and the WIF section of
+`bootstrap.sh` goes with it. `check.yml` is staying — it holds no cloud credentials, and moving it
+would blur the split that keeps a failing unit test from looking like a failing apply.
+
+**CI is the only thing that runs Pulumi at all.** Two things in `ci/pulumi.sh` look like they could
+be simplified and must not be: stack creation stays on `pulumi stack ls` rather than `stack select`,
+because selecting a stack that does not exist takes a lock in the state bucket and abandons it, and
+the lock retry stays, because Cloud Build has no concurrency group — it is what keeps a second run
+waiting rather than failing. The first cost a failed apply to learn; the second is what replaces the
+guarantee the workflow's repo-wide concurrency group used to give, and it is weaker.
 
 ## Commands
 
