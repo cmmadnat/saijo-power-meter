@@ -143,13 +143,26 @@ The plan this follows is `docs/power-meter-rebuild-plan.md`, with per-step evide
 in the build log it links to. Steps 0 and 1 are done, and the deploy step was pulled forward so
 there is a live URL to look at from the start.
 
-Two things about the **Doom 64** theme are deliberate and should survive review: `--radius` is
-`0px`, so square corners are the design and not an oversight; and it names Oxanium (sans), Source
-Code Pro (mono) and Georgia (serif) without installing them. The first two are loaded via
-`next/font` in `apps/web/app/layout.tsx`, with the theme's font tokens pointed at the resulting CSS
-variables in a block appended to `apps/web/app/globals.css` — the registry's own values are left
-untouched, so re-applying the theme does not clobber the wiring. Georgia is already a system stack
-and needs nothing. Primary is `#b71c1c`, secondary `#556b2f`.
+The theme is **Light Green** (tweakcn, by Alexander VQ), which replaced Doom 64 — that one was
+picked for looks, and its light mode put page and panels 0.09 apart in lightness, which is what made
+every chart on it read flat. Light Green grounds the page at `#fbfcf8` with white cards and
+`#0f172a` ink, and `#020617` / `#0f172a` in dark. Three things about it are deliberate:
+
+- It names Inter (sans), JetBrains Mono (mono) and Georgia (serif) without installing them. The
+  first two are loaded via `next/font` in `apps/web/app/layout.tsx`, with the theme's font tokens
+  pointed at the resulting CSS variables in a block appended to `apps/web/app/globals.css` — the
+  registry's own values are left untouched, so re-applying the theme does not clobber the wiring.
+- `--radius` is `0.25rem`, not the theme's published `1rem`: 16px corners on a 15-column, 55-row
+  table read soft, and the density is the point. Square corners are no longer the design.
+- **Primary `#aff33e` is a fill, never an ink.** Lime reaches 1.34:1 on the white card, so a lime
+  border, sort arrow or focus ring is invisible; black on lime is 15.71:1, so a selected chip stays
+  lime-filled. Where the brand hue has to be text or a border, `--accent-strong` (`#4d7c0f` light,
+  the lime itself in dark) carries it, and `--ring` follows the same rule.
+
+**Freshness no longer borrows interface tokens.** live / stale / offline used to be `--secondary`,
+`--destructive` and `--primary`, which only worked while primary was a red. They are now
+`--status-live`, `--status-stale` and `--status-offline`, a reserved role that is never a
+categorical slot and never shared with chrome, checked against the card in both modes.
 
 Working in `apps/web` has two traps, both hit once already:
 
@@ -176,9 +189,11 @@ those two files, not the screens — keep it that way, and do not reach for `gen
 component.
 
 **Chart colours are the eight `--series-N` tokens in `globals.css`, not the theme's `--chart-1..5`.**
-They were validated as a categorical set against this theme's own surfaces — lightness band, chroma
-floor, CVD separation, normal-vision separation — and the light-mode contrast warning against Doom
-64's mid-grey is why every chart also ships a legend, direct end labels and a table view. A series
+They were re-validated as a categorical set against Light Green's own surfaces — lightness band,
+chroma floor, CVD separation, normal-vision separation, and now contrast too: on the white card
+slots 3, 4 and 5 had to darken to `#07a874`, `#cb8400` and `#dc7099` to clear 3:1, after which the
+validator passes every check, which it never did on Doom 64. Dark mode passed unchanged. The
+relief that the old warning obliged — a legend, direct end labels and a table view — stays. A series
 holds its slot when other series are removed, which is why the chart selection is eight slots with
 holes rather than a list. Changing any of that means re-running the validation, not just picking a
 nicer colour.

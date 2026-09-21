@@ -75,9 +75,9 @@ const STATUS_LABEL: Record<MeterStatus, string> = {
  * what a red square means to someone who cannot tell it from the green one.
  */
 const STATUS_DOT: Record<MeterStatus, string> = {
-  live: "bg-secondary",
-  stale: "bg-destructive",
-  offline: "bg-primary",
+  live: "bg-status-live",
+  stale: "bg-status-stale",
+  offline: "bg-status-offline",
 };
 
 function value(row: RealtimeTableRow, key: SortKey): string | number | null {
@@ -173,7 +173,7 @@ function SortButton({
       ].join(" ")}
     >
       <span>{label}</span>
-      <span aria-hidden className="text-primary">
+      <span aria-hidden className="text-accent-strong">
         {active ? (sort.direction === "asc" ? "▲" : "▼") : ""}
       </span>
     </button>
@@ -262,7 +262,7 @@ export function RealtimeTable({
                   "border px-2.5 py-1 text-xs transition-colors",
                   selected
                     ? "border-primary bg-primary text-primary-foreground"
-                    : "border-border text-muted-foreground hover:border-primary hover:text-foreground",
+                    : "border-border text-muted-foreground hover:border-accent-strong hover:text-foreground",
                 ].join(" ")}
               >
                 {name === ALL ? "ทั้งหมด" : name}
@@ -293,8 +293,8 @@ export function RealtimeTable({
             className={[
               "border px-2.5 py-1 uppercase tracking-wider transition-colors",
               live
-                ? "border-primary text-foreground"
-                : "border-border hover:border-primary hover:text-foreground",
+                ? "border-accent-strong text-foreground"
+                : "border-border hover:border-accent-strong hover:text-foreground",
             ].join(" ")}
           >
             {live ? "● auto 10s" : "paused"}

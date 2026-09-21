@@ -14,9 +14,9 @@ import { TIME_ZONE } from "@/lib/format";
  * a dependency and its own opinions about theming for marks this simple.
  *
  * Colour identity comes from the eight validated series slots in globals.css,
- * and each series keeps its slot when others are removed. Because Doom 64's
- * light mode is a mid-grey surface, several of those hues sit under a 3:1
- * contrast ratio against it — so no value is reachable only through colour: the
+ * and each series keeps its slot when others are removed. Every slot now clears
+ * 3:1 against its own surface in both modes, but the relief stays regardless, so
+ * no value is reachable only through colour: the
  * series key above both charts names every series and prints its current
  * numbers, lines carry direct end labels where they end clear of each other,
  * the crosshair reads every series at one instant, and each chart has a table
@@ -282,8 +282,8 @@ export function MeterChart({
             className={[
               "border px-2 py-0.5 font-mono text-[11px] uppercase tracking-wider transition-colors",
               showTable
-                ? "border-primary text-foreground"
-                : "border-border text-muted-foreground hover:border-primary hover:text-foreground",
+                ? "border-accent-strong text-foreground"
+                : "border-border text-muted-foreground hover:border-accent-strong hover:text-foreground",
             ].join(" ")}
           >
             table

@@ -192,8 +192,9 @@ changed.
 beside the plot; 8 series × 24 h loads in ~0.8 s and the crosshair reads all eight at once; the
 legend is present on every chart in both themes and the values never depend on colour (direct end
 labels where lines end clear of each other, a crosshair readout, and a table view of the same
-numbers — which is what the light-mode contrast warning against Doom 64's mid-grey surface
-obliges); the energy series climbs monotonically across 24 h, and the note under it says why; the
+numbers — which the light-mode contrast warning obliged on Doom 64's mid-grey surface, and which is
+kept now that Light Green's white card lets every slot clear 3:1); the energy series climbs
+monotonically across 24 h, and the note under it says why; the
 palette passes the lightness, chroma, CVD-separation and normal-vision checks in both modes against
 this theme's own surfaces.
 

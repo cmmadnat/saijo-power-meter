@@ -1,20 +1,22 @@
 import type { Metadata } from "next";
-import { Oxanium, Source_Code_Pro } from "next/font/google";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AppShell } from "@/components/app-shell";
 import { MeterRegistry } from "@power-meter/domain";
 import "./globals.css";
 
-// The Doom 64 theme names Oxanium (sans) and Source Code Pro (mono) without
+// The Light Green theme names Inter (sans) and JetBrains Mono (mono) without
 // installing them, so they have to be loaded here or the theme falls back to
-// system faces. Its serif is already a system stack, so nothing to load there.
-const oxanium = Oxanium({
-  variable: "--font-oxanium",
+// system faces. Its serif is Georgia, already a system stack, so nothing to
+// load there. JetBrains Mono carries every reading in the product, which is why
+// a mono with tabular figures is worth the weight.
+const inter = Inter({
+  variable: "--font-inter",
   subsets: ["latin"],
 });
 
-const sourceCodePro = Source_Code_Pro({
-  variable: "--font-source-code-pro",
+const jetbrainsMono = JetBrains_Mono({
+  variable: "--font-jetbrains-mono",
   subsets: ["latin"],
 });
 
@@ -41,7 +43,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     <html
       lang="en"
       suppressHydrationWarning
-      className={`${oxanium.variable} ${sourceCodePro.variable} h-full antialiased`}
+      className={`${inter.variable} ${jetbrainsMono.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
         <ThemeProvider>
