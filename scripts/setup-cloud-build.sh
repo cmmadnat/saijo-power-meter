@@ -155,11 +155,12 @@ cat <<OUT
      - the preview URL, with only the "Pull requests" event
      - the apply URL, with only the "Pushes" event
 
-4. Decide who hears about a failed build. Nothing reports a Cloud Build result
-   back to GitHub, so without this a broken deploy is silent. Add one line to
-   infra/Pulumi.dev.yaml and merge it:
-
-     saijo-power-meter:alertEmail: you@example.com
+4. Confirm the build-failure email. The address is set in
+   infra/Pulumi.dev.yaml (saijo-power-meter:alertEmail), and applying the stack
+   creates the notification channel — but Cloud Monitoring emails a
+   confirmation link, and the channel delivers nothing until it is clicked.
+   An unverified channel looks healthy, so check the inbox rather than
+   assuming.
 
 5. Open a pull request touching infra/ and check that a Cloud Build preview
    runs. Once it has, delete .github/workflows/infra.yml.

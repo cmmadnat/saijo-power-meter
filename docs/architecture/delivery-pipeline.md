@@ -175,16 +175,18 @@ disables the first clause, which is why `ci/report.sh` says so at the line that 
 
 ### Turning it on
 
-The address is **not** committed with a default — whose inbox this reaches is not something
-to inherit by accident. One line in `infra/Pulumi.dev.yaml`:
+The address lives in `infra/Pulumi.dev.yaml` as `saijo-power-meter:alertEmail`, and is
+currently `cmmadnat@gmail.com`. The program warns on every preview while it is unset,
+because a pipeline that announces a failure nowhere is the gap this section exists to
+close.
 
-```yaml
-saijo-power-meter:alertEmail: you@example.com
-```
+**Applying the stack is not the last step.** Cloud Monitoring sends a confirmation link to
+a new email channel, and the channel stays unverified — created happily, delivering
+nothing — until that link is clicked. The first real failure is the wrong moment to
+discover this, so check the inbox after the first apply rather than assuming.
 
-Until it is set, the program warns on every preview that a failed build will be announced
-nowhere. That warning is the honest state of things, not a nag: it is precisely the gap
-this section exists to close.
+A second stack targeting another project inherits this address. That is worth changing
+deliberately rather than by copy.
 
 Rate-limited to one notification per five minutes, which is required for a log-based
 policy and wanted anyway — a build that fails in three steps logs more than one matching
