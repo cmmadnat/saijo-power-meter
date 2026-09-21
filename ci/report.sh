@@ -1,201 +1,68 @@
 #!/usr/bin/env bash
 #
-# Report the run back to GitHub, then fail the build if any step failed.
+# Summarise the run at the end of the build log, then decide the build's verdict.
 #
-# This is the only channel by which a Cloud Build failure becomes visible
-# anywhere but the Google Cloud console. That matters for people, and it matters
-# for Claude in a cloud session, which can read GitHub and holds no Google Cloud
-# credentials at all — without this, a failed deploy is something it can be told
-# about but never look at.
+# This posts nothing anywhere. Pulling a build log into GitHub is a separate
+# workflow's job; all this does is make the log worth pulling — a run that failed
+# in step two should say so in its last twenty lines, not leave the reader
+# scrolling a Docker build to find out.
 #
-# It is also what makes the build's own status honest: every real step runs
-# under ci/step.sh with allowFailure set, so the build only turns red here.
+# It is also what makes the build's status honest. Every real step runs under
+# ci/step.sh, which swallows its exit code so that this step always runs; the
+# recorded statuses below are what turn a failure back into a failed build.
 set -uo pipefail
 
 : "${MODE:?MODE must be preview or apply}"
-: "${REPO:?REPO must be owner/name}"
 : "${SHA:?SHA must be the commit being built}"
 : "${BUILD_ID:?BUILD_ID must be set}"
 : "${GOOGLE_PROJECT:?GOOGLE_PROJECT must be set}"
 
-export EXPECTED_STEPS="${EXPECTED_STEPS:-image pulumi}"
-export PR="${PR:-}"
-export GITHUB_TOKEN="${GITHUB_TOKEN:-}"
-export PREVIEW_OUT="${PREVIEW_OUT:-/workspace/preview.txt}"
+EXPECTED_STEPS="${EXPECTED_STEPS:-image pulumi}"
 
-# "none" is the sentinel scripts/setup-cloud-build.sh stores, because Secret
-# Manager will not hold an empty payload and the secret has to exist for the
-# build to start at all.
-if [[ "$GITHUB_TOKEN" == "none" ]]; then
-  GITHUB_TOKEN=""
-fi
+echo
+echo "================================================================"
+echo " ${MODE} · ${SHA} · build ${BUILD_ID}"
+echo "================================================================"
 
-python3 - <<'PY'
-import json
-import os
-import sys
-import urllib.error
-import urllib.request
-
-repo = os.environ["REPO"]
-sha = os.environ["SHA"]
-mode = os.environ["MODE"]
-build = os.environ["BUILD_ID"]
-project = os.environ["GOOGLE_PROJECT"]
-token = os.environ["GITHUB_TOKEN"].strip()
-pr = os.environ["PR"].strip()
-steps = os.environ["EXPECTED_STEPS"].split()
-
-build_url = f"https://console.cloud.google.com/cloud-build/builds/{build}?project={project}"
-
-
-def read(path, default=None):
-    try:
-        with open(path, encoding="utf-8", errors="replace") as handle:
-            return handle.read()
-    except OSError:
-        return default
-
-
-# A step with no status file never ran, which happens when an earlier one failed.
-# That is not a pass, and reporting it as one would be the single most misleading
-# thing this script could do.
-results = []
-failed = []
-for name in steps:
-    raw = read(f"/workspace/status/{name}")
-    if raw is None:
-        results.append((name, "skipped", None))
-        continue
-    code = int(raw.strip() or "1")
-    results.append((name, "passed" if code == 0 else "failed", code))
-    if code != 0:
-        failed.append(name)
-
-ok = not failed and all(state == "passed" for _, state, _ in results)
-
-# ---------------------------------------------------------------------------
-# Compose the report
-# ---------------------------------------------------------------------------
-title = {
-    ("preview", True): "Pulumi preview — stack `dev`",
-    ("preview", False): "Pulumi preview failed — stack `dev`",
-    ("apply", True): "Deployed — stack `dev`",
-    ("apply", False): "Deploy failed — stack `dev`",
-}[(mode, ok)]
-
-parts = [f"### {'✅' if ok else '❌'} {title}\n\n"]
-parts.append(f"`{sha[:12]}` · [build log]({build_url})\n\n")
-
-parts.append("| Step | Result |\n| --- | --- |\n")
-for name, state, code in results:
-    mark = {"passed": "✅ passed", "skipped": "⬜ did not run"}.get(
-        state, f"❌ failed (exit {code})"
-    )
-    parts.append(f"| `{name}` | {mark} |\n")
-parts.append("\n")
-
-if ok and mode == "preview":
-    preview = read(os.environ["PREVIEW_OUT"], "") or ""
-    if preview.strip():
-        body = preview[-55000:]
-        if len(preview) > 55000:
-            parts.append("_Preview trimmed to the last 55,000 characters._\n\n")
-        parts.append(f"```\n{body.strip()}\n```\n")
-elif not ok:
-    # The tail, not the head: a stack trace's useful end is the last thing
-    # printed, and a truncated-from-the-front log is how a real error gets
-    # replaced by npm's install chatter.
-    for name in failed:
-        log = read(f"/workspace/logs/{name}.log", "") or ""
-        tail = log[-12000:].strip()
-        parts.append(f"<details open>\n<summary>Last output of <code>{name}</code></summary>\n\n")
-        parts.append(f"```\n{tail or '(no output captured)'}\n```\n\n</details>\n\n")
-
-parts.append("\n---\n_Generated by [Claude Code](https://claude.ai/code)_\n")
-report = "".join(parts)
-
-print(report)
-
-if not token:
-    print("--- No GitHub token stored, so nothing was posted.")
-    print("--- The report above is in this build's log, and nowhere else.")
-    print("--- To enable posting, store a fine-grained token:")
-    print("---   gcloud secrets versions add github-pr-token --data-file=-")
-    sys.exit(0)
-
-
-def call(method, path, payload=None):
-    request = urllib.request.Request(
-        f"https://api.github.com{path}",
-        method=method,
-        data=json.dumps(payload).encode() if payload is not None else None,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "Content-Type": "application/json",
-            "User-Agent": "saijo-power-meter-pipeline",
-        },
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            return response.status, json.loads(response.read() or b"null")
-    except urllib.error.HTTPError as error:
-        return error.code, error.read().decode(errors="replace")
-    except OSError as error:
-        return None, str(error)
-
-
-# The commit status is the cheap half: it puts a red or green mark on the commit
-# and the pull request, pointing at the build. It is what replaces the check that
-# GitHub Actions posted for free.
-status, detail = call(
-    "POST",
-    f"/repos/{repo}/statuses/{sha}",
-    {
-        "state": "success" if ok else "failure",
-        "context": f"cloud-build / {mode}",
-        "description": (title[:140]),
-        "target_url": build_url,
-    },
-)
-if status == 201:
-    print(f"--- Commit status posted on {sha[:12]}.")
-else:
-    print(f"--- Commit status not posted (HTTP {status}): {detail}")
-    print("--- The token needs 'Commit statuses: read and write'.")
-
-# The comment is the half that carries the actual output. An apply run has no
-# pull request number to hand, so it finds the one the commit came from; a
-# direct push to main has none, and a commit comment is the fallback.
-if not pr:
-    status, data = call("GET", f"/repos/{repo}/commits/{sha}/pulls")
-    if status == 200 and isinstance(data, list) and data:
-        pr = str(data[0].get("number", ""))
-
-if pr:
-    status, detail = call("POST", f"/repos/{repo}/issues/{pr}/comments", {"body": report})
-    where = f"{repo}#{pr}"
-else:
-    status, detail = call("POST", f"/repos/{repo}/commits/{sha}/comments", {"body": report})
-    where = f"{repo}@{sha[:12]}"
-
-if status == 201:
-    print(f"--- Report posted on {where}.")
-else:
-    print(f"--- Report not posted (HTTP {status}): {detail}")
-    print("--- The token needs 'Pull requests: read and write'.")
-PY
-
-# Everything above is reporting, and a failure to report is not a failure to
-# deploy. The build's own verdict comes from the step statuses alone.
+failed=()
 for name in $EXPECTED_STEPS; do
-  code="$(cat "/workspace/status/${name}" 2>/dev/null || echo 1)"
-  if [[ "$code" != "0" ]]; then
-    echo "Step '${name}' did not succeed — failing the build."
-    exit 1
+  path="/workspace/status/${name}"
+  if [[ ! -f "$path" ]]; then
+    # No status file means the step never ran, which happens when an earlier one
+    # failed. That is not a pass, and reporting it as one would be the single
+    # most misleading thing this script could do.
+    printf '  %-10s did not run\n' "$name"
+    failed+=("$name")
+    continue
+  fi
+  code="$(cat "$path")"
+  if [[ "$code" == "0" ]]; then
+    printf '  %-10s passed\n' "$name"
+  else
+    printf '  %-10s FAILED (exit %s)\n' "$name" "$code"
+    failed+=("$name")
   fi
 done
+echo "================================================================"
 
-echo "All steps succeeded."
+if [[ ${#failed[@]} -eq 0 ]]; then
+  echo "All steps succeeded."
+  exit 0
+fi
+
+# The tail, not the head: a failure's useful end is the last thing printed, and
+# a log re-read from the front is how a real error gets buried under npm's
+# install chatter. The full output of every step is above this summary anyway —
+# this is the part worth reading first.
+for name in "${failed[@]}"; do
+  log="/workspace/logs/${name}.log"
+  [[ -f "$log" ]] || continue
+  echo
+  echo "---- last 80 lines of '${name}' ------------------------------"
+  tail -n 80 "$log"
+  echo "---- end of '${name}' ----------------------------------------"
+done
+
+echo
+echo "Build failed in: ${failed[*]}"
+exit 1

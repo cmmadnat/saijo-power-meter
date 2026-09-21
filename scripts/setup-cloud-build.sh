@@ -6,7 +6,7 @@
 # It creates only what Pulumi cannot create for itself:
 #   - the APIs the pipeline's own resources need
 #   - the two project roles the deployer account needs to declare a pipeline
-#   - three Secret Manager secrets, because a secret VALUE cannot live in code,
+#   - two Secret Manager secrets, because a secret VALUE cannot live in code,
 #     and because the deploy key must exist before the first build can clone
 #     anything at all
 #
@@ -83,27 +83,10 @@ log "Webhook secret"
 openssl rand -hex 32 > "$WORK/webhook_secret"
 create_secret github-webhook-secret "$WORK/webhook_secret"
 
-log "GitHub reporting token (optional, but it is how failures become visible)"
-# Created as the sentinel "none" rather than empty, because Secret Manager
-# rejects an empty payload. The pipeline treats that value as "do not post" and
-# carries on, so a run never fails for want of a token — but with none stored,
-# a Cloud Build failure exists only in the Google Cloud console, which is the
-# one place neither a pull request reviewer nor a cloud session can see.
-#
-# Fill it in with a fine-grained token on this repository only, carrying:
-#   Pull requests:    read and write   (the comment with the preview or the
-#                                       tail of whatever failed)
-#   Commit statuses:  read and write   (the red or green mark on the commit,
-#                                       replacing the check Actions posted)
-#   Contents:         read             (finding the pull request a commit
-#                                       belongs to)
-printf 'none' > "$WORK/pr_token"
-create_secret github-pr-token "$WORK/pr_token"
-
-# The deployer reads all three at build time. It holds roles/secretmanager.admin
+# The deployer reads both at build time. It holds roles/secretmanager.admin
 # already, so this is belt and braces for a project where that was narrowed.
 log "Secret access"
-for secret in github-deploy-key github-webhook-secret github-pr-token; do
+for secret in github-deploy-key github-webhook-secret; do
   gcloud secrets add-iam-policy-binding "$secret" \
     --project "$PROJECT_ID" \
     --member "serviceAccount:${SA_EMAIL}" \
@@ -170,13 +153,11 @@ cat <<OUT
      - the preview URL, with only the "Pull requests" event
      - the apply URL, with only the "Pushes" event
 
-4. Store a reporting token, or failures stay invisible outside the console:
+4. Open a pull request touching infra/ and check that a Cloud Build preview
+   runs. Once it has, delete .github/workflows/infra.yml.
 
-     gcloud secrets versions add github-pr-token --project ${PROJECT_ID} --data-file=-
+   Builds are tagged with the commit they built, so the log for one is:
 
-   Fine-grained, this repository only, Pull requests: read and write plus
-   Commit statuses: read and write.
-
-5. Open a pull request touching infra/ and check that the Cloud Build preview
-   runs and comments. Once it does, delete .github/workflows/infra.yml.
+     gcloud builds list --project ${PROJECT_ID} --filter "tags=<sha>"
+     gcloud builds log <build-id> --project ${PROJECT_ID}
 OUT

@@ -242,40 +242,36 @@ function pipelineBuild(mode: "preview" | "apply"): gcp.types.input.cloudbuild.Tr
 
     const secrets: gcp.types.input.cloudbuild.TriggerBuildAvailableSecretsSecretManager[] = [
         { versionName: secretVersion("github-deploy-key"), env: "DEPLOY_KEY" },
-        // Needed on apply runs too, not just previews: a failed deploy on main
-        // is the report that matters most, and it is the one nobody is watching
-        // a pull request for.
-        { versionName: secretVersion("github-pr-token"), env: "GITHUB_TOKEN" },
     ];
 
     // Always last, and always runs, because nothing ahead of it can fail. It
-    // posts the outcome to GitHub — a commit status plus a comment carrying the
-    // preview, or the tail of whatever failed — and then exits non-zero if any
-    // step failed. That comment is the only way a Cloud Build failure reaches
-    // anywhere outside the Google Cloud console.
-    const reportEnvs = [
-        `MODE=${mode}`,
-        `GOOGLE_PROJECT=${projectId}`,
-        `REPO=${repoSlug}`,
-        "SHA=${_SHA}",
-        "BUILD_ID=$BUILD_ID",
-        "EXPECTED_STEPS=image pulumi",
-    ];
-    if (mode === "preview") {
-        reportEnvs.push("PR=${_PR}");
-    }
+    // posts nothing anywhere — pulling this log into GitHub is a separate
+    // workflow's job. What it does is end the log with a step-by-step verdict
+    // and the tail of whatever failed, so that a pulled log is readable from its
+    // last page rather than its first, and then exit non-zero if any step
+    // failed, which is what makes the build's own status honest.
     steps.push({
         id: "report",
         name: "gcr.io/google.com/cloudsdktool/cloud-sdk:slim",
         dir: "/workspace/src",
         entrypoint: "bash",
         args: ["ci/report.sh"],
-        secretEnvs: ["GITHUB_TOKEN"],
-        envs: reportEnvs,
+        envs: [
+            `MODE=${mode}`,
+            `GOOGLE_PROJECT=${projectId}`,
+            "SHA=${_SHA}",
+            "BUILD_ID=$BUILD_ID",
+            "EXPECTED_STEPS=image pulumi",
+        ],
     });
 
     return {
         steps,
+        // Tagged so a build can be found by the commit it built, which is the
+        // only handle an outside caller has: a webhook trigger's run is not
+        // announced anywhere, so `gcloud builds list --filter "tags=<sha>"` is
+        // how anything downstream locates the log to pull.
+        tags: [mode, "${_SHA}"],
         timeout: "2400s",
         // Cloud Build has no equivalent of the workflow's repo-wide concurrency
         // group. Two runs can start at once, and the second one waits on
@@ -366,6 +362,59 @@ const applyTrigger = new gcp.cloudbuild.Trigger(
     },
     { dependsOn: services },
 );
+
+// ---------------------------------------------------------------------------
+// Reading a build log from outside
+// ---------------------------------------------------------------------------
+// A webhook trigger's run announces itself nowhere: no check, no status, no
+// comment. Whatever wants to show a build log in GitHub has to come and fetch
+// it, and fetching needs an identity.
+//
+// This is that identity, and it is deliberately not the deployer. A log reader
+// that can also deploy is a log reader nobody should be handing to a workflow;
+// these two roles can read builds and their logs and do nothing else.
+const logReaderPool = process.env.WIF_POOL_ID ?? "github";
+const projectNumber = pulumi.output(gcp.organizations.getProject({})).number;
+
+const logReader = new gcp.serviceaccount.Account(
+    "build-log-reader",
+    {
+        accountId: "build-log-reader",
+        displayName: "Reads Cloud Build logs (no deploy rights)",
+    },
+    { dependsOn: services },
+);
+
+for (const [name, role] of [
+    ["builds", "roles/cloudbuild.builds.viewer"],
+    // Builds log to Cloud Logging, not a bucket — see buildOptions above — so
+    // listing a build and reading its log are two different permissions.
+    ["logs", "roles/logging.viewer"],
+]) {
+    new gcp.projects.IAMMember(`log-reader-${name}`, {
+        project: projectId,
+        role,
+        member: pulumi.interpolate`serviceAccount:${logReader.email}`,
+    });
+}
+
+// Reuses the Workload Identity Federation pool bootstrap.sh created for GitHub
+// Actions. That pool was going to be deleted along with infra.yml; it stays,
+// because this is now what it is for — keyless, repository-scoped, and pointed
+// at an account that cannot deploy.
+new gcp.serviceaccount.IAMMember("log-reader-wif", {
+    serviceAccountId: logReader.name,
+    role: "roles/iam.workloadIdentityUser",
+    member: pulumi.interpolate`principalSet://iam.googleapis.com/projects/${projectNumber}/locations/global/workloadIdentityPools/${logReaderPool}/attribute.repository/${repoSlug}`,
+});
+
+// Everything a workflow needs to authenticate and find a build. Not secret: a
+// WIF provider path and a service account email are useless without the pool's
+// attribute condition being satisfied, which only this repository can do.
+export const buildLogReader = {
+    serviceAccount: logReader.email,
+    wifProvider: pulumi.interpolate`projects/${projectNumber}/locations/global/workloadIdentityPools/${logReaderPool}/providers/github-oidc`,
+};
 
 export const pipelineTriggers = {
     preview: previewTrigger.name,

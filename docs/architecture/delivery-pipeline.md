@@ -39,7 +39,7 @@ So the inline build is kept thin, and it is the same four steps every time:
 | `clone` | `cloud-builders/git` | Clones over SSH with the deploy key, checks out the exact commit. |
 | `image` | `cloud-builders/docker` | `ci/image.sh` — builds the web image; pushes it only on apply. |
 | `pulumi` | `pulumi/pulumi-nodejs` | `ci/pulumi.sh` — previews or applies the stack. |
-| `report` | `cloud-sdk:slim` | `ci/report.sh` — posts the outcome to GitHub, then decides the build's verdict. |
+| `report` | `cloud-sdk:slim` | `ci/report.sh` — summarises the run at the end of the log, then decides the build's verdict. |
 
 Everything after the clone runs a script from `ci/` **in the cloned repository**. That is
 what keeps pipeline logic versioned, reviewable and diffable in an ordinary pull request,
@@ -56,66 +56,76 @@ account with the same grants would be a second thing to audit. It gained two rol
 declaring the pipeline (`cloudbuild.builds.editor`, `serviceusage.apiKeysAdmin`) and one
 for running inside it (`logging.logWriter`).
 
-## Seeing a failure
+## The build log, and how anything outside gets at it
 
-A Cloud Build failure is, by default, visible in exactly one place: the Google Cloud
-console. That is a worse place than it sounds. A reviewer on a pull request does not go
-there, and a Claude cloud session **cannot** go there — it holds no Google Cloud
-credentials, on purpose, and that is not going to change. GitHub Actions solved this
-incidentally, by being inside GitHub.
+A Cloud Build run announces itself nowhere. There is no check, no commit status, no
+comment — a webhook trigger has no channel back to GitHub, because the GitHub App that
+would provide one is the thing this setup exists to avoid. Whatever wants to surface a
+build log in GitHub has to come and fetch it.
 
-So the pipeline reports back out, and GitHub is the channel, because GitHub is what both
-a reviewer and a cloud session can already read:
+**That fetching is a separate workflow's job, and is not in this repository.** What the
+pipeline owes it is two things: a log worth pulling, and a way to find the right one.
 
-- **A commit status** on the built commit — red or green, with a link to the build. This
-  is what replaces the check Actions posted for free.
-- **A comment** carrying the actual content: a step-by-step table, and then either the
-  Pulumi preview (on a successful preview run) or the **last 12,000 characters of
-  whatever failed**. The tail, not the head — a stack trace's useful end is the last
-  thing printed, and truncating from the front is how a real error gets replaced by
-  npm's install chatter.
+### Finding the build
 
-On a preview run the comment goes on the pull request. On an apply run there is no pull
-request number to hand, so `ci/report.sh` looks up the one the commit came from; a direct
-push to `main` with no pull request falls back to a commit comment. Either way it lands
-somewhere `mcp__github__*` can read it, which is the whole point: *"CI is red, look at it"*
-stays a thing that can actually be acted on.
+Every build is tagged with the commit it built and with its mode, so a commit SHA is
+enough of a handle:
 
-### Why every step runs under a wrapper
+```bash
+gcloud builds list --project <project> --filter "tags=<sha>" --format 'value(id,status)'
+gcloud builds log <build-id> --project <project>
+```
 
-Cloud Build has no `if: always()`. A failing step stops the build dead, so a reporting
-step placed last would be precisely the step that never runs on the one occasion it
-matters.
+Builds log to Cloud Logging, not a bucket, so `builds list` and `builds log` are two
+different permissions.
 
-`ci/step.sh` is the way around it. Every real step runs under it; it tees the step's
-output to `/workspace/logs/<name>.log`, records the exit code to
-`/workspace/status/<name>`, and always exits clean. `ci/report.sh` then reads those files,
-posts the report, and **exits non-zero itself if any step failed** — so a red build still
-reads as red in the console, and a step that never ran is reported as "did not run" rather
-than quietly counted as a pass.
+### The identity to fetch with
+
+`infra/index.ts` declares a `build-log-reader` service account carrying exactly
+`cloudbuild.builds.viewer` and `logging.viewer`, and nothing else. It is deliberately not
+the deployer: a log reader that can also deploy is not something to hand to a workflow.
+
+It is reachable by Workload Identity Federation through the pool `bootstrap.sh` already
+created — keyless, and scoped by attribute condition to this repository alone. The stack
+exports what a workflow needs to authenticate:
+
+```
+buildLogReader.serviceAccount   the account to impersonate
+buildLogReader.wifProvider      the provider to present a GitHub OIDC token to
+```
+
+Neither is a secret. Both are useless without satisfying the pool's attribute condition,
+which only this repository can do.
+
+This is the reason the Workload Identity Federation section of `bootstrap.sh` **stays**.
+It was going to be deleted along with `infra.yml`; it now has a second, narrower purpose.
+
+### Making the log worth pulling
+
+A raw Cloud Build log opens on whatever failed *last*, which is usually not what failed
+*first*, and a Docker build's output can bury a one-line Pulumi error under a thousand
+lines of npm chatter. Two pieces address that.
+
+`ci/step.sh` wraps every real step. It tees the step's output to
+`/workspace/logs/<name>.log`, records the exit code to `/workspace/status/<name>`, and
+always exits clean.
+
+`ci/report.sh` then runs last — and *always* runs, because nothing ahead of it can fail.
+It ends the log with a step-by-step verdict and the last 80 lines of whatever failed, so a
+pulled log is readable from its last page rather than its first. Then it exits non-zero if
+any step failed, which is what makes the build's own red-or-green status honest.
+
+Why the wrapper exists at all: Cloud Build has no `if: always()`. A failing step stops the
+build dead, so a summary step placed last would be precisely the step that never runs on
+the one occasion it matters.
 
 Two consequences worth knowing:
 
-- **A failed clone reports nothing.** `ci/report.sh` lives in the repository it would have
-  cloned. In practice a clone failure means the deploy key is wrong, which is a setup
-  problem visible the first time anything runs — not a regression that appears months
-  later. If that ever stops being acceptable, the answer is a Pub/Sub subscription on the
-  `cloud-builds` topic and a small notifier outside the build.
-- **Reporting is best-effort; the verdict is not.** A GitHub outage means no comment, and
-  the build still fails correctly. The exit code comes from the recorded step statuses
-  alone, never from whether the post succeeded.
-
-### The token, and what it costs
-
-Posting needs a GitHub credential, and that is the one place this design puts something
-back in GitHub's direction. It is outbound — held in Secret Manager, used from inside
-Google Cloud — and it is fine-grained: this repository only, `Pull requests: read and
-write` and `Commit statuses: read and write`. No contents write, so it cannot push.
-
-It is **optional**. With the sentinel `none` stored, `ci/report.sh` prints the whole
-report into the build log, says loudly that it posted nothing, and exits clean. Nothing
-fails for want of a token — you simply go blind, which is the trade to make consciously
-rather than by accident.
+- **A step that never ran is reported as "did not run"**, never as a pass. Silently
+  counting a skipped step as green would be the most misleading thing this could do.
+- **A failed clone summarises nothing**, because `ci/report.sh` lives in the repository it
+  would have cloned. The build still fails, and the log still shows the clone failing. In
+  practice that means a wrong deploy key, which shows up the first time anything runs.
 
 ## The one security boundary that had to be rebuilt
 
@@ -152,10 +162,11 @@ now runs the pipeline, so a README-only commit costs a build. A wasted build, no
 deploy — the image is content-addressed by commit and Pulumi no-ops on an unchanged
 stack.
 
-**Reporting is hand-rolled.** `pulumi/actions` posted the preview for free, and GitHub
-posted the check. `ci/report.sh` does both, with a stored token. See *Seeing a failure*
-above — it is the part of this migration that took the most care, because losing it means
-losing the ability to look at a broken deploy at all.
+**Nothing reports back to GitHub.** `pulumi/actions` posted the preview as a comment, and
+GitHub posted the check, both for free. A webhook trigger can do neither. The preview and
+the failure detail live in the build log, and getting them in front of a reviewer is a
+separate workflow's job — see *The build log* above for the handle and the identity it
+needs. This is the largest thing the migration gave up.
 
 ## Two invariants that cost a failed apply to learn
 
@@ -198,5 +209,8 @@ something has to apply the stack that creates them, and until a Cloud Build run 
 green that something is the workflow it replaces.
 
 Once a Cloud Build preview and a Cloud Build apply have both succeeded, delete
-`.github/workflows/infra.yml`, delete the five `GCP_*` repository variables, and remove
-the Workload Identity Federation section from `bootstrap.sh`. Nothing else uses any of it.
+`.github/workflows/infra.yml` and the five `GCP_*` repository variables.
+
+The Workload Identity Federation section of `bootstrap.sh` **stays**, which is a change of
+plan: it is what a log-pulling workflow authenticates through, now pointed at the
+read-only `build-log-reader` account rather than the deployer.

@@ -60,14 +60,24 @@ the pipeline. The shape in one line: the trigger holds a thin inline build, step
 and every later step runs a script from `ci/` in that clone — so pipeline logic is ordinary reviewed
 code and only its skeleton is a Pulumi resource.
 
-**A Cloud Build failure is only visible because the pipeline posts it to GitHub.** This
-session holds no Google Cloud credentials and cannot open the console, so `ci/report.sh`
-is the entire channel: it puts a commit status and a comment — the step table plus the
-tail of whatever failed — on the pull request, or on the pull request the commit came
-from. Read a red deploy with the `mcp__github__*` tools, the same way an Actions log used
-to be read. If a run reports nothing at all, the first thing to check is whether
-`github-pr-token` still holds the sentinel `none`; the second is whether the `clone` step
-failed, which is the one failure that cannot report itself.
+**A Cloud Build run reports to nobody — the log has to be fetched.** A webhook trigger
+posts no check, no status and no comment, so the preview and any failure detail live only
+in the build log. Pulling that log into GitHub is a separate workflow, built elsewhere and
+not in this repository; what this side owes it is a handle and an identity. Builds are
+tagged with the commit they built (`gcloud builds list --filter "tags=<sha>"`, then
+`gcloud builds log <id>`), and `infra/index.ts` declares a `build-log-reader` service
+account holding `cloudbuild.builds.viewer` and `logging.viewer` and nothing else,
+reachable by WIF through the pool `bootstrap.sh` already created. That pool now stays
+rather than being deleted with `infra.yml`. Do not widen that account, and do not hand a
+log reader the deployer.
+
+**`ci/step.sh` and `ci/report.sh` exist because Cloud Build has no `if: always()`.** Every
+real step runs under the wrapper, which captures its output and swallows its exit code;
+the report step then always runs, ends the log with a step-by-step verdict and the last 80
+lines of whatever failed, and exits non-zero itself so a red build reads as red. A step
+that never ran is reported as "did not run", never as a pass. The one failure that cannot
+summarise itself is a failed clone, since `report.sh` lives in the repository it would
+have cloned.
 
 **`.github/workflows/infra.yml` is still there and still applies on main.** That is temporary and
 deliberate: the triggers are Pulumi resources, so something has to apply the stack that creates
