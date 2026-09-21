@@ -95,6 +95,11 @@ function round(value: number, places: number): number {
  *
  * Weighted so a factory's worth of meters looks like one: mostly running, a few
  * duty-cycling, a couple idle, and one station's worth of silence.
+ *
+ * It is a function of the meter's position in the registry, which makes it a
+ * property of the fleet rather than of the meter - so generating for a subset
+ * would re-roll everyone. `defaultProfiles` is the fix: take the assignment
+ * once from the whole registry and pass it in.
  */
 function assignProfile(index: number): MeterProfile {
   if (index % 17 === 3) return "offline";
@@ -107,6 +112,24 @@ function assignProfile(index: number): MeterProfile {
 function ratedPowerKw(meter: Meter): number {
   const random = mulberry32(hash(meter.meterId));
   return round(8 + random() * 92, 1);
+}
+
+/**
+ * The profile every commissioned meter gets from the full registry.
+ *
+ * A caller generating for a handful of meters - one chart's selection, say -
+ * passes this so each meter keeps the behaviour it has in the whole fleet.
+ * Without it a meter that is idle among 55 could come back running among four,
+ * and two screens would disagree about the same machine.
+ */
+export function defaultProfiles(
+  registry: MeterRegistry = MeterRegistry.fromWorkbook(),
+): Record<string, MeterProfile> {
+  const profiles: Record<string, MeterProfile> = {};
+  registry.commissioned().forEach((meter, index) => {
+    profiles[meter.meterId] = assignProfile(index);
+  });
+  return profiles;
 }
 
 export function generateFixtures(options: FixtureOptions): FixtureSet {
@@ -154,14 +177,22 @@ export function generateFixtures(options: FixtureOptions): FixtureSet {
         ? from.getTime() + (to.getTime() - from.getTime()) * (0.2 + random() * 0.2)
         : Number.POSITIVE_INFINITY;
 
-    let energyKwh = round(1000 + random() * 9000, 1);
+    // Accumulated at full precision and rounded only when emitted. Rounding the
+    // running total at every step instead loses any increment below 0.05 kWh
+    // entirely, which silently zeroes the consumption of every idle meter - the
+    // ones whose standby draw the History screen exists to make visible.
+    let energyExact = round(1000 + random() * 9000, 1);
     let resetApplied = false;
 
     for (let t = from.getTime(); t < to.getTime(); t += intervalMs) {
       if (t >= silentFrom) break;
 
       const at = new Date(t);
-      const hours = (t - from.getTime()) / 3_600_000;
+      // Absolute hours, not hours since the window started: a meter's load has
+      // to be a function of when it is, or the same machine at the same instant
+      // would read one way on a 45-minute window and another on a six-hour one,
+      // and the table and the charts would disagree about it on the same page.
+      const hours = t / 3_600_000;
       const duty = Math.sin(phaseOffset + hours * 1.7);
 
       let activePowerKw: number;
@@ -207,7 +238,7 @@ export function generateFixtures(options: FixtureOptions): FixtureSet {
           1,
         );
 
-      energyKwh = round(energyKwh + (activePowerKw * intervalMs) / 3_600_000, 1);
+      energyExact += (activePowerKw * intervalMs) / 3_600_000;
       if (
         !resetApplied &&
         resetFor === meter.meterId &&
@@ -217,7 +248,7 @@ export function generateFixtures(options: FixtureOptions): FixtureSet {
         // A meter replacement, once: the counter starts again from near zero
         // and climbs from there. The History total must not read the step down
         // as consumption going backwards.
-        energyKwh = round(random() * 2, 1);
+        energyExact = round(random() * 2, 1);
         resetApplied = true;
       }
 
@@ -232,7 +263,7 @@ export function generateFixtures(options: FixtureOptions): FixtureSet {
         },
         activePowerKw,
         powerFactor,
-        energyKwh,
+        energyKwh: round(energyExact, 1),
       });
     }
   });

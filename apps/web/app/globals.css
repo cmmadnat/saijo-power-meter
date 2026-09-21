@@ -206,3 +206,45 @@
   --font-sans: var(--font-oxanium), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-source-code-pro), ui-monospace, monospace;
 }
+
+/* ---------------------------------------------------------------------------
+   Series colours for the real-time charts.
+
+   Not the theme's own --chart-1..5: those are five slots, two of them below the
+   chroma floor at which a hue stops carrying identity, and they were never
+   validated as a categorical set. These are the eight-slot palette from the
+   data-visualisation guidance, each mode stepped for its own surface and
+   checked with its validator against this theme's card colour (#b0b0b0 light,
+   #2a2a2a dark): lightness band, chroma floor, CVD separation under simulated
+   protanopia and deuteranopia, and normal-vision separation all pass in both
+   modes.
+
+   Contrast against the light surface warns below 3:1 — Doom 64's light mode is
+   a mid-grey, not white — so the charts ship the relief that warning requires:
+   a legend on every chart, direct end labels, and a table view of the same
+   numbers. Colour is never the only way to read a value.
+
+   Slots are assigned per meter and held, so removing one series never repaints
+   the others.
+   --------------------------------------------------------------------------- */
+:root {
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+  --series-5: #e87ba4;
+  --series-6: #008300;
+  --series-7: #4a3aa7;
+  --series-8: #e34948;
+}
+
+.dark {
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+  --series-5: #d55181;
+  --series-6: #008300;
+  --series-7: #9085e9;
+  --series-8: #e66767;
+}

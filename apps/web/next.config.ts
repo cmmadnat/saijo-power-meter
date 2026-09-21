@@ -15,9 +15,13 @@ const nextConfig: NextConfig = {
   // .next/standalone/apps/web/server.js, which the Dockerfile accounts for.
   outputFileTracingRoot: path.join(import.meta.dirname, "../.."),
 
-  // The domain and application layers ship as TypeScript source rather than a
-  // build step, so Next has to compile them like its own code.
-  transpilePackages: ["@power-meter/domain", "@power-meter/application"],
+  // The workspace packages ship as TypeScript source rather than a build step,
+  // so Next has to compile them like its own code.
+  transpilePackages: [
+    "@power-meter/domain",
+    "@power-meter/application",
+    "@power-meter/infrastructure",
+  ],
 };
 
 export default nextConfig;

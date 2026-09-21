@@ -15,8 +15,9 @@ Greenfield. Two kinds of material sit alongside the code, and they pull in oppos
 
 Built so far: the Google Cloud footprint as Pulumi code, the pipeline that builds and applies it,
 the frontend shell — scaffolded, themed, and deployed to Cloud Run so there is a live URL from the
-start — and the domain model, the MQTT payload decoder and the fixture generator the screens will be
-built on. The screens themselves are still placeholders; no meter data flows yet.
+start — the domain model, the MQTT payload decoder and the fixture generator, and the three
+real-time screens: the table and the two charts, all on fixture data. Only History is still a
+placeholder; no meter data flows yet.
 
 | Path | What it is |
 | --- | --- |
@@ -30,7 +31,8 @@ built on. The screens themselves are still placeholders; no meter data flows yet
 | `.github/workflows/check.yml` | Application checks. Holds no cloud credentials. |
 | `.github/workflows/infra.yml` | Builds and pushes the web image, then runs Pulumi. Preview on PR, apply on `main`. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
-| `reference doc/`, root `.xlsx` | Customer specifications — the requirements source, unread so far. |
+| `docs/requirements/` | The frozen spec: the MQTT protocol, the meter registry, and the four screens. |
+| `reference doc/`, root `.xlsx` | Customer specifications — the source those requirements were read from. |
 | `reference/` | Old implementation. Look, never copy. |
 
 ## How infrastructure changes reach the cloud
@@ -161,9 +163,44 @@ Working in `apps/web` has two traps, both hit once already:
   traced in at all. There is no hoisted `node_modules` beside it — tracing puts everything under
   `apps/web`. The Dockerfile flattens this; changing either setting means re-checking it.
 
-Steps 0–2 are done: the spec is frozen into `docs/requirements/`, the shell is deployed, and the
-domain model, decoder and fixtures are in place with tests. Remaining, in order: the four screens on
-those fixtures, then the store, the MQTT ingester, and the passcode gate.
+Steps 0–4 are done: the spec is frozen into `docs/requirements/` (including all four screens, in
+`power-meter-ui.md`), the shell is deployed, the domain model, decoder and fixtures are in place with
+tests, and the Real time route carries screens 1–3 — the 55-meter table and the kW and kWh charts —
+on those fixtures. Remaining, in order: the History screen, then the store, the MQTT ingester, and
+the passcode gate.
+
+**The screens read their data through two files, `apps/web/lib/realtime-source.ts` and
+`apps/web/lib/series-source.ts`.** They are the only places that know the numbers are fixtures:
+everything above them goes through a use case in `packages/application` and a port. Step 8 replaces
+those two files, not the screens — keep it that way, and do not reach for `generateFixtures` from a
+component.
+
+**Chart colours are the eight `--series-N` tokens in `globals.css`, not the theme's `--chart-1..5`.**
+They were validated as a categorical set against this theme's own surfaces — lightness band, chroma
+floor, CVD separation, normal-vision separation — and the light-mode contrast warning against Doom
+64's mid-grey is why every chart also ships a legend, direct end labels and a table view. A series
+holds its slot when other series are removed, which is why the chart selection is eight slots with
+holes rather than a list. Changing any of that means re-running the validation, not just picking a
+nicer colour.
+
+**Fixture load is a function of absolute time, profiles come from the whole fleet, and energy
+accumulates at full precision.** The first two exist so two screens generating different windows, or
+different subsets of meters, agree about the same machine at the same instant — pass
+`defaultProfiles(registry)` when generating for a subset. The third exists because rounding the
+counter at every step swallowed any increment under 0.05 kWh, which zeroed every idle meter's
+consumption: round when emitting, never while accumulating.
+
+**The energy chart plots consumption across the window, not the raw counter** — `consumptionFrom()`
+in `packages/application/src/series.ts`, which is also where step 5's Total Energy comes from, reset
+rule and all. Do not write a second version of that arithmetic. It is a reading of specification page
+3 rather than a literal rendering of it, and it is flagged for the customer in
+`docs/requirements/power-meter-ui.md`.
+
+Two things the specification asks for that the workbook has no column for, both decided and both
+written down as questions back to the customer in `docs/requirements/power-meter-ui.md`: the
+**machine number** (parsed out of the one `Name` field, only when the suffix looks like a code — 27
+of 55 have one) and the **meter number** (station and meter id, `01-1`, not the mock-up's flat
+1–55). Both live in `packages/domain/src/meter.ts` with their cases as tests.
 
 **Two of the nine scale factors are guesses, and the code says so.** `packages/infrastructure/src/mqtt/scaling.ts`
 holds every divisor with its confidence and the evidence behind it; the two marked `assumed` — active
