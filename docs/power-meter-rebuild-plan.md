@@ -233,16 +233,33 @@ strength and drops the other seven to 0.18 opacity, checked in the browser; 8 se
 loads in ~0.8 s; both themes, 1920×1080 and 1024×768, no page-level horizontal scroll, no console
 errors.
 
-### Step 5 — History (screen 4)
-Department + date/time range filters, table of Total Energy (kWh) and running hours (Hr:min). All
-day boundaries and picker values in **Asia/Bangkok**; instants stored UTC, converted at the edges.
-Total energy = last kWh reading − first kWh reading in the window, **with counter-reset handling**.
-Running hours = time above standby level. Both computed client-side over fixtures for now, in pure
-functions that move to the backend unchanged in step 8.
+### Step 5 — History (screen 4) — **done**
+Department + date/time range filters, table of Total Energy (kWh) and running hours (Hr:min), all
+boundaries in **Asia/Bangkok** with instants kept UTC underneath. Shipped:
 
-*Verify:* hand-computed expected values on a small fixture match to the minute; a counter reset
-inside the window does not produce a negative total; empty range and single-reading range both
-behave.
+- `packages/application/src/history.ts` — one pass over the readings stream produces both
+  quantities. Total energy is the last value of `consumptionFrom()`, the same walk the energy chart
+  plots, so the counter-reset rule has one implementation rather than two. Running time sums the
+  gaps between readings, each credited to the state at its start.
+- `apps/web/lib/history-source.ts` — the third and last of the fixture adapters, and the only place
+  the Bangkok offset is applied. Thailand has had no daylight saving since 1920, so a picker value
+  converts by appending `+07:00`, which is exact rather than approximately right.
+- `apps/web/components/history-filters.tsx` and `apps/web/app/history/page.tsx` — the filter row as
+  the mock-up lays it out, and the six specified columns. A plain `<form method="get">`: this
+  screen's whole state is five values that belong in the URL anyway, so it needs no client component
+  and works with no JavaScript at all.
+
+**A gap longer than three minutes is not running time.** Running hours read a sampled signal, and
+the honest reading of a silence is that nothing is known through it — not that the machine kept
+running at whatever it was last seen doing. The cap matches the offline threshold. The energy the
+counter accumulated meanwhile is still counted, because the counter carries it.
+
+*Verified:* nine hand-computed tests in `history.test.ts` — minute-by-minute energy and running
+time, a counter reset inside the window that does not go negative, a meter with no readings, a
+single reading (zero consumption, not null), a gap past the cap, the department filter, the
+half-open boundary, and an inverted range that is rejected. Built and run: an 08:00–17:00 window
+over the 55 fixtures totals 12 938.9 kWh and 332:12, with continuously-running meters at 8:59 of a
+nine-hour window; screenshots taken in both themes, and the malformed-range fallback checked.
 
 **← At this point the customer can review the whole app and we have changed no infrastructure.**
 

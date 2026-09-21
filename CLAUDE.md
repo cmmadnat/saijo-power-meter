@@ -15,9 +15,9 @@ Greenfield. Two kinds of material sit alongside the code, and they pull in oppos
 
 Built so far: the Google Cloud footprint as Pulumi code, the pipeline that builds and applies it,
 the frontend shell — scaffolded, themed, and deployed to Cloud Run so there is a live URL from the
-start — the domain model, the MQTT payload decoder and the fixture generator, and the three
-real-time screens: the table and the two charts, all on fixture data. Only History is still a
-placeholder; no meter data flows yet.
+start — the domain model, the MQTT payload decoder and the fixture generator, and all four
+specified screens: the 55-meter table, the kW and kWh charts, and History. Every one of them runs
+on fixture data; no meter data flows yet.
 
 | Path | What it is |
 | --- | --- |
@@ -176,17 +176,25 @@ Working in `apps/web` has two traps, both hit once already:
   traced in at all. There is no hoisted `node_modules` beside it — tracing puts everything under
   `apps/web`. The Dockerfile flattens this; changing either setting means re-checking it.
 
-Steps 0–4 are done: the spec is frozen into `docs/requirements/` (including all four screens, in
+Steps 0–5 are done: the spec is frozen into `docs/requirements/` (including all four screens, in
 `power-meter-ui.md`), the shell is deployed, the domain model, decoder and fixtures are in place with
-tests, and the Real time route carries screens 1–3 — the 55-meter table and the kW and kWh charts —
-on those fixtures. Remaining, in order: the History screen, then the store, the MQTT ingester, and
-the passcode gate.
+tests, the Real time route carries screens 1–3 — the 55-meter table and the kW and kWh charts — and
+History carries screen 4, all on those fixtures. Remaining, in order: the store, the MQTT ingester,
+wiring the screens to real data, and the passcode gate.
 
-**The screens read their data through two files, `apps/web/lib/realtime-source.ts` and
-`apps/web/lib/series-source.ts`.** They are the only places that know the numbers are fixtures:
-everything above them goes through a use case in `packages/application` and a port. Step 8 replaces
-those two files, not the screens — keep it that way, and do not reach for `generateFixtures` from a
-component.
+**The screens read their data through three files, `apps/web/lib/realtime-source.ts`,
+`apps/web/lib/series-source.ts` and `apps/web/lib/history-source.ts`.** They are the only places
+that know the numbers are fixtures: everything above them goes through a use case in
+`packages/application` and a port. Step 8 replaces those three files, not the screens — keep it that
+way, and do not reach for `generateFixtures` from a component.
+
+**History's two quantities come from `packages/application/src/history.ts`, and its running-hours
+rule is a judgement worth keeping.** Total energy is the last value of the same `consumptionFrom()`
+walk the energy chart plots, reset rule included — do not write a second one. Running time sums the
+gaps between readings, each credited to the state at its start, and a gap longer than three minutes
+counts for nothing: a silence says nothing was observed, not that the machine kept running. The
+fixture adapter raises that cap to twice its own sampling interval, because a long window is
+sampled coarsely and every gap would otherwise exceed it; at step 8 it goes back to the default.
 
 **Chart colours are the eight `--series-N` tokens in `globals.css`, not the theme's `--chart-1..5`.**
 They were re-validated as a categorical set against Light Green's own surfaces — lightness band,
