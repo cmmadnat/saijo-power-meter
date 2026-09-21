@@ -57,3 +57,57 @@ export function isRunning(meter: Meter, activePowerKw: number): boolean {
   if (standby === null) return activePowerKw > 0;
   return activePowerKw > standby;
 }
+
+/**
+ * The machine number and the machine name, split out of the one field the
+ * workbook actually has.
+ *
+ * The UI specification asks for หมายเลขเครื่องจักร (machine number) and
+ * ชื่อเครื่องจักร (machine name) as two columns, but the workbook carries a
+ * single `Name` per slot. In 35 of the 55 commissioned rows that name has the
+ * code appended after a colon — `ปั้มเหล็ก 300 Ton : STL003`. The other 20 have
+ * no code at all, and three of the MDB panels have a *department* after the
+ * colon rather than a code.
+ *
+ * So the split is conditional on the suffix looking like a code: letters and
+ * digits, at least one digit, nothing else. `ตู้ไฟฟ้า MDB3 : แผนกจัดส่ง` keeps
+ * its whole name and gets no machine number, which is the honest answer — there
+ * is no machine number for it to have.
+ *
+ * See docs/requirements/power-meter-ui.md, which records this as a question
+ * back to the customer: if a real machine-number list exists it replaces this.
+ */
+const NAME_SEPARATOR = " : ";
+const MACHINE_CODE = /^(?=.*\d)[A-Za-z0-9./-]+$/;
+
+export interface MachineLabel {
+  /** The code after the colon when there is one, else null. */
+  readonly number: string | null;
+  /** The name with that code removed, or the whole name when there is none. */
+  readonly name: string | null;
+}
+
+export function machineLabel(meter: Meter): MachineLabel {
+  const full = meter.machineName;
+  if (full === null) return { number: null, name: null };
+
+  const at = full.lastIndexOf(NAME_SEPARATOR);
+  if (at === -1) return { number: null, name: full };
+
+  const suffix = full.slice(at + NAME_SEPARATOR.length).trim();
+  if (!MACHINE_CODE.test(suffix)) return { number: null, name: full };
+
+  return { number: suffix, name: full.slice(0, at).trim() };
+}
+
+/**
+ * The meter's number as the screens print it: station and Power Meter ID, the
+ * workbook's own two columns, formatted `01-1`.
+ *
+ * The specification's mock-up numbers meters flat (`Power Meter 1`…), which the
+ * workbook does not do and which would shift every time a slot is
+ * commissioned. Recorded as an open question in the UI requirements.
+ */
+export function meterNumber(meter: Meter): string {
+  return `${String(meter.station).padStart(2, "0")}-${meter.slot}`;
+}

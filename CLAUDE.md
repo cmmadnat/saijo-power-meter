@@ -15,8 +15,9 @@ Greenfield. Two kinds of material sit alongside the code, and they pull in oppos
 
 Built so far: the Google Cloud footprint as Pulumi code, the pipeline that builds and applies it,
 the frontend shell — scaffolded, themed, and deployed to Cloud Run so there is a live URL from the
-start — and the domain model, the MQTT payload decoder and the fixture generator the screens will be
-built on. The screens themselves are still placeholders; no meter data flows yet.
+start — the domain model, the MQTT payload decoder and the fixture generator, and the first real
+screen: the real-time table, all 55 meters on fixture data. The remaining three screens are
+placeholders; no meter data flows yet.
 
 | Path | What it is |
 | --- | --- |
@@ -30,7 +31,8 @@ built on. The screens themselves are still placeholders; no meter data flows yet
 | `.github/workflows/check.yml` | Application checks. Holds no cloud credentials. |
 | `.github/workflows/infra.yml` | Builds and pushes the web image, then runs Pulumi. Preview on PR, apply on `main`. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
-| `reference doc/`, root `.xlsx` | Customer specifications — the requirements source, unread so far. |
+| `docs/requirements/` | The frozen spec: the MQTT protocol, the meter registry, and the four screens. |
+| `reference doc/`, root `.xlsx` | Customer specifications — the source those requirements were read from. |
 | `reference/` | Old implementation. Look, never copy. |
 
 ## How infrastructure changes reach the cloud
@@ -161,9 +163,22 @@ Working in `apps/web` has two traps, both hit once already:
   traced in at all. There is no hoisted `node_modules` beside it — tracing puts everything under
   `apps/web`. The Dockerfile flattens this; changing either setting means re-checking it.
 
-Steps 0–2 are done: the spec is frozen into `docs/requirements/`, the shell is deployed, and the
-domain model, decoder and fixtures are in place with tests. Remaining, in order: the four screens on
-those fixtures, then the store, the MQTT ingester, and the passcode gate.
+Steps 0–3 are done: the spec is frozen into `docs/requirements/` (including all four screens, in
+`power-meter-ui.md`), the shell is deployed, the domain model, decoder and fixtures are in place with
+tests, and screen 1 — the real-time table — renders all 55 meters on those fixtures. Remaining, in
+order: the two charts and the History screen, then the store, the MQTT ingester, and the passcode
+gate.
+
+**The screens read their data through one file, `apps/web/lib/realtime-source.ts`.** It is the only
+place that knows the numbers are fixtures: everything above it goes through a use case in
+`packages/application` and a port. Step 8 replaces that file, not the screens — keep it that way, and
+do not reach for `generateFixtures` from a component.
+
+Two things the specification asks for that the workbook has no column for, both decided and both
+written down as questions back to the customer in `docs/requirements/power-meter-ui.md`: the
+**machine number** (parsed out of the one `Name` field, only when the suffix looks like a code — 27
+of 55 have one) and the **meter number** (station and meter id, `01-1`, not the mock-up's flat
+1–55). Both live in `packages/domain/src/meter.ts` with their cases as tests.
 
 **Two of the nine scale factors are guesses, and the code says so.** `packages/infrastructure/src/mqtt/scaling.ts`
 holds every divisor with its confidence and the evidence behind it; the two marked `assumed` — active
