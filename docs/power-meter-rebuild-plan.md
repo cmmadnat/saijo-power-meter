@@ -330,8 +330,15 @@ soak with flat memory; rollup totals reconcile against raw; cost per day measure
 Replace fixture calls with API routes / server components. The step-5 aggregation functions move
 server-side unchanged. Fixtures stay as the test fixtures.
 
-*Verify:* every screen matches its step 3–5 behaviour against real stored data; p95 page load
-measured; the four screens are the only thing that changed.
+**Finish the fleet strip here.** Step 5b left two tiles out — energy since the start of the shift,
+and a sparkline of total load across the last hour — because both need a baseline or a window, and
+the latest-reading-per-meter store has neither. Once the warehouse exists they are one query each;
+the open question is what that query costs behind a screen that refreshes every ten seconds, which
+is answerable then and not now. The design they complete is on the canvas the build log links.
+
+*Verify:* every screen matches its step 3–5b behaviour against real stored data; p95 page load
+measured; the four screens are the only thing that changed; the strip's two deferred tiles read the
+warehouse, with the cost of that refresh measured rather than assumed.
 
 ### Step 9 — Passcode gate
 A single shared passcode, checked server-side against Secret Manager, httpOnly + secure session
