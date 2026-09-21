@@ -23,6 +23,7 @@ export {
   type ScaleTable,
 } from "./mqtt/scaling.ts";
 export {
+  defaultProfiles,
   generateFixtures,
   toStationPayload,
   type FixtureOptions,

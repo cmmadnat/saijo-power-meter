@@ -1,18 +1,42 @@
+import { MeterRegistry } from "@power-meter/domain";
+import {
+  RealtimeCharts,
+  type SelectableMeter,
+} from "@/components/realtime-charts";
 import {
   RealtimeTable,
   type RealtimeTableRow,
 } from "@/components/realtime-table";
 import { formatClock } from "@/lib/format";
 import { realtimeSnapshot } from "@/lib/realtime-source";
+import {
+  chartSeries,
+  MAX_SERIES,
+  parseSelection,
+  parseWindow,
+  WINDOWS,
+} from "@/lib/series-source";
 
-// The table is a snapshot of now, so there is nothing to cache: every request
-// rebuilds it, and the client's refresh interval is what makes it move.
+// The table and the charts are both snapshots of now, so there is nothing to
+// cache: every request rebuilds them, and the client's refresh interval and the
+// selection in the URL are what make them move.
 export const dynamic = "force-dynamic";
 
-export default async function RealTimePage() {
-  const table = await realtimeSnapshot();
+export default async function RealTimePage(props: PageProps<"/">) {
+  const params = await props.searchParams;
+  const first = (value: string | string[] | undefined): string | undefined =>
+    Array.isArray(value) ? value[0] : value;
 
-  // Flattened here rather than in the component: the client is handed plain
+  const registry = MeterRegistry.fromWorkbook();
+  const selection = parseSelection(first(params.meters), registry);
+  const windowId = parseWindow(first(params.window));
+
+  const [table, charts] = await Promise.all([
+    realtimeSnapshot(),
+    chartSeries(registry, selection, windowId),
+  ]);
+
+  // Flattened here rather than in the components: the client is handed plain
   // values, and the domain's Reading — with its branded id and its Date — stays
   // on the server.
   const rows: RealtimeTableRow[] = table.rows.map((row) => ({
@@ -35,12 +59,31 @@ export default async function RealTimePage() {
     running: row.running,
   }));
 
+  const meters: SelectableMeter[] = table.rows.map((row) => ({
+    meterId: row.meterId,
+    meterNumber: row.meterNumber,
+    department: row.department,
+    machineName: row.machineName,
+  }));
+
+  // The colour slot is the meter's position in the selection, held across
+  // changes, so it travels with the series rather than with its rank.
+  const chartSeriesData = charts.view.series.map((s) => ({
+    meterId: s.meterId,
+    slot: selection.indexOf(s.meterId) + 1,
+    meterNumber: s.meterNumber,
+    machineNumber: s.machineNumber,
+    machineName: s.machineName,
+    activePowerKw: s.points.map((p) => p.activePowerKw),
+    energyKwh: s.points.map((p) => p.energyKwh),
+  }));
+
   return (
-    <div className="flex flex-col gap-6">
+    <div className="flex flex-col gap-8">
       <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border pb-4">
         <div className="flex flex-col gap-1">
           <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
-            Specification page 1 · Real time
+            Specification pages 1–3 · Real time
           </p>
           <h1 className="text-2xl font-semibold tracking-wide">Power Meter</h1>
         </div>
@@ -56,17 +99,16 @@ export default async function RealTimePage() {
         counts={table.counts}
       />
 
-      {/* Page 1 of the specification shows the Power(kW) panel beginning below
-          the table, and page 2 is that panel full-page. It lands in step 4. */}
-      <div className="flex items-center gap-3 border border-dashed border-border bg-muted/40 px-4 py-3">
-        <span className="bg-primary px-2 py-1 font-mono text-[10px] uppercase tracking-widest text-primary-foreground">
-          Step 4
-        </span>
-        <p className="text-sm text-muted-foreground">
-          Power (kW) and Energy (kWh) over time — specification pages 2 and 3 —
-          sit below this table and are built next.
-        </p>
-      </div>
+      <RealtimeCharts
+        meters={meters}
+        selection={[...selection]}
+        windows={WINDOWS.map((w) => ({ id: w.id, label: w.label }))}
+        windowId={windowId}
+        times={charts.view.series[0]?.points.map((p) => p.at.getTime()) ?? []}
+        series={chartSeriesData}
+        bucketMs={charts.view.bucketMs}
+        maxSeries={MAX_SERIES}
+      />
     </div>
   );
 }

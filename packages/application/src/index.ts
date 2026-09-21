@@ -13,3 +13,10 @@ export type {
   RealtimeTableInput,
 } from "./realtime.ts";
 export { DEFAULT_FRESHNESS, realtimeTable, statusFor } from "./realtime.ts";
+export type {
+  MeterSeries,
+  MeterSeriesInput,
+  SeriesPoint,
+  SeriesView,
+} from "./series.ts";
+export { bucketWidthMs, meterSeries, MIN_BUCKET_MS } from "./series.ts";

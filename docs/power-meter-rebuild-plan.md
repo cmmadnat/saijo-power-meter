@@ -123,7 +123,10 @@ the ports in `packages/application`. Then `packages/infrastructure`, which is th
   half-populated; `StationDecoder` holds the last energy counter per meter and flags a decrease.
 - `src/fixtures/generate.ts` — deterministic multi-hour data for all 55 commissioned meters, with
   `toStationPayload` as the decoder's exact inverse (which is also how step 7's local broker replay
-  gets its data).
+  gets its data). Step 4 made two properties of it explicit: load is a function of absolute time,
+  not of where the window starts, and `defaultProfiles()` takes the fleet-wide profile assignment so
+  generating for a handful of meters does not re-roll them. Without either, the table and the charts
+  disagreed about the same machine on the same page.
 - `src/fixtures/repository.ts` — those fixtures behind the `ReadingRepository` and
   `LatestReadingStore` ports, so step 8 swaps an argument rather than a call site.
 
@@ -163,12 +166,36 @@ distinct in both themes; sorting holds on every column and the department filter
 for ผลิต พลาสติก; the 10-second refresh advances the "as of" clock without losing the filter, the
 sort or the pause; no console errors in either theme.
 
-### Step 4 — Real time charts (screens 2 & 3)
-kW-over-time and kWh-over-time, multi-meter selector, time-window control. One chart component,
-two configurations.
+### Step 4 — Real time charts (screens 2 & 3) — **done**
+kW-over-time and kWh-over-time below the table, as page 1 of the specification draws them. Shipped:
 
-*Verify:* matches PDF pages 2–3; 8 series × 24 h of fixture points stays responsive; legend
-readable in both themes; energy series is monotonic (it is a cumulative counter, not a rate).
+- `packages/application/src/series.ts` — both charts are one query, bucketed. Active power is a
+  rate and averages across a bucket; energy is a counter and takes the bucket's last value.
+  Bucketing is here rather than in the chart because it is the same definition step 6's 1-minute
+  rollup needs, and two copies of it would drift.
+- `apps/web/components/meter-chart.tsx` — one component, two configurations. Plain SVG: the
+  requirement is a multi-series line with a crosshair, and a charting library would have brought a
+  dependency and its own theming for marks this simple.
+- `apps/web/components/realtime-charts.tsx` — the meter selector the specification draws beside the
+  plot, plus a window control it does not draw. Selection and window live in the URL, so the server
+  builds only the series being looked at and a view can be linked to.
+- `apps/web/app/globals.css` — eight validated series colours. Not the theme's own `--chart-1..5`:
+  two of those are below the chroma floor at which a hue stops carrying identity, and they were
+  never validated as a set.
+
+**A meter keeps its colour when other series are removed.** The selection is eight slots with
+holes rather than a list — deselecting empties a slot. Otherwise removing the second of four series
+would renumber the rest, two lines would change colour, and the reader would think the data had
+changed.
+
+*Verified:* matches pages 2–3 — kW and kWh over time, one series per selected meter, the meter list
+beside the plot; 8 series × 24 h loads in ~0.8 s and the crosshair reads all eight at once; the
+legend is present on every chart in both themes and the values never depend on colour (direct end
+labels where lines end clear of each other, a crosshair readout, and a table view of the same
+numbers — which is what the light-mode contrast warning against Doom 64's mid-grey surface
+obliges); the energy series climbs monotonically across 24 h, and the note under it says why; the
+palette passes the lightness, chroma, CVD-separation and normal-vision checks in both modes against
+this theme's own surfaces.
 
 ### Step 5 — History (screen 4)
 Department + date/time range filters, table of Total Energy (kWh) and running hours (Hr:min). All
