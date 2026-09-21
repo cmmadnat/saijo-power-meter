@@ -28,7 +28,7 @@ export function PendingScreen({
       </header>
 
       <div className="flex items-center gap-3 border border-dashed border-border bg-muted/40 px-4 py-3">
-        <span className="bg-primary px-2 py-1 font-mono text-[10px] uppercase tracking-widest text-primary-foreground">
+        <span className="bg-primary px-2 py-1 font-mono text-3xs uppercase tracking-widest text-primary-foreground">
           {step}
         </span>
         <p className="text-sm text-muted-foreground">
@@ -40,7 +40,7 @@ export function PendingScreen({
       <div className="grid gap-px bg-border sm:grid-cols-2">
         {contents.map((group) => (
           <div key={group.heading} className="bg-card p-4">
-            <h2 className="mb-2 font-mono text-[11px] uppercase tracking-widest text-muted-foreground">
+            <h2 className="mb-2 font-mono text-2xs uppercase tracking-widest text-muted-foreground">
               {group.heading}
             </h2>
             <ul className="flex flex-col gap-1 text-sm">

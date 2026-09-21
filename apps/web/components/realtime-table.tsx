@@ -239,7 +239,7 @@ export function RealtimeTable({
     );
 
   const headCell =
-    "border-b border-border bg-card px-2 py-2 font-mono text-[11px] font-normal uppercase tracking-wider";
+    "border-b border-border bg-card px-2 py-2 font-mono text-2xs font-normal uppercase tracking-wider";
   const cell = "px-2 py-1.5 align-middle";
   const numeric = `${cell} text-right font-mono tabular-nums`;
 
@@ -247,7 +247,7 @@ export function RealtimeTable({
     <section className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
         <div className="flex flex-wrap items-center gap-1">
-          <span className="me-1 font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
+          <span className="me-1 font-mono text-2xs uppercase tracking-wider text-muted-foreground">
             แผนก
           </span>
           {[ALL, ...departments].map((name) => {
@@ -271,7 +271,7 @@ export function RealtimeTable({
           })}
         </div>
 
-        <div className="ms-auto flex flex-wrap items-center gap-3 font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
+        <div className="ms-auto flex flex-wrap items-center gap-3 font-mono text-2xs uppercase tracking-wider text-muted-foreground">
           <span className="flex items-center gap-1.5">
             <span aria-hidden className={`inline-block size-2 ${STATUS_DOT.live}`} />
             {counts.live} live
@@ -303,7 +303,7 @@ export function RealtimeTable({
       </div>
 
       <div className="overflow-x-auto border border-border">
-        <table className="w-full min-w-[1100px] border-collapse text-sm">
+        <table className="w-full min-w-275 border-collapse text-sm">
           <caption className="sr-only">
             Real-time readings for every commissioned power meter
           </caption>
@@ -427,7 +427,7 @@ export function RealtimeTable({
                       <Marker row={row} />
                       {row.meterNumber}
                       {dim ? (
-                        <span className="text-[11px] tracking-wider">
+                        <span className="text-2xs tracking-wider">
                           {formatAge(row.ageMs)}
                         </span>
                       ) : null}

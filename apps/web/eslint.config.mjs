@@ -16,9 +16,14 @@ const eslintConfig = defineConfig([
       "shadcn/no-raw-colors": "error",
       "shadcn/no-unknown-classes": "error",
       "shadcn/require-static-classes": "error",
-      // Off for now: 28 findings, most of them the deliberate sub-12px type
-      // scale (text-[11px], text-[10px]). Needs theme tokens, not a rounding.
-      // "shadcn/no-arbitrary-values": "error",
+      // The sub-12px type scale is now text-2xs / text-3xs in globals.css and
+      // every exact-equivalent width is on the spacing scale, so this can stay
+      // on. The two exceptions are values the scale cannot express: a measure
+      // in ch, and an explicit grid track pair.
+      "shadcn/no-arbitrary-values": [
+        "error",
+        { allow: ["max-w-[70ch]", "grid-cols-[240px_minmax(0,1fr)]"] },
+      ],
       // Off: every finding is a genuinely dynamic value — measured chart
       // height, computed tooltip position, var(--series-N) swatches.
       // "shadcn/no-inline-styles": "error",
@@ -28,7 +33,12 @@ const eslintConfig = defineConfig([
     // The primitives own their styling; the rules above describe how the
     // rest of the app may use them.
     files: ["components/ui/**"],
-    rules: { "shadcn/no-restyle": "off" },
+    rules: {
+      "shadcn/no-restyle": "off",
+      // Structural values belong to the primitives; button.tsx ships
+      // focus-visible:ring-[3px] from upstream.
+      "shadcn/no-arbitrary-values": "off",
+    },
   },
   // Override default ignores of eslint-config-next.
   globalIgnores([

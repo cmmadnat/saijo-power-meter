@@ -144,7 +144,7 @@ export function RealtimeCharts({
   return (
     <section className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <span className="font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
+        <span className="font-mono text-2xs uppercase tracking-wider text-muted-foreground">
           Window
         </span>
         {windows.map((window) => {
@@ -166,20 +166,20 @@ export function RealtimeCharts({
             </button>
           );
         })}
-        <span className="ms-auto font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
+        <span className="ms-auto font-mono text-2xs uppercase tracking-wider text-muted-foreground">
           {selectedCount} of {maxSeries} series · since {since}
         </span>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[240px_minmax(0,1fr)]">
-        <div className="flex max-h-[640px] flex-col border border-border bg-card">
-          <p className="border-b border-border px-3 py-2 font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
+        <div className="flex max-h-160 flex-col border border-border bg-card">
+          <p className="border-b border-border px-3 py-2 font-mono text-2xs uppercase tracking-wider text-muted-foreground">
             Power meter
           </p>
           <div className="overflow-y-auto">
             {groups.map(([department, group]) => (
               <div key={department}>
-                <p className="sticky top-0 border-b border-border bg-muted/80 px-3 py-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground backdrop-blur">
+                <p className="sticky top-0 border-b border-border bg-muted/80 px-3 py-1 font-mono text-3xs uppercase tracking-wider text-muted-foreground backdrop-blur">
                   {department}
                 </p>
                 <ul>
@@ -226,7 +226,7 @@ export function RealtimeCharts({
               </div>
             ))}
           </div>
-          <p className="border-t border-border px-3 py-2 text-[11px] text-muted-foreground">
+          <p className="border-t border-border px-3 py-2 text-2xs text-muted-foreground">
             {full
               ? "Eight series is the limit — deselect one to add another."
               : `Select up to ${maxSeries}. Each keeps its colour.`}
@@ -243,19 +243,19 @@ export function RealtimeCharts({
                 <tr className="border-b border-border">
                   <th
                     scope="col"
-                    className="py-1 pe-2 text-left font-mono text-[10px] font-normal uppercase tracking-wider text-muted-foreground"
+                    className="py-1 pe-2 text-left font-mono text-3xs font-normal uppercase tracking-wider text-muted-foreground"
                   >
                     Series
                   </th>
                   <th
                     scope="col"
-                    className="px-2 py-1 text-right font-mono text-[10px] font-normal uppercase tracking-wider text-muted-foreground"
+                    className="px-2 py-1 text-right font-mono text-3xs font-normal uppercase tracking-wider text-muted-foreground"
                   >
                     Power now (kW)
                   </th>
                   <th
                     scope="col"
-                    className="ps-2 py-1 text-right font-mono text-[10px] font-normal uppercase tracking-wider text-muted-foreground"
+                    className="ps-2 py-1 text-right font-mono text-3xs font-normal uppercase tracking-wider text-muted-foreground"
                   >
                     Consumed ({windowLabel}, kWh)
                   </th>
