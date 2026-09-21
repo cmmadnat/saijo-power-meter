@@ -96,6 +96,15 @@ applied from CI. Nothing below needs doing again unless a second project is bein
 1. **Next.js + shadcn/ui** frontend with light/dark theming, from the stock generators
    (`create-next-app`, `npx shadcn@latest init`) rather than a hand-rolled setup. Its own pull
    request, no infrastructure changes in it.
+
+   The theme is **Doom 64** from [tweakcn](https://tweakcn.com/editor/theme), a shadcn registry
+   style carrying both light and dark modes. Apply it from the registry rather than pasting
+   variables — at init, `npx shadcn@latest init https://tweakcn.com/r/themes/doom-64.json`, or
+   `add` the same URL to an existing setup. Two things about it are deliberate and should survive
+   review: `--radius` is `0px`, so square corners are the design and not an oversight; and it names
+   Oxanium (sans), Source Code Pro (mono) and Georgia (serif) without installing them, so they need
+   loading via `next/font` or the theme silently falls back to system faces. Its primary is
+   `#b71c1c`, secondary `#556b2f`.
 2. **Cloud Run service** in `infra/`, serving an image from the `app` repository, plus whatever
    builds and pushes that image.
 3. **Database and migrations**, under the rules above.
