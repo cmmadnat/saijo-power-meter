@@ -46,7 +46,7 @@ export function PendingScreen({
             <ul className="flex flex-col gap-1 text-sm">
               {group.items.map((item) => (
                 <li key={item} className="flex gap-2">
-                  <span aria-hidden className="text-primary">
+                  <span aria-hidden className="text-accent-strong">
                     ·
                   </span>
                   <span>{item}</span>

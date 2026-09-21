@@ -57,6 +57,24 @@ Nothing else is on the page: no chart per row, no status column, no actions, no 
 - *No sort or filter.* With 5 mock rows none is needed; with 55 both are. The implementation sorts
   by any column and filters by department — the same department values the History screen filters
   on, so the two screens agree.
+- *No summary, and no grouping.* Fifty-five rows answer "what is this machine drawing" and never
+  answer "is the factory alright". Two additions were made, and both are flagged to the customer
+  rather than assumed:
+  - a **fleet strip** above the table — meters reporting out of 55 with one square per meter,
+    total load now, running against idle and silent, and the freshness split. Every figure is
+    derived from the same snapshot the table already holds; nothing here costs a second query.
+    **Offline meters are excluded from the total load.** Their last reading stays on screen, but it
+    is history, and adding an hour-old 90 kW to a figure labelled "now" would overstate the load by
+    exactly the meters that have stopped reporting. The offline count sits beside it so the gap is
+    visible.
+  - **department bands with a kW subtotal**, on by default and dismissable. Sorting applies inside
+    a band rather than across the table, so pointing the Power column at its largest value answers
+    "the biggest machine in each department" without dissolving the departments. There is no energy
+    subtotal: those are cumulative counters, and their sum says only how long a department's meters
+    have been installed.
+
+  **Open question for the customer:** neither is on the mock-up. If they want the table alone, both
+  come out without touching the specified columns.
 - *No refresh rate.* "Real time" against a 9-second publish interval means the screen re-reads on
   that order. The implementation polls every 10 seconds and shows the time of the last refresh.
 
@@ -152,9 +170,27 @@ counter reset handled**, or a meter replacement reads as a large negative. Runni
 the meter spent above its **Stand by Power Level** (0.1 kW for all 55 today), which is
 `isRunning` in the domain. Both are specified in the rebuild plan's step 5 and computed there.
 
-Not stated: whether the range is inclusive of the end minute, what an empty range shows, and whether
-a meter with no readings in the window appears as a zero row or not at all. Step 5 decides these and
-records the choice.
+**What the page does not say, and what step 5 decided:**
+
+- *The range is half-open,* `[start, end)`. A reading at exactly the end minute belongs to the next
+  window, which is what makes two adjacent windows add up to the longer one containing them. The
+  screen says so beside the pickers.
+- *A meter with no readings in the window keeps its row,* with an em dash in both value columns and
+  `no readings` beside its meter number, rather than being dropped or shown as a zero. A machine
+  that should have run and did not is exactly what someone opens this screen to find, and a table
+  that silently shows 53 of 55 rows hides it. A zero would be a different claim — that the machine
+  ran and used nothing.
+- *An unreadable or inverted range falls back to today* and prints why, rather than erroring. These
+  are query parameters; anyone can hand-edit them, and a 500 for a mistyped date is a worse answer
+  than today's numbers with a line of explanation.
+- *The default window is today,* 00:00 Bangkok to the current minute. The mock-up ships empty
+  pickers, but an empty screen teaches nothing about what the screen is for.
+- *Running hours are summed from the gaps between readings,* each gap credited to the state at its
+  start: a reading above standby means the machine ran from that moment until the next reading said
+  otherwise. A gap longer than three minutes — the same threshold the real-time screen calls
+  offline — contributes nothing, so a meter that falls silent at noon while running and returns at
+  six is not credited with six hours nobody observed. The row is short rather than invented, and
+  the energy the counter accumulated meanwhile is still counted, because the counter carries it.
 
 ## Explicitly not on any page
 

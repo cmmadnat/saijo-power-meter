@@ -71,6 +71,25 @@ export interface RealtimeRow {
   readonly running: boolean;
 }
 
+/**
+ * What one department is drawing right now.
+ *
+ * Derived here rather than in the table component because it is an aggregate of
+ * the data, not a decision about how to draw it: the same numbers head the
+ * department bands and the fleet strip, and a second summation written in the
+ * component would be free to disagree with this one.
+ */
+export interface DepartmentLoad {
+  readonly department: Department;
+  /** Commissioned meters in the department. */
+  readonly meters: number;
+  /** Of those, the ones whose latest reading is live or stale. */
+  readonly reporting: number;
+  readonly running: number;
+  /** Sum of active power across the reporting meters, kW. */
+  readonly activePowerKw: number;
+}
+
 export interface RealtimeTable {
   /** When the table was built — what the screen's "as of" shows. */
   readonly at: Date;
@@ -83,7 +102,22 @@ export interface RealtimeTable {
     readonly stale: number;
     readonly offline: number;
     readonly running: number;
+    /** live + stale: the meters whose numbers on screen are current. */
+    readonly reporting: number;
   };
+  /**
+   * Total active power across the reporting meters, kW.
+   *
+   * Offline meters are excluded deliberately. Their last reading stays on
+   * screen — that is the point of showing it — but it is history, and adding an
+   * hour-old 90 kW into a figure labelled "now" would overstate the factory's
+   * load by exactly the meters that have stopped telling anyone what they are
+   * doing. The strip prints the offline count beside it so the gap is visible
+   * rather than silently absorbed.
+   */
+  readonly totalActivePowerKw: number;
+  /** Per department, in the same order as `departments`. */
+  readonly byDepartment: readonly DepartmentLoad[];
 }
 
 export interface RealtimeTableInput {
@@ -140,15 +174,36 @@ export async function realtimeTable(
     ),
   ].sort();
 
+  const reporting = (row: RealtimeRow): boolean => row.status !== "offline";
+  const load = (row: RealtimeRow): number =>
+    reporting(row) ? (row.reading?.activePowerKw ?? 0) : 0;
+
+  const live = rows.filter((r) => r.status === "live").length;
+  const stale = rows.filter((r) => r.status === "stale").length;
+
+  const byDepartment = departments.map((department): DepartmentLoad => {
+    const own = rows.filter((row) => row.department === department);
+    return {
+      department,
+      meters: own.length,
+      reporting: own.filter(reporting).length,
+      running: own.filter((row) => row.running).length,
+      activePowerKw: own.reduce((sum, row) => sum + load(row), 0),
+    };
+  });
+
   return {
     at,
     rows,
     departments,
     counts: {
-      live: rows.filter((r) => r.status === "live").length,
-      stale: rows.filter((r) => r.status === "stale").length,
+      live,
+      stale,
       offline: rows.filter((r) => r.status === "offline").length,
       running: rows.filter((r) => r.running).length,
+      reporting: live + stale,
     },
+    totalActivePowerKw: rows.reduce((sum, row) => sum + load(row), 0),
+    byDepartment,
   };
 }

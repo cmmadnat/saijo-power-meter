@@ -19,10 +19,11 @@ const eslintConfig = defineConfig([
       // The sub-12px type scale is now text-2xs / text-3xs in globals.css and
       // every exact-equivalent width is on the spacing scale, so this can stay
       // on. The two exceptions are values the scale cannot express: a measure
-      // in ch, and an explicit grid track pair.
+      // in ch, which is a count of characters rather than a length, and an
+      // explicit grid track pair.
       "shadcn/no-arbitrary-values": [
         "error",
-        { allow: ["max-w-[70ch]", "grid-cols-[240px_minmax(0,1fr)]"] },
+        { allow: ["max-w-[*ch]", "grid-cols-[240px_minmax(0,1fr)]"] },
       ],
       // Off: every finding is a genuinely dynamic value — measured chart
       // height, computed tooltip position, var(--series-N) swatches.
