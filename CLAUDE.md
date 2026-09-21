@@ -4,11 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-Greenfield. `reference/` is a snapshot of an earlier, unrelated implementation kept only to be
-*looked at* — nothing is copied, ported, or carried forward from it, and it is never modified.
+Greenfield. Two kinds of material sit alongside the code, and they pull in opposite directions:
 
-Built so far: the Google Cloud footprint as Pulumi code, plus the pipeline that applies it. The
-application itself does not exist yet.
+- **`reference/`** is a snapshot of an earlier implementation, kept only to be *looked at*. Nothing
+  is copied, ported, or carried forward from it, and it is never modified.
+- **`reference doc/`** and **`Smart Factory - Server and MQTT Rev01.xlsx`** are the customer's own
+  specifications — Calorie Testing Room, Function test, EMC, Power meter, Field & Reliability,
+  TIS 1155-2558, and a training document. These are what the new system is built *from*. Nothing has
+  been derived from them yet; no requirement in this repo traces to them so far.
+
+Built so far: the Google Cloud footprint as Pulumi code, plus the pipeline that applies it, both
+live. The application itself does not exist yet.
 
 | Path | What it is |
 | --- | --- |
@@ -16,6 +22,8 @@ application itself does not exist yet.
 | `bootstrap.sh` | One-time, run in Cloud Shell. Creates only what Pulumi cannot create for itself. |
 | `.github/workflows/infra.yml` | The only thing that runs `pulumi up`. Preview on PR, apply on `main`. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
+| `reference doc/`, root `.xlsx` | Customer specifications — the requirements source, unread so far. |
+| `reference/` | Old implementation. Look, never copy. |
 
 ## How infrastructure changes reach the cloud
 
@@ -31,6 +39,13 @@ So `pulumi up` is never the right command to reach for here, and a failed `pulum
 is expected — it fails on missing credentials, not on a broken program. To see a real preview, open
 a PR.
 
+**CI is the only thing that runs Pulumi at all.** That invariant is what makes the workflow's
+concurrency group (repo-wide, not per-ref) sufficient to keep two runs off one state object. Two
+things in `.github/workflows/infra.yml` look like they could be simplified and must not be: the
+concurrency group stays repo-wide, and stack creation stays on `pulumi stack ls` rather than
+`stack select`, because selecting a stack that does not exist takes a lock in the state bucket and
+abandons it. Both cost a failed apply to learn.
+
 ## Commands
 
 ```bash
@@ -38,7 +53,11 @@ cd infra && npm ci             # after a fresh container, if the session hook di
 cd infra && npm run typecheck  # tsc --noEmit — the only check that works without credentials
 ```
 
-## First-time setup (not yet done)
+## Setup (done — repeat only for a new project)
+
+Project `saijo-power-meter` is bootstrapped and applied: the state bucket, KMS key, deployer service
+account and WIF provider exist, the five repository variables are set, and the stack has been
+applied from CI. Nothing below needs doing again unless a second project is being stood up.
 
 1. Create a GCP project and link billing.
 2. In **Google Cloud Shell** (browser-based, already authenticated — no local machine needed):
@@ -65,7 +84,7 @@ cd infra && npm run typecheck  # tsc --noEmit — the only check that works with
   `GCP_PROJECT_ID` variable, so the program can target another project without a code change.
 - **Region `asia-southeast1`** throughout.
 - **Application: Cloud Run**, from an image in the `app` Artifact Registry repository that `infra/`
-  creates. Stateless; configuration arrives as environment variables and secrets wired by Pulumi.
+  creates — it exists, at `asia-southeast1-docker.pkg.dev/saijo-power-meter/app`. Stateless; configuration arrives as environment variables and secrets wired by Pulumi.
 - **Database migrations** will be versioned, ordered, idempotent, and applied by an automated step
   *before* a new revision is promoted — never by hand against a deployed database, and
   forward-compatible so rolling back the app never requires rolling back the schema.
@@ -74,6 +93,21 @@ cd infra && npm run typecheck  # tsc --noEmit — the only check that works with
 
 ## Next
 
-**Next.js + shadcn/ui** frontend with light/dark theming, bootstrapped with the stock generators
-(`create-next-app`, `npx shadcn@latest init`) rather than a hand-rolled setup. Then the database,
-migrations, and the Cloud Run service itself.
+1. **Next.js + shadcn/ui** frontend with light/dark theming, from the stock generators
+   (`create-next-app`, `npx shadcn@latest init`) rather than a hand-rolled setup. Its own pull
+   request, no infrastructure changes in it.
+
+   The theme is **Doom 64** from [tweakcn](https://tweakcn.com/editor/theme), a shadcn registry
+   style carrying both light and dark modes. Apply it from the registry rather than pasting
+   variables — at init, `npx shadcn@latest init https://tweakcn.com/r/themes/doom-64.json`, or
+   `add` the same URL to an existing setup. Two things about it are deliberate and should survive
+   review: `--radius` is `0px`, so square corners are the design and not an oversight; and it names
+   Oxanium (sans), Source Code Pro (mono) and Georgia (serif) without installing them, so they need
+   loading via `next/font` or the theme silently falls back to system faces. Its primary is
+   `#b71c1c`, secondary `#556b2f`.
+2. **Cloud Run service** in `infra/`, serving an image from the `app` repository, plus whatever
+   builds and pushes that image.
+3. **Database and migrations**, under the rules above.
+
+Before any of it, the specifications in `reference doc/` still need reading — what the system has to
+do has not been established in this repo, only how it will be deployed.
