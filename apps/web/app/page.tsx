@@ -7,7 +7,7 @@ import {
   RealtimeTable,
   type RealtimeTableRow,
 } from "@/components/realtime-table";
-import { formatClock } from "@/lib/format";
+import { formatClock, formatClockMinutes } from "@/lib/format";
 import { realtimeSnapshot } from "@/lib/realtime-source";
 import {
   chartSeries,
@@ -75,7 +75,10 @@ export default async function RealTimePage(props: PageProps<"/">) {
     machineNumber: s.machineNumber,
     machineName: s.machineName,
     activePowerKw: s.points.map((p) => p.activePowerKw),
-    energyKwh: s.points.map((p) => p.energyKwh),
+    // The counter's rise across the window, not the counter: four counters
+    // plotted raw are four flat parallel lines whose spacing is only how long
+    // each meter has been installed.
+    energyConsumedKwh: s.points.map((p) => p.energyConsumedKwh),
   }));
 
   return (
@@ -104,6 +107,10 @@ export default async function RealTimePage(props: PageProps<"/">) {
         selection={[...selection]}
         windows={WINDOWS.map((w) => ({ id: w.id, label: w.label }))}
         windowId={windowId}
+        windowLabel={
+          WINDOWS.find((w) => w.id === windowId)?.label ?? windowId
+        }
+        since={formatClockMinutes(charts.view.from)}
         times={charts.view.series[0]?.points.map((p) => p.at.getTime()) ?? []}
         series={chartSeriesData}
         bucketMs={charts.view.bucketMs}

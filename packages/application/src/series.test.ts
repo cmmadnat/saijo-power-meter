@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { MeterRegistry, type Meter, type MeterId, type Reading } from "@power-meter/domain";
 import type { ReadingRepository, TimeRange } from "./ports.ts";
-import { bucketWidthMs, meterSeries, MIN_BUCKET_MS } from "./series.ts";
+import {
+  bucketWidthMs,
+  consumptionFrom,
+  meterSeries,
+  MIN_BUCKET_MS,
+} from "./series.ts";
 
 const FROM = new Date("2025-09-21T00:00:00.000Z");
 
@@ -220,4 +225,50 @@ test("24 hours of real-rate readings collapses to a drawable number of points", 
   assert.equal(view.bucketMs, 4 * MIN_BUCKET_MS);
   assert.equal(view.series[0]?.points.length, 360);
   assert.ok((view.series[0]?.points ?? []).every((p) => p.activePowerKw === 40));
+});
+
+test("consumption is the counter's rise, and a reset is not negative consumption", () => {
+  assert.deepEqual(consumptionFrom([100, 101, 104, 110]), [0, 1, 4, 10]);
+  // The counter is replaced mid-window and restarts near zero. What the old
+  // meter used between its last report and its removal cannot be recovered;
+  // what the new one has counted since is the honest remainder.
+  assert.deepEqual(consumptionFrom([900, 902, 3, 5]), [0, 2, 5, 7]);
+  assert.ok(consumptionFrom([900, 902, 3, 5]).every((v) => (v ?? 0) >= 0));
+});
+
+test("consumption holds flat across a gap and is null before the first reading", () => {
+  assert.deepEqual(consumptionFrom([null, null, 50, 52, null, 55]), [
+    null,
+    null,
+    0,
+    2,
+    2,
+    5,
+  ]);
+  assert.deepEqual(consumptionFrom([null, null]), [null, null]);
+  assert.deepEqual(consumptionFrom([]), []);
+});
+
+test("each series carries consumption alongside the counter", async () => {
+  const view = await meterSeries({
+    registry,
+    repository: repository([
+      reading("s01m1", 0, 10, 1000),
+      reading("s01m1", 60_000, 10, 1001.5),
+      reading("s01m1", 120_000, 10, 1003),
+    ]),
+    meterIds: ["s01m1" as MeterId],
+    range: range(3),
+  });
+
+  const points = view.series[0]?.points ?? [];
+  assert.deepEqual(
+    points.map((p) => p.energyKwh),
+    [1000, 1001.5, 1003],
+  );
+  assert.deepEqual(
+    points.map((p) => p.energyConsumedKwh),
+    [0, 1.5, 3],
+    "the same window, read as the rise rather than as the counter",
+  );
 });

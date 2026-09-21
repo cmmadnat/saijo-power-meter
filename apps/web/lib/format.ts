@@ -18,6 +18,18 @@ export function formatClock(at: Date): string {
   return TIME.format(at);
 }
 
+const CLOCK_MINUTES = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hour12: false,
+  timeZone: TIME_ZONE,
+});
+
+/** Without seconds: a window boundary is a time, not an instant to the second. */
+export function formatClockMinutes(at: Date): string {
+  return CLOCK_MINUTES.format(at);
+}
+
 /** A number to a fixed number of decimals, or an em dash when there is none. */
 export function formatNumber(value: number | null, places: number): string {
   if (value === null || !Number.isFinite(value)) return "—";

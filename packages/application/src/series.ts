@@ -35,6 +35,17 @@ export interface SeriesPoint {
   readonly activePowerKw: number | null;
   /** The bucket's last energy counter reading, kWh. */
   readonly energyKwh: number | null;
+  /**
+   * Energy consumed from the start of the window up to this bucket, kWh.
+   *
+   * The counter itself is what the meter sends, but four meters' counters
+   * plotted together are four flat parallel lines separated by whatever each
+   * one happened to have totalled since it was installed — the shape carries
+   * almost nothing. The rise across the window is the quantity someone is
+   * actually looking for, and it is the same arithmetic the History screen's
+   * Total Energy column does.
+   */
+  readonly energyConsumedKwh: number | null;
 }
 
 export interface MeterSeries {
@@ -81,6 +92,38 @@ export function bucketWidthMs(spanMs: number, maxPoints = DEFAULT_MAX_POINTS): n
   if (maxPoints <= 0) throw new RangeError("maxPoints must be positive");
   const needed = Math.ceil(spanMs / maxPoints);
   return Math.max(MIN_BUCKET_MS, Math.ceil(needed / MIN_BUCKET_MS) * MIN_BUCKET_MS);
+}
+
+/**
+ * Counter readings to energy consumed since the first of them.
+ *
+ * A counter that falls has been reset — a meter replaced, or its register
+ * rolled over — and the drop is not negative consumption. The reading after a
+ * reset is treated as consumption since the reset, which is the most that can
+ * be said without knowing what the old meter reached before it went: whatever
+ * it used between its last report and its removal is unrecoverable, and
+ * counting the step down as a negative would be visibly wrong rather than
+ * merely incomplete.
+ *
+ * Exported because step 5's Total Energy is the last value this produces, and
+ * that must not become a second implementation of the same rule.
+ */
+export function consumptionFrom(
+  counters: readonly (number | null)[],
+): (number | null)[] {
+  let previous: number | null = null;
+  let consumed = 0;
+
+  return counters.map((counter) => {
+    if (counter === null) return previous === null ? null : consumed;
+    if (previous === null) {
+      previous = counter;
+      return 0;
+    }
+    consumed += counter >= previous ? counter - previous : counter;
+    previous = counter;
+    return consumed;
+  });
 }
 
 export async function meterSeries(
@@ -134,6 +177,8 @@ export async function meterSeries(
     const buckets = accumulators.get(meterId) ?? [];
     const label = meter ? machineLabel(meter) : { number: null, name: null };
 
+    const consumed = consumptionFrom(buckets.map((bucket) => bucket.lastEnergy));
+
     return {
       meterId,
       meterNumber: meter ? meterNumber(meter) : meterId,
@@ -144,6 +189,7 @@ export async function meterSeries(
         at: new Date(from.getTime() + index * bucketMs),
         activePowerKw: bucket.count === 0 ? null : bucket.sum / bucket.count,
         energyKwh: bucket.lastEnergy,
+        energyConsumedKwh: consumed[index] ?? null,
       })),
     };
   });

@@ -16,9 +16,12 @@ import { TIME_ZONE } from "@/lib/format";
  * Colour identity comes from the eight validated series slots in globals.css,
  * and each series keeps its slot when others are removed. Because Doom 64's
  * light mode is a mid-grey surface, several of those hues sit under a 3:1
- * contrast ratio against it — so the values never depend on colour alone: every
- * chart carries a legend, direct labels at the line ends, a crosshair readout,
- * and a table view of the same numbers.
+ * contrast ratio against it — so no value is reachable only through colour: the
+ * series key above both charts names every series and prints its current
+ * numbers, lines carry direct end labels where they end clear of each other,
+ * the crosshair reads every series at one instant, and each chart has a table
+ * view. Pointing at a key row dims the other lines, which is what makes eight
+ * of them separable at all.
  */
 
 export interface ChartSeries {
@@ -32,16 +35,24 @@ export interface ChartSeries {
   readonly values: readonly (number | null)[];
 }
 
-const PLOT_HEIGHT = 260;
-const MARGIN = { top: 30, right: 84, bottom: 28, left: 60 };
+const PLOT_HEIGHT = 240;
+const MARGIN = { top: 14, right: 78, bottom: 26, left: 56 };
 const MIN_WIDTH = 320;
 /** Below this vertical separation two end labels would read as one block. */
 const LABEL_CLEARANCE = 14;
+/** A series the reader is pointing at stays at full strength; the rest drop to this. */
+const MUTED_OPACITY = 0.18;
 
 const TIME_LABEL = new Intl.DateTimeFormat("en-GB", {
   hour: "2-digit",
   minute: "2-digit",
   hour12: false,
+  timeZone: TIME_ZONE,
+});
+
+const DAY = new Intl.DateTimeFormat("en-GB", {
+  day: "2-digit",
+  month: "short",
   timeZone: TIME_ZONE,
 });
 
@@ -58,7 +69,7 @@ function color(slot: number): string {
   return `var(--series-${slot})`;
 }
 
-function format(value: number | null, decimals: number): string {
+export function formatValue(value: number | null, decimals: number): string {
   if (value === null || !Number.isFinite(value)) return "—";
   return value.toLocaleString("en-GB", {
     minimumFractionDigits: decimals,
@@ -78,10 +89,15 @@ function niceScale(
   // Finer steps when the axis does not start at zero, so a counter sitting at
   // 1,941 gets an axis that starts near it rather than one rounded down to 0 —
   // which would flatten every line against the top of the plot.
-  const divisions = zeroBased ? 4 : 6;
+  const divisions = zeroBased ? 5 : 6;
   const step = Math.pow(10, Math.floor(Math.log10(span / divisions)));
   const scaled = span / divisions / step;
-  const unit = step * (scaled > 5 ? 10 : scaled > 2 ? 5 : scaled > 1 ? 2 : 1);
+  // The 2.5 rung matters: without it an axis whose data tops out at 85 jumps
+  // to steps of 50 and draws three gridlines, leaving the lines crowded into
+  // the lower half of a plot that is mostly empty.
+  const unit =
+    step *
+    (scaled > 5 ? 10 : scaled > 2.5 ? 5 : scaled > 2 ? 2.5 : scaled > 1 ? 2 : 1);
 
   const lo = Math.floor(low / unit) * unit;
   const hi = Math.ceil(max / unit) * unit;
@@ -92,6 +108,7 @@ function niceScale(
 
 export function MeterChart({
   title,
+  subtitle,
   unit,
   decimals,
   zeroBased,
@@ -99,12 +116,15 @@ export function MeterChart({
   series,
   bucketMs,
   pending,
+  focused,
 }: {
+  /** Carries the unit, so the plot needs no floating axis caption. */
   title: string;
-  /** Axis and readout unit, as the specification writes it. */
+  subtitle?: string;
+  /** Unit for the table view's column heads and the readouts. */
   unit: string;
   decimals: number;
-  /** Power starts at zero; a cumulative counter does not, and would be a flat line if it did. */
+  /** Both quantities plotted here start at zero, and the axis says so. */
   zeroBased: boolean;
   /** Bucket start instants, in epoch milliseconds. */
   times: readonly number[];
@@ -112,6 +132,8 @@ export function MeterChart({
   bucketMs: number;
   /** True while a new selection or window is loading, so the frame holds. */
   pending: boolean;
+  /** The series the reader is pointing at in the key, or null. */
+  focused: string | null;
 }) {
   const frame = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(960);
@@ -139,6 +161,14 @@ export function MeterChart({
     if (values.length === 0) return null;
     return niceScale(Math.min(...values), Math.max(...values), zeroBased);
   }, [series, zeroBased]);
+
+  /** A window that crosses midnight in Bangkok needs the day on its ticks. */
+  const multiDay = useMemo(() => {
+    const first = times[0];
+    const last = times[times.length - 1];
+    if (first === undefined || last === undefined) return false;
+    return DAY.format(first) !== DAY.format(last);
+  }, [times]);
 
   const x = (index: number): number =>
     MARGIN.left +
@@ -209,6 +239,9 @@ export function MeterChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps -- y is derived from scale
   }, [ends, series.length, scale]);
 
+  const dim = (meterId: string): number =>
+    focused === null || focused === meterId ? 1 : MUTED_OPACITY;
+
   const indexFromClientX = (clientX: number): number | null => {
     const node = frame.current;
     if (node === null || times.length === 0) return null;
@@ -228,11 +261,16 @@ export function MeterChart({
   const empty = series.length === 0 || scale === null;
 
   return (
-    <section className="flex flex-col gap-3 border border-border bg-card p-4">
-      <header className="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
-          {title}
-        </h2>
+    <section className="flex flex-col gap-2">
+      <header className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h3 className="font-mono text-xs uppercase tracking-widest text-foreground">
+            {title}
+          </h3>
+          {subtitle ? (
+            <p className="font-mono text-[11px] text-muted-foreground">{subtitle}</p>
+          ) : null}
+        </div>
         <div className="flex items-center gap-3">
           <span className="font-mono text-[11px] text-muted-foreground">
             {Math.round(bucketMs / 60_000)} min buckets
@@ -242,7 +280,7 @@ export function MeterChart({
             onClick={() => setShowTable((on) => !on)}
             aria-pressed={showTable}
             className={[
-              "border px-2.5 py-1 font-mono text-[11px] uppercase tracking-wider transition-colors",
+              "border px-2 py-0.5 font-mono text-[11px] uppercase tracking-wider transition-colors",
               showTable
                 ? "border-primary text-foreground"
                 : "border-border text-muted-foreground hover:border-primary hover:text-foreground",
@@ -308,24 +346,13 @@ export function MeterChart({
                   className="fill-muted-foreground font-mono tabular-nums"
                   fontSize={11}
                 >
-                  {format(tick, tick % 1 === 0 ? 0 : decimals)}
+                  {formatValue(tick, tick % 1 === 0 ? 0 : decimals)}
                 </text>
               </g>
             ))}
 
-            {/* The unit sits at the axis head, left-aligned under the top of the
-                plot, so it never lands on the highest tick's label. */}
-            <text
-              x={4}
-              y={11}
-              textAnchor="start"
-              className="fill-muted-foreground font-mono"
-              fontSize={10}
-            >
-              {unit}
-            </text>
-
-            {/* Time axis: about six labels, whatever the window. */}
+            {/* Time axis: about six labels, carrying the day only when the
+                window crosses one. */}
             {times.map((time, index) => {
               const every = Math.max(1, Math.round(times.length / 6));
               if (index % every !== 0 && index !== times.length - 1) return null;
@@ -334,11 +361,17 @@ export function MeterChart({
                   key={time}
                   x={x(index)}
                   y={MARGIN.top + PLOT_HEIGHT + 16}
-                  textAnchor={index === times.length - 1 ? "end" : "middle"}
+                  textAnchor={
+                    index === times.length - 1
+                      ? "end"
+                      : index === 0
+                        ? "start"
+                        : "middle"
+                  }
                   className="fill-muted-foreground font-mono tabular-nums"
                   fontSize={11}
                 >
-                  {TIME_LABEL.format(time)}
+                  {multiDay ? DATE_TIME_LABEL.format(time) : TIME_LABEL.format(time)}
                 </text>
               );
             })}
@@ -372,6 +405,7 @@ export function MeterChart({
                 strokeWidth={2}
                 strokeLinecap="round"
                 strokeLinejoin="round"
+                opacity={dim(path.meterId)}
               />
             ))}
 
@@ -386,6 +420,7 @@ export function MeterChart({
                 fill={color(end.slot)}
                 stroke="var(--card)"
                 strokeWidth={2}
+                opacity={dim(end.meterId)}
               />
             ))}
 
@@ -399,8 +434,9 @@ export function MeterChart({
                   dominantBaseline="middle"
                   className="fill-foreground font-mono tabular-nums"
                   fontSize={11}
+                  opacity={dim(end.meterId)}
                 >
-                  {format(end.value, decimals)}
+                  {formatValue(end.value, decimals)}
                 </text>
               ))}
 
@@ -417,6 +453,7 @@ export function MeterChart({
                       fill={color(s.slot)}
                       stroke="var(--card)"
                       strokeWidth={2}
+                      opacity={dim(s.meterId)}
                     />
                   );
                 })
@@ -448,7 +485,7 @@ export function MeterChart({
                     style={{ background: color(s.slot) }}
                   />
                   <span className="font-mono tabular-nums font-medium text-foreground">
-                    {format(s.values[hover] ?? null, decimals)}
+                    {formatValue(s.values[hover] ?? null, decimals)}
                   </span>
                   <span className="truncate text-muted-foreground">
                     {s.meterNumber} {s.machineName ?? ""}
@@ -460,27 +497,8 @@ export function MeterChart({
         ) : null}
       </div>
 
-      {series.length >= 2 ? (
-        <ul className="flex flex-wrap gap-x-4 gap-y-1">
-          {series.map((s) => (
-            <li key={s.meterId} className="flex items-center gap-2 text-xs">
-              <span
-                aria-hidden
-                className="inline-block h-0.5 w-4 shrink-0"
-                style={{ background: color(s.slot) }}
-              />
-              <span className="font-mono">{s.meterNumber}</span>
-              <span className="text-muted-foreground">
-                {s.machineName ?? "—"}
-                {s.machineNumber === null ? "" : ` · ${s.machineNumber}`}
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : null}
-
       {showTable && !empty ? (
-        <div className="max-h-80 overflow-auto border border-border">
+        <div className="max-h-72 overflow-auto border border-border">
           <table className="w-full border-collapse text-xs">
             <caption className="sr-only">{title}, as values</caption>
             <thead className="sticky top-0 bg-card">
@@ -513,7 +531,7 @@ export function MeterChart({
                       key={s.meterId}
                       className="px-2 py-1 text-right font-mono tabular-nums"
                     >
-                      {format(s.values[index] ?? null, decimals)}
+                      {formatValue(s.values[index] ?? null, decimals)}
                     </td>
                   ))}
                 </tr>

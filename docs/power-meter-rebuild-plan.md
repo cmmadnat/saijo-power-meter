@@ -197,6 +197,41 @@ obliges); the energy series climbs monotonically across 24 h, and the note under
 palette passes the lightness, chroma, CVD-separation and normal-vision checks in both modes against
 this theme's own surfaces.
 
+### Step 4b — Chart legibility — **done**
+Step 4 shipped charts that were correct and hard to read. Raised on review, fixed as its own step so
+the before and after are both on the record.
+
+The substantive change is **what the energy chart plots**. It drew the meter's raw cumulative
+counter, which is literally what the protocol carries — and four counters plotted together are four
+flat parallel lines whose spacing is only how long each meter has been installed. It now draws the
+counter's **rise across the window**: lines start at zero and fan out by what each machine actually
+used. That is the same arithmetic as the History screen's Total Energy, counter-reset rule included,
+so `consumptionFrom()` in `packages/application/src/series.ts` is the one implementation both screens
+use — step 5 inherits it rather than writing a second one.
+
+**This is a reading of the specification, not a literal rendering of it.** Page 3 says
+`Energy (kWh)` and the meter sends a counter. Worth putting to the customer: if they want the raw
+counter, it is one argument at the call site.
+
+Also: one series key above both charts instead of a legend under each, carrying every meter's
+current kW and consumed kWh, so both charts are readable as numbers and not only as lines; pointing
+at a key row dims the other lines, which is what makes eight of them separable; axis ticks stepped so
+the data fills the plot rather than the lower half of it; the floating axis captions dropped, the
+chart titles already carrying the unit; the meter list grouped by department; and the day shown on
+the time axis when a window crosses midnight.
+
+One fixture bug surfaced while checking the new column: energy was rounded to 0.1 kWh at *every*
+step rather than when emitted, so any increment below 0.05 kWh vanished and an idle meter accumulated
+**exactly zero** consumption. Standby draw is precisely what the History screen exists to make
+visible, so that would have read as a screen-4 bug months from now.
+
+*Verified:* the energy series rises from zero and separates — 348.6 / 312.0 / 413.3 / 430.1 kWh across
+six hours for the four default meters, against four flat parallel lines before; the idle meter now
+accumulates a non-zero standby figure instead of 0.0; pointing at a key row leaves that series at full
+strength and drops the other seven to 0.18 opacity, checked in the browser; 8 series × 24 h still
+loads in ~0.8 s; both themes, 1920×1080 and 1024×768, no page-level horizontal scroll, no console
+errors.
+
 ### Step 5 — History (screen 4)
 Department + date/time range filters, table of Total Energy (kWh) and running hours (Hr:min). All
 day boundaries and picker values in **Asia/Bangkok**; instants stored UTC, converted at the edges.

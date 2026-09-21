@@ -183,9 +183,18 @@ holds its slot when other series are removed, which is why the chart selection i
 holes rather than a list. Changing any of that means re-running the validation, not just picking a
 nicer colour.
 
-**Fixture load is a function of absolute time, and profiles come from the whole fleet.** Both exist
-so two screens generating different windows, or different subsets of meters, agree about the same
-machine at the same instant. Pass `defaultProfiles(registry)` when generating for a subset.
+**Fixture load is a function of absolute time, profiles come from the whole fleet, and energy
+accumulates at full precision.** The first two exist so two screens generating different windows, or
+different subsets of meters, agree about the same machine at the same instant — pass
+`defaultProfiles(registry)` when generating for a subset. The third exists because rounding the
+counter at every step swallowed any increment under 0.05 kWh, which zeroed every idle meter's
+consumption: round when emitting, never while accumulating.
+
+**The energy chart plots consumption across the window, not the raw counter** — `consumptionFrom()`
+in `packages/application/src/series.ts`, which is also where step 5's Total Energy comes from, reset
+rule and all. Do not write a second version of that arithmetic. It is a reading of specification page
+3 rather than a literal rendering of it, and it is flagged for the customer in
+`docs/requirements/power-meter-ui.md`.
 
 Two things the specification asks for that the workbook has no column for, both decided and both
 written down as questions back to the customer in `docs/requirements/power-meter-ui.md`: the

@@ -108,8 +108,16 @@ range. Step 4 picks a multi-select with a window control, per the rebuild plan.
 Identical to screen 2 with the y-axis labelled **Energy (kWh)**. Same selector, same shape, same
 gaps. One chart component, two configurations.
 
-Worth knowing while building it: `M<n>E` is a **cumulative counter**, so this series climbs and only
-ever steps down when a meter is replaced. A chart that draws it as a rate would be wrong.
+`M<n>E` is a **cumulative counter**, so the raw series climbs and only ever steps down when a meter
+is replaced. That is also what makes it unreadable as a chart: several counters plotted together are
+flat parallel lines whose spacing is how long each meter has been installed, not what any of them
+used.
+
+**So the built screen plots the counter's rise across the window** — each line starts at zero and
+separates by actual consumption. Same arithmetic as screen 4's Total Energy, counter reset included.
+
+**Open question for the customer:** this is a reading of the page rather than a literal rendering of
+it. If they want the raw counter on screen 3, it is one argument at the call site.
 
 ## Screen 4 — History (page 4)
 

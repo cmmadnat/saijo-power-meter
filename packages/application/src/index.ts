@@ -19,4 +19,9 @@ export type {
   SeriesPoint,
   SeriesView,
 } from "./series.ts";
-export { bucketWidthMs, meterSeries, MIN_BUCKET_MS } from "./series.ts";
+export {
+  bucketWidthMs,
+  consumptionFrom,
+  meterSeries,
+  MIN_BUCKET_MS,
+} from "./series.ts";

@@ -177,7 +177,11 @@ export function generateFixtures(options: FixtureOptions): FixtureSet {
         ? from.getTime() + (to.getTime() - from.getTime()) * (0.2 + random() * 0.2)
         : Number.POSITIVE_INFINITY;
 
-    let energyKwh = round(1000 + random() * 9000, 1);
+    // Accumulated at full precision and rounded only when emitted. Rounding the
+    // running total at every step instead loses any increment below 0.05 kWh
+    // entirely, which silently zeroes the consumption of every idle meter - the
+    // ones whose standby draw the History screen exists to make visible.
+    let energyExact = round(1000 + random() * 9000, 1);
     let resetApplied = false;
 
     for (let t = from.getTime(); t < to.getTime(); t += intervalMs) {
@@ -234,7 +238,7 @@ export function generateFixtures(options: FixtureOptions): FixtureSet {
           1,
         );
 
-      energyKwh = round(energyKwh + (activePowerKw * intervalMs) / 3_600_000, 1);
+      energyExact += (activePowerKw * intervalMs) / 3_600_000;
       if (
         !resetApplied &&
         resetFor === meter.meterId &&
@@ -244,7 +248,7 @@ export function generateFixtures(options: FixtureOptions): FixtureSet {
         // A meter replacement, once: the counter starts again from near zero
         // and climbs from there. The History total must not read the step down
         // as consumption going backwards.
-        energyKwh = round(random() * 2, 1);
+        energyExact = round(random() * 2, 1);
         resetApplied = true;
       }
 
@@ -259,7 +263,7 @@ export function generateFixtures(options: FixtureOptions): FixtureSet {
         },
         activePowerKw,
         powerFactor,
-        energyKwh,
+        energyKwh: round(energyExact, 1),
       });
     }
   });
