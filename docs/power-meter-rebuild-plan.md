@@ -76,12 +76,17 @@ visible (square corners) and Oxanium is actually loading, not a system fallback.
 ### Step 2 — Domain model + fixtures
 TypeScript types for a reading (meter id, timestamp, 3×V, 3×A, PF, kW, kWh), the meter registry
 type, and a **decoder** that turns a raw station payload into readings — this is where the implied
-decimal scaling lives, in one tested function. Plus a fixture generator producing plausible
-multi-hour data for all ~45 meters from the sample payloads in the spreadsheet.
+decimal scaling lives, in one tested function with the scale factors as named constants in one
+table, so the unanswered ones are a one-line change when the customer confirms them. Voltage is
+`data / 10` (documented). Current, power, PF and energy are **assumptions until open question 1 is
+answered** and must be marked as such in the code. The decoder also flags a decreasing energy
+counter rather than silently accepting it. Plus a fixture generator producing plausible multi-hour
+data for all ~45 meters.
 
-*Verify:* unit tests on the decoder, including the documented sample payload → expected engineering
-values; fixtures cover an idle meter, a running meter, a meter that crosses the 0.1 kW standby
-threshold, and an offline meter.
+*Verify:* unit tests on the decoder, including `2325 → 232.5 V` (the one documented conversion);
+every assumed scale factor has a test asserting the assumption so it fails loudly when changed;
+fixtures cover an idle meter, a running meter, a meter that crosses the 0.1 kW standby threshold, an
+offline meter, and an energy-counter reset.
 
 ### Step 3 — Real time table (screen 1)
 The table, reading fixtures. Sort, department filter, stale/offline indicator, the exact columns
@@ -117,14 +122,22 @@ ordered, idempotent, per CLAUDE.md), schema, and a loader that replays fixture d
 history queries (energy total, running hours) return the same numbers the step-5 pure functions do.
 
 ### Step 7 — MQTT ingester
-A small service that holds a subscription to the 9 station topics, decodes with the **step-2 decoder
-shared verbatim**, buffers, and writes in batches. Broker credentials from Secret Manager — they are
-currently sitting in plaintext in the customer spreadsheet and should be rotated before go-live.
-Handles reconnect, duplicate delivery, and a broker that goes away for an hour.
+**Gated on open questions 1 and 2 — do not go live before they are answered**, because wrong
+scaling silently corrupts every row it writes and a backfill cannot fix what was never captured
+correctly.
 
-*Verify:* runs against a local broker replaying the sample payloads; kill the broker mid-run and
-confirm reconnect with no data loss beyond the documented window; 24 h soak with flat memory;
-cost per day of writes measured, not estimated.
+A small service that holds a subscription to the 9 station topics, decodes with the **step-2 decoder
+shared verbatim**, buffers ~30–60 s, and writes raw **and a 1-minute rollup** in the same batch (the
+rollup was step 10 in the first draft; at 60 msg/min it belongs here). Broker credentials from
+Secret Manager — they are currently sitting in plaintext in the customer spreadsheet and should be
+rotated before go-live. Handles reconnect, duplicate delivery, and a broker that goes away for an
+hour.
+
+First hour of live data also answers the `M<n>E` question: watch whether the counter only climbs.
+
+*Verify:* runs against a local broker replaying payloads at 60/min; kill the broker mid-run and
+confirm reconnect with no data loss beyond the documented window; 24 h soak with flat memory; rollup
+totals reconcile against raw for the same window; cost per day of writes measured, not estimated.
 
 ### Step 8 — Wire the UI to real data
 Replace fixture calls with API routes / server components. The step-5 aggregation functions move
@@ -140,89 +153,129 @@ Preview on the PR, apply on merge — no credentials in-session, per CLAUDE.md.
 *Verify:* `pulumi preview` comment is clean; post-merge the deployed app shows live meter data;
 rollback path exercised once.
 
-### Step 10 — Rollups, retention, operations
-Pre-aggregated 1-minute and 1-hour rollups so charts never scan raw data; retention on raw; an
-alert when a station stops publishing (the customer will notice bad data before we do otherwise).
+### Step 10 — Retention, hourly rollup, operations
+The 1-minute rollup already landed in step 7. This adds the 1-hour rollup for long-range History,
+the retention policy on raw data (open question 3), and an alert when a station stops publishing —
+otherwise the customer notices bad data before we do.
 
-*Verify:* history query cost and latency before/after rollups; retention actually deletes; unplug a
-station in staging and confirm the alert fires.
+*Verify:* history query cost and latency before/after the hourly rollup; retention actually deletes;
+unplug a station in staging and confirm the alert fires.
 
 ---
 
 ## Where to put the data, and cheaply
 
-Volume first, because it decides everything: ~45 live meters (72 slots), 9 payloads per publish
-interval. At **one publish per minute** that is ~65 k readings/day, ~24 M/year — roughly 2–4 GB/year
-raw. At one per second it is 60× that. **The publish interval is the single biggest unknown in this
-plan** (open question 1).
+Volume, now that the publish rate is known: **~60 messages/minute**. Each station payload carries 8
+meter slots, ~45 of them live.
+
+| Reading of "60/min" | Messages/day | Readings/day | Readings/year | Raw/year (~100 B each) |
+| --- | --- | --- | --- | --- |
+| 60/min **total** across 9 stations | 86 k | ~690 k | ~250 M | ~25 GB |
+| 60/min **per station** (540/min total) | 778 k | ~6.2 M | ~2.3 B | ~225 GB |
+
+*(Which of these it is, is open question 7 below — but the recommendation holds either way, which is
+why it is not blocking.)*
 
 A meter reading is append-only, never updated, and always queried by (meter, time range). That is a
-time-series shape, and it argues for splitting hot from cold:
+time-series shape, and at this rate the hot/cold split stops being a nicety:
 
 **Recommended: hot latest-state + cold history.**
 
-- **Hot** — one row/document per meter holding the newest reading, overwritten each tick. 45 rows
-  total, forever. Screen 1 is a single cheap read. Firestore is fine here (~45 writes/tick), and so
-  is a single Postgres table.
-- **Cold** — append-only history for screens 2–4. **BigQuery** is the cheap and effective option:
-  $0.02/GB/month storage, Storage Write API ingestion around $0.025/GB, 1 TB of query free each
-  month, and day-partitioned + meter-clustered tables mean a history query scans megabytes. At the
-  volume above this is realistically **a few dollars a month**, and it does not care if the interval
-  turns out to be 1 s instead of 1 min.
+- **Hot** — one row per meter holding the newest reading, overwritten each tick. 45 rows, forever.
+  Screen 1 is a single cheap read, and it stays fast no matter how fast the meters publish.
+- **Cold** — append-only history for screens 2–4. **BigQuery**, day-partitioned and meter-clustered:
+  $0.02/GB/month storage, ~$0.025/GB ingest via the Storage Write API, 1 TB of query free monthly.
+  Even at the high end of the table that is **single-digit dollars a month**, and it does not care
+  which row of the table turns out to be true.
 
-Two honest alternatives:
+The rate changes the *alternatives* more than it changes the recommendation:
 
-- **Postgres only** (Cloud SQL, or Supabase — you already have Supabase connected). Simpler: one
-  store, one query language, real indexes, no streaming-buffer quirks. Cloud SQL's smallest instance
-  is ~$10–25/month *always on*; Supabase's free/cheap tiers may cover this outright. Good if the
-  interval is 1/min and stays there; gets expensive to keep fast if it is 1/s.
-- **Firestore only** (what the old app assumed). Works, but time-range queries across 45 meters bill
-  per document read on every chart load, and that is exactly the query this app does all day. It is
-  the most expensive option at scale and the least suited to the aggregations in screen 4.
+- **Firestore** (what the old app assumed) is now clearly wrong. 690 k writes/day is ~21 M
+  writes/month ≈ **$19/month in writes alone** at the low end, ~$170/month at the high end, before
+  a single chart is drawn — and charts bill per document read on exactly the query this app runs all
+  day.
+- **Postgres** (Cloud SQL or Supabase) needs real partitioning at 250 M rows/year and outgrows
+  Supabase's free tier immediately. Viable, but it is now a tuning exercise rather than the simple
+  option it would have been at 1/min.
 
-**Batch the writes either way.** Buffer 30–60 s in the ingester and write once per batch instead of
-per message — it is the difference between a few dollars and a few tens of dollars a month.
+**Two things follow directly from the rate:**
+
+1. **Roll up in the ingester, not later.** Write raw *and* a 1-minute aggregate in the same batch.
+   Charts and History read the rollup and never touch raw. This was step 10 in the first draft; at
+   60/min it belongs in step 7.
+2. **Raw data gets a short retention** (30 days, say) while rollups are kept forever. Rollups are
+   ~1/60th the volume, so "keep history for three years" costs almost nothing if raw is not what is
+   being kept. This is open question 3.
 
 ### Monitor continuously, or cron?
 
-**MQTT is push-only, so a cron job cannot poll it.** The two real options:
+**Settled by the rate: continuous.** MQTT is push-only so cron cannot poll it, and the one trick
+that makes cron work — a persistent session (`cleanSession=false`, QoS 1) letting HiveMQ queue
+messages while disconnected, drained by a scheduled job — needs the queue to outlast the gap. HiveMQ
+Cloud's free-plan queue is 1000 messages per client; at 60/min that **overflows in under 17 minutes**,
+and silently. It was marginal at 1/min. At this rate it is not an option.
 
-1. **Always-on subscriber** (recommended) — a Cloud Run service with `min-instances=1` and CPU
-   always allocated, holding the connection. Roughly **$6–13/month** for the smallest size. Simple,
-   no data loss, and the only option that works if messages arrive faster than once a minute.
-2. **Cron-drain** — subscribe with a persistent session (`cleanSession=false`, QoS 1) so HiveMQ
-   queues messages while you are disconnected, then have Cloud Scheduler wake a job every N minutes
-   to drain the queue and exit. Genuinely cheaper (scales to zero). But HiveMQ Cloud caps the
-   offline queue per client (1000 messages on the free plan), and 9 stations × 60 messages/minute
-   overflows that in under two minutes — **silent data loss**. Only viable at a slow publish
-   interval and a paid plan with a large queue.
+So: **an always-on subscriber** — a Cloud Run service with `min-instances=1` and CPU always
+allocated, holding the connection. Roughly **$6–13/month** for the smallest size. That is the
+cheapest correct answer, and the gap to the "cheaper" broken one is a few dollars.
 
-So: **option 1 unless the publish interval turns out to be minutes, not seconds.** The delta is a
-coffee a month and it removes a whole class of "why is there a hole in the chart" bugs.
+Worth one sentence: if the factory side can be changed, having the gateway POST to an HTTPS endpoint
+instead of publishing MQTT removes the always-on cost entirely (Cloud Run scales to zero between
+requests). That is a customer conversation, not a technical blocker.
 
-A third option worth a sentence: if the factory side can be changed, having the gateway POST to an
-HTTPS endpoint instead of publishing MQTT removes the always-on cost entirely (Cloud Run scales to
-zero between requests). That is a customer conversation, not a technical blocker.
+## Answered since the first draft
 
----
+**Publish rate: ~60 messages/minute.** 10–40x the 1/min the first draft assumed. This kills the
+cron-drain option outright (see below), makes raw-data retention a real cost decision rather than a
+footnote, and moves rollups from step 10 into the ingester itself.
 
-## Open questions — these change the plan
+**Voltage scaling is confirmed: `data / 10`.** The `Sample data` tab documents `FT01VL1 2325` →
+`232.5 V`. That is the only field in the entire workbook with a documented power-meter conversion.
 
-1. **What is the MQTT publish interval?** Drives storage choice, ingester shape, and cost. Nothing
-   in the spreadsheet says.
-2. **Exact scaling per field.** The sheet documents conversions for the Function Test / Field Test
-   values but **not for the power meter ones**. `2321 → 232.1 V` and `095 → 0.95` are inferences from
-   the sample; `"M1CL1":1522` could be 152.2 A or 15.22 A, and `"M1P":4995` could be 49.95 kW or
-   499.5 kW. Needs one confirmation from the customer before step 2 is trustworthy.
-3. **Is `M<n>E` a cumulative kWh counter?** Screen 4's "Total Energy over a window" only makes sense
-   if it is, and resets/rollovers then need a documented rule.
-4. **Retention.** How far back must History go — a year? three? It decides whether raw data is kept
-   or only rollups.
-5. **Scope: is this Power Meter only, or the whole Smart Factory app again?** This plan is Power
-   Meter only. The other four modules in `reference doc/` are a much larger piece of work.
-6. **Auth.** The old app had none ("admin UI without login per PRD"). Same here, or real accounts?
-7. **Timezone.** Asia/Bangkok throughout for day boundaries and the History picker, presumably —
-   worth stating once rather than discovering it in a rollup bug.
+**Cumulative-vs-interval for `M<n>E` will be settled empirically** in step 7 by watching live data
+for an hour: a counter that only ever climbs is cumulative. Until then the decoder treats it as
+cumulative and flags any decrease, so the ambiguity surfaces as data rather than as a silent wrong
+number in History.
+
+## Still open
+
+**1. Current, active power, PF and energy scaling.** I went through all four tabs of the workbook
+looking for these and they are not documented. What is there cannot settle it, for two reasons:
+
+- *The sample payloads are filler.* `"M1VL1":2321,"M1CL1":1522,"M1P":4995,"M1PF":095` appears
+  byte-identical on every topic and every one of the 8 meter slots, and again on the Function Test
+  and Field Test topics. It is placeholder text, not a capture.
+- *They are not physically consistent.* Taking V = 232.1 (the one confirmed conversion) and
+  PF = 0.95, three-phase power must be `3 x V x I x PF`. That gives **100.7 kW** if current is
+  `data/10`, or **10.07 kW** if it is `data/100`. The payload's own `M1P` is 4995 — which reads as
+  4995 kW, 49.95 kW, or 4995 W depending on scaling. **No combination reconciles.** So the sample
+  cannot be reverse-engineered into a scaling rule; it was never a real reading.
+
+**2. Is active power in kW or W?** The `MQTT Protocol` tab's power-meter header row says **kW**. The
+`Sample data` tab labels the equivalent field `FT01PL1` as **W**. These contradict each other, and
+with a 300–500 ton press on the other end the difference between 4995 W and 4995 kW is not something
+to guess at.
+
+Both are one question to the customer: *send one real captured payload from a meter that is running,
+with the meter's actual instantaneous reading from its own display.* That single datapoint settles
+scaling and units for every field at once. Everything through step 5 can be built without it — the
+decoder is one tested function and the fixtures are synthetic — but step 7 must not go live until it
+is answered, because wrong scaling silently corrupts every stored reading.
+
+**3. Raw retention.** Now a cost question rather than a detail — see the sizing below. How far back
+must History go at full resolution, versus at 1-minute or 1-hour rollup?
+
+**4. Scope.** This plan is Power Meter only. The other four modules in `reference doc/` (Function
+Test, Calorie Meter, EMC, Field & Reliability) are a much larger piece of work.
+
+**5. Auth.** The old app had none ("admin UI without login per PRD"). Same here, or real accounts?
+
+**6. Timezone.** Asia/Bangkok for day boundaries and the History picker, presumably — worth stating
+once rather than discovering it in a rollup bug.
+
+**7. Is 60/min the total across all 9 stations, or 60/min from each?** A 9x difference in volume.
+Not blocking — BigQuery absorbs either — but it decides raw retention and rollup granularity in
+step 10.
 
 ## Explicitly not doing
 
