@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+#
+# One-time Google Cloud bootstrap. Run this in Google Cloud Shell (or anywhere
+# with an authenticated gcloud), once per GCP project.
+#
+# It creates only what Pulumi cannot create for itself:
+#   - the APIs needed to run the bootstrap at all
+#   - the GCS bucket holding Pulumi state
+#   - the KMS key encrypting Pulumi secrets
+#   - the deployer service account and its roles
+#   - the Workload Identity Federation pool/provider that lets GitHub Actions
+#     impersonate that account with no long-lived key
+#
+# Everything else belongs in infra/. Re-running is safe.
+#
+# Usage: PROJECT_ID=your-project ./bootstrap.sh
+
+set -euo pipefail
+
+PROJECT_ID="${PROJECT_ID:-}"
+REGION="${REGION:-asia-southeast1}"
+GITHUB_REPO="${GITHUB_REPO:-cmmadnat/saijo-power-meter}"
+
+SA_NAME="${SA_NAME:-pulumi-deployer}"
+POOL_ID="${POOL_ID:-github}"
+PROVIDER_ID="${PROVIDER_ID:-github-oidc}"
+KEYRING="${KEYRING:-pulumi}"
+KEY="${KEY:-state}"
+
+log()  { printf '\n\033[1;34m==>\033[0m %s\n' "$*"; }
+skip() { printf '    \033[0;90m%s\033[0m\n' "$*"; }
+die()  { printf '\n\033[0;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
+
+[[ -n "$PROJECT_ID" ]] || die "PROJECT_ID is required. Usage: PROJECT_ID=your-project ./bootstrap.sh"
+command -v gcloud >/dev/null || die "gcloud not found. Run this in Google Cloud Shell."
+gcloud auth list --filter=status:ACTIVE --format='value(account)' | grep -q . \
+  || die "No active gcloud account. Run: gcloud auth login"
+gcloud projects describe "$PROJECT_ID" >/dev/null 2>&1 \
+  || die "Project '$PROJECT_ID' not found (or no access). Create it and link billing first."
+
+BUCKET="${BUCKET:-${PROJECT_ID}-pulumi-state}"
+SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+
+log "Project $PROJECT_ID ($PROJECT_NUMBER), region $REGION, repo $GITHUB_REPO"
+
+# --- APIs needed by the bootstrap itself; app-level APIs are Pulumi's job ------
+log "Enabling bootstrap APIs"
+gcloud services enable \
+  cloudresourcemanager.googleapis.com \
+  serviceusage.googleapis.com \
+  iam.googleapis.com \
+  iamcredentials.googleapis.com \
+  sts.googleapis.com \
+  storage.googleapis.com \
+  cloudkms.googleapis.com \
+  --project "$PROJECT_ID"
+
+# --- Pulumi state bucket ------------------------------------------------------
+log "State bucket gs://$BUCKET"
+if gcloud storage buckets describe "gs://$BUCKET" --project "$PROJECT_ID" >/dev/null 2>&1; then
+  skip "already exists"
+else
+  gcloud storage buckets create "gs://$BUCKET" \
+    --project "$PROJECT_ID" \
+    --location "$REGION" \
+    --uniform-bucket-level-access \
+    --public-access-prevention
+fi
+# Versioning is what makes a corrupted or concurrently-written state recoverable.
+gcloud storage buckets update "gs://$BUCKET" --versioning --project "$PROJECT_ID"
+
+# --- KMS key for Pulumi secret encryption ------------------------------------
+log "KMS key $KEYRING/$KEY"
+if gcloud kms keyrings describe "$KEYRING" --location "$REGION" --project "$PROJECT_ID" >/dev/null 2>&1; then
+  skip "keyring already exists"
+else
+  gcloud kms keyrings create "$KEYRING" --location "$REGION" --project "$PROJECT_ID"
+fi
+if gcloud kms keys describe "$KEY" --keyring "$KEYRING" --location "$REGION" --project "$PROJECT_ID" >/dev/null 2>&1; then
+  skip "key already exists"
+else
+  gcloud kms keys create "$KEY" \
+    --keyring "$KEYRING" --location "$REGION" --purpose encryption --project "$PROJECT_ID"
+fi
+KMS_KEY="projects/${PROJECT_ID}/locations/${REGION}/keyRings/${KEYRING}/cryptoKeys/${KEY}"
+
+# --- Deployer service account -------------------------------------------------
+log "Deployer service account $SA_EMAIL"
+if gcloud iam service-accounts describe "$SA_EMAIL" --project "$PROJECT_ID" >/dev/null 2>&1; then
+  skip "already exists"
+else
+  gcloud iam service-accounts create "$SA_NAME" \
+    --project "$PROJECT_ID" \
+    --display-name "Pulumi deployer (GitHub Actions)"
+fi
+
+# Broad enough to build the stack, narrow enough that a compromised CI run
+# cannot touch billing, org policy, or the project's own lifecycle.
+ROLES=(
+  roles/serviceusage.serviceUsageAdmin   # enable app-level APIs
+  roles/run.admin                        # Cloud Run
+  roles/artifactregistry.admin           # container images
+  roles/storage.admin                    # app buckets + Pulumi state
+  roles/cloudsql.admin                   # database instances
+  roles/secretmanager.admin              # runtime secrets
+  roles/iam.serviceAccountAdmin          # create the app's runtime identity
+  roles/iam.serviceAccountUser           # actAs, to deploy Run as that identity
+  roles/resourcemanager.projectIamAdmin  # bind roles to it
+)
+log "Granting project roles"
+for role in "${ROLES[@]}"; do
+  gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+    --member "serviceAccount:${SA_EMAIL}" \
+    --role "$role" \
+    --condition None \
+    --quiet >/dev/null
+  skip "$role"
+done
+
+gcloud kms keys add-iam-policy-binding "$KEY" \
+  --keyring "$KEYRING" --location "$REGION" --project "$PROJECT_ID" \
+  --member "serviceAccount:${SA_EMAIL}" \
+  --role roles/cloudkms.cryptoKeyEncrypterDecrypter \
+  --quiet >/dev/null
+skip "roles/cloudkms.cryptoKeyEncrypterDecrypter (on $KEYRING/$KEY)"
+
+# --- Workload Identity Federation: GitHub Actions -> the deployer SA ----------
+log "Workload Identity Federation pool/$POOL_ID"
+if gcloud iam workload-identity-pools describe "$POOL_ID" \
+     --location global --project "$PROJECT_ID" >/dev/null 2>&1; then
+  skip "pool already exists"
+else
+  gcloud iam workload-identity-pools create "$POOL_ID" \
+    --location global --project "$PROJECT_ID" \
+    --display-name "GitHub Actions"
+fi
+
+if gcloud iam workload-identity-pools providers describe "$PROVIDER_ID" \
+     --workload-identity-pool "$POOL_ID" --location global --project "$PROJECT_ID" >/dev/null 2>&1; then
+  skip "provider already exists"
+else
+  # The attribute condition is what stops any other repository on GitHub from
+  # minting tokens against this project.
+  gcloud iam workload-identity-pools providers create-oidc "$PROVIDER_ID" \
+    --location global --project "$PROJECT_ID" \
+    --workload-identity-pool "$POOL_ID" \
+    --display-name "GitHub OIDC" \
+    --issuer-uri "https://token.actions.githubusercontent.com" \
+    --attribute-mapping "google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.repository_owner=assertion.repository_owner" \
+    --attribute-condition "assertion.repository == '${GITHUB_REPO}'"
+fi
+
+POOL_NAME="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL_ID}"
+gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
+  --project "$PROJECT_ID" \
+  --role roles/iam.workloadIdentityUser \
+  --member "principalSet://iam.googleapis.com/${POOL_NAME}/attribute.repository/${GITHUB_REPO}" \
+  --quiet >/dev/null
+skip "$GITHUB_REPO may impersonate $SA_NAME"
+
+# --- Hand off to GitHub -------------------------------------------------------
+cat <<OUT
+
+$(printf '\033[1;32m')Bootstrap complete.$(printf '\033[0m')
+
+Set these as GitHub Actions *variables* (none of them are secrets) on
+${GITHUB_REPO} — Settings > Secrets and variables > Actions > Variables,
+or with the gh CLI:
+
+  gh variable set GCP_PROJECT_ID   --repo ${GITHUB_REPO} --body "${PROJECT_ID}"
+  gh variable set GCP_STATE_BUCKET --repo ${GITHUB_REPO} --body "${BUCKET}"
+  gh variable set GCP_KMS_KEY      --repo ${GITHUB_REPO} --body "${KMS_KEY}"
+  gh variable set GCP_DEPLOYER_SA  --repo ${GITHUB_REPO} --body "${SA_EMAIL}"
+  gh variable set GCP_WIF_PROVIDER --repo ${GITHUB_REPO} --body "${POOL_NAME}/providers/${PROVIDER_ID}"
+
+Then open a pull request touching infra/ — the workflow posts a preview on it,
+and merging to main applies.
+OUT

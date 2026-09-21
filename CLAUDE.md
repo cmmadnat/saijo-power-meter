@@ -4,48 +4,70 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-Greenfield. The only committed content is `reference/`, a snapshot of an earlier, unrelated
-implementation. It exists to be *looked at* — nothing is copied, ported, or carried forward from
-it, and it is never modified. Build everything new at the repository root.
+Greenfield. `reference/` is a snapshot of an earlier, unrelated implementation kept only to be
+*looked at* — nothing is copied, ported, or carried forward from it, and it is never modified.
 
-There is no application code, build file, or test suite yet. This file describes the intended
-shape; replace each section with real commands as it gets built.
+Built so far: the Google Cloud footprint as Pulumi code, plus the pipeline that applies it. The
+application itself does not exist yet.
 
-## Target architecture
+| Path | What it is |
+| --- | --- |
+| `infra/` | Pulumi program (TypeScript) — every Google Cloud resource except the bootstrap ones. |
+| `bootstrap.sh` | One-time, run in Cloud Shell. Creates only what Pulumi cannot create for itself. |
+| `.github/workflows/infra.yml` | The only thing that runs `pulumi up`. Preview on PR, apply on `main`. |
+| `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
 
-Google Cloud from the ground up, provisioned as code:
+## How infrastructure changes reach the cloud
 
-- **Infrastructure as code first.** Every Google Cloud resource — project services/APIs, Artifact
-  Registry, Cloud Run service, database instance, storage buckets, service accounts and IAM
-  bindings, build triggers, secrets — is declared in the IaC program and applied from there. No
-  resource is created by hand in the console or with a one-off `gcloud` command; if it exists in
-  the cloud, it exists in the repo.
-  - Working default: **Pulumi with TypeScript**, so infra and app share one language and toolchain.
-    OpenTofu (HCL) is the alternative if Terraform-ecosystem modules turn out to matter more —
-    nothing is scaffolded yet, so this is still a cheap decision to revisit.
-  - Separate stacks per environment (e.g. `dev`, `prod`) rather than branching logic inside one stack.
-- **Application on Cloud Run**, deployed as a container image from Artifact Registry. The app is
-  stateless; all configuration arrives as environment variables and secrets wired by the IaC program.
-- **Versioned database migrations** checked into the repo, applied by an automated step that runs
-  *before* the new revision is promoted — never by hand against a deployed database. Migrations are
-  ordered, idempotent, and forward-compatible so a rollback of the app doesn't require a rollback
-  of the schema.
-- **Cloud Storage** for file and blob payloads; buckets are IaC-declared with explicit access
-  policies. Nothing is world-readable by default.
-- **Frontend: Next.js + shadcn/ui** with light/dark theming — bootstrapped with the stock
-  generators (`create-next-app`, `npx shadcn@latest init`) rather than a hand-rolled setup.
-  Not started yet.
+Development happens in cloud sessions, which are ephemeral and re-cloned each time. The rule that
+follows from that:
 
-## Build order
+**This session never holds Google Cloud credentials, and never applies infrastructure.** Claude
+edits the Pulumi program and typechecks it; a pull request gets a `pulumi preview` posted as a
+comment; merging to `main` applies it. CI authenticates with Workload Identity Federation, so no
+service-account key exists anywhere to leak.
 
-1. IaC program + the base Google Cloud footprint.
-2. Next.js + shadcn bootstrap.
-3. Database, migrations, and the deploy pipeline into Cloud Run.
+So `pulumi up` is never the right command to reach for here, and a failed `pulumi preview` in-session
+is expected — it fails on missing credentials, not on a broken program. To see a real preview, open
+a PR.
 
-Work top-down: don't add a cloud resource to support step 2 or 3 without declaring it in step 1's program.
+## Commands
 
-## Conventions
+```bash
+cd infra && npm ci             # after a fresh container, if the session hook didn't
+cd infra && npm run typecheck  # tsc --noEmit — the only check that works without credentials
+```
 
-- Region: `asia-southeast1`.
-- No credentials in the repo. Cloud Run uses an attached service account; local development uses
-  Application Default Credentials (`gcloud auth application-default login`).
+## First-time setup (not yet done)
+
+1. Create a GCP project and link billing.
+2. In **Google Cloud Shell** (browser-based, already authenticated — no local machine needed):
+   `PROJECT_ID=your-project ./bootstrap.sh`
+3. Set the five GitHub Actions *variables* the script prints at the end (`GCP_PROJECT_ID`,
+   `GCP_STATE_BUCKET`, `GCP_KMS_KEY`, `GCP_DEPLOYER_SA`, `GCP_WIF_PROVIDER`). They are not secrets.
+4. Open a PR touching `infra/` and check the preview comment.
+
+## Architecture
+
+- **All Google Cloud resources are declared in `infra/`.** Nothing is created by hand in the console
+  or with a one-off `gcloud` command. The one exception is `bootstrap.sh`, which exists because the
+  Pulumi state bucket, its KMS key, the deployer service account, and the WIF provider must exist
+  *before* Pulumi can run at all. That script is the boundary; anything else belongs in the program.
+- **State** lives in a versioned GCS bucket, with secrets encrypted by a Cloud KMS key. The stack
+  name is `dev`; add environments as separate stacks rather than branching inside the program.
+- **The GCP project is not pinned in `Pulumi.dev.yaml`** — CI passes it as `GOOGLE_PROJECT` from the
+  `GCP_PROJECT_ID` variable, so the program can target another project without a code change.
+- **Region `asia-southeast1`** throughout.
+- **Application: Cloud Run**, from an image in the `app` Artifact Registry repository that `infra/`
+  creates. Stateless; configuration arrives as environment variables and secrets wired by Pulumi.
+- **Database migrations** will be versioned, ordered, idempotent, and applied by an automated step
+  *before* a new revision is promoted — never by hand against a deployed database, and
+  forward-compatible so rolling back the app never requires rolling back the schema.
+- **Cloud Storage** for blobs, buckets IaC-declared with explicit access policies. Nothing is
+  world-readable by default.
+
+## Next
+
+**Next.js + shadcn/ui** frontend with light/dark theming, bootstrapped with the stock generators
+(`create-next-app`, `npx shadcn@latest init`) rather than a hand-rolled setup. Then the database,
+migrations, and the Cloud Run service itself.

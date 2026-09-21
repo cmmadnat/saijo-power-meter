@@ -1,0 +1,6 @@
+config:
+  gcp:region: asia-southeast1
+  # The GCP project is deliberately not pinned here. CI supplies it as
+  # GOOGLE_PROJECT (from the GCP_PROJECT_ID repository variable), so the same
+  # program can target another project without editing this file.
+  gcp:disableGlobalProjectWarning: "true"
