@@ -3,6 +3,24 @@
 Status: **agreed in outline.** Rate, retention, scope, auth and timezone are settled (see Answered).
 One blocker remains before step 7 can go live, and it needs an answer from the customer: see Still open.
 
+## Architecture
+
+The code follows **clean architecture**, with the dependency rule enforced by `npm run boundaries`
+rather than left to discipline. `docs/architecture/clean-architecture.md` has the reasoning and the
+placement rules; the short version is that three things in this plan already demanded it:
+
+- The web app and the MQTT ingester are separate deployables with opposite scaling shapes, and
+  step 7 requires them to share the decoder *verbatim*. A shared inner layer makes drift impossible
+  rather than merely discouraged.
+- Step 5's aggregations are promised to move server-side "unchanged" at step 8. Ports make that
+  true by construction.
+- The scaling divisors are still unresolved, so keeping raw payloads out of the domain confines
+  that question to one adapter.
+
+Layers: `packages/domain` (imports nothing) → `packages/application` (ports and use cases) →
+`packages/infrastructure` (adapters) → `apps/*` (composition). The payload decoder is
+infrastructure, not domain.
+
 ## Build log
 
 Progress, evidence and per-step verification are recorded as a published artifact, updated as each
@@ -88,7 +106,10 @@ changes in this PR.
 *Verify:* `npm run build` and `npm run lint` clean; dark and light both render; `--radius: 0px` is
 visible (square corners) and Oxanium is actually loading, not a system fallback.
 
-### Step 2 — Domain model + fixtures
+### Step 2 — Domain model + fixtures — *partly landed*
+Started early, because setting up the layering meant the entities had somewhere to live: the meter
+registry, the `Reading` entity and the running-vs-standby rule are in `packages/domain` with tests,
+and the ports are in `packages/application`. The decoder and the fixture generator remain.
 TypeScript types for a reading (meter id, timestamp, 3×V, 3×A, PF, kW, kWh), the meter registry
 type, and a **decoder** that turns a raw station payload into readings — this is where the implied
 decimal scaling lives, in one tested function with the scale factors as named constants in one
@@ -183,7 +204,7 @@ cookie, every route and API behind it. No user accounts. Rate-limit the attempt 
 check); the passcode never reaches the client bundle or a log line; rotating it invalidates existing
 sessions; cookie flags correct over HTTPS.
 
-### Step 10 — Deploy
+### Step 10 — Deploy — *pulled forward, awaiting merge*
 Cloud Run web service + the singleton ingester in `infra/`, image build and push, Secret Manager
 wiring (broker credentials, passcode), `asia-southeast1`.
 Preview on the PR, apply on merge — no credentials in-session, per CLAUDE.md.

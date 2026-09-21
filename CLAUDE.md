@@ -21,7 +21,11 @@ the start. The screens themselves are placeholders; no meter data flows yet.
 | --- | --- |
 | `infra/` | Pulumi program (TypeScript) — every Google Cloud resource except the bootstrap ones. |
 | `bootstrap.sh` | One-time, run in Cloud Shell. Creates only what Pulumi cannot create for itself. |
-| `web/` | Next.js + shadcn/ui frontend. Deployed to Cloud Run. |
+| `packages/domain` | Entities and rules. Imports nothing. |
+| `packages/application` | Use cases and the port interfaces they need. Imports domain only. |
+| `apps/web` | Next.js + shadcn/ui frontend. Deployed to Cloud Run. |
+| `scripts/check-boundaries.mjs` | Enforces the dependency rule. Runs first in CI. |
+| `.github/workflows/check.yml` | Application checks. Holds no cloud credentials. |
 | `.github/workflows/infra.yml` | Builds and pushes the web image, then runs Pulumi. Preview on PR, apply on `main`. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
 | `reference doc/`, root `.xlsx` | Customer specifications — the requirements source, unread so far. |
@@ -51,14 +55,16 @@ abandons it. Both cost a failed apply to learn.
 ## Commands
 
 ```bash
-cd infra && npm ci             # after a fresh container, if the session hook didn't
-cd infra && npm run typecheck  # tsc --noEmit — the only infra check that works without credentials
+npm ci                         # root: npm workspaces, covers apps/* and packages/*
+npm run verify                 # boundaries, then typecheck, lint and test across the workspace
+npm run boundaries             # the dependency rule on its own — cheapest check, run it first
 
-cd web && npm ci
-cd web && npm run typecheck    # next typegen && tsc --noEmit — typegen first, see Next below
-cd web && npm run lint
-cd web && npm run build        # also the container build's inner step
-cd web && npm run dev
+npm run dev  --workspace @power-meter/web
+npm run build --workspace @power-meter/web   # also the container build's inner step
+npm test     --workspace @power-meter/domain
+
+cd infra && npm ci             # infra is deliberately NOT a workspace member
+cd infra && npm run typecheck  # tsc --noEmit — the only infra check that works without credentials
 ```
 
 `pulumi preview` in-session fails on missing credentials, not on a broken program. Open a pull
@@ -78,6 +84,17 @@ applied from CI. Nothing below needs doing again unless a second project is bein
 4. Open a PR touching `infra/` and check the preview comment.
 
 ## Architecture
+
+**The code follows clean architecture, and the dependency rule is enforced rather than assumed.**
+Imports point inward: `domain` imports nothing, `application` imports domain, `infrastructure`
+imports both, `apps/*` import all three. The inner two layers may not import any third-party package
+at all — that is the rule that bites, and it is what stops a BigQuery type or a React hook from
+welding a use case to its delivery mechanism. `npm run boundaries` fails the build on a violation.
+The reasoning, and where a given piece of code belongs, is in
+`docs/architecture/clean-architecture.md`; read it before adding a package or moving logic between
+layers. Two consequences worth knowing up front: the MQTT payload decoder is *infrastructure*, not
+domain, because it translates one specific wire format; and `packages/infrastructure` does not exist
+yet by design — it arrives with the first real adapter rather than as an empty shell.
 
 - **All Google Cloud resources are declared in `infra/`.** Nothing is created by hand in the console
   or with a one-off `gcloud` command. The one exception is `bootstrap.sh`, which exists because the
@@ -124,18 +141,22 @@ there is a live URL to look at from the start.
 Two things about the **Doom 64** theme are deliberate and should survive review: `--radius` is
 `0px`, so square corners are the design and not an oversight; and it names Oxanium (sans), Source
 Code Pro (mono) and Georgia (serif) without installing them. The first two are loaded via
-`next/font` in `web/app/layout.tsx`, with the theme's font tokens pointed at the resulting CSS
-variables in a block appended to `web/app/globals.css` — the registry's own values are left
+`next/font` in `apps/web/app/layout.tsx`, with the theme's font tokens pointed at the resulting CSS
+variables in a block appended to `apps/web/app/globals.css` — the registry's own values are left
 untouched, so re-applying the theme does not clobber the wiring. Georgia is already a system stack
 and needs nothing. Primary is `#b71c1c`, secondary `#556b2f`.
 
-Working in `web/` has two traps, both hit once already:
+Working in `apps/web` has two traps, both hit once already:
 
 - **`tsc --noEmit` alone fails on a clean checkout.** Next 16 generates the `LayoutProps` route
   types during a build, so `npm run typecheck` runs `next typegen` first. Use the script.
 - **Next 16's react-hooks rules reject `setState` inside an effect**, which rules out the usual
   mounted-flag pattern for anything theme-dependent. Read state from the class `next-themes` puts on
   the document instead.
+- **Standalone output lands at `.next/standalone/apps/web/server.js`**, not at the standalone root,
+  because `outputFileTracingRoot` points at the repository root so the workspace packages get
+  traced in at all. There is no hoisted `node_modules` beside it — tracing puts everything under
+  `apps/web`. The Dockerfile flattens this; changing either setting means re-checking it.
 
 Remaining, in order: the domain model and payload decoder with fixtures, then the three screens on
 those fixtures, then the store, the MQTT ingester, and the passcode gate.

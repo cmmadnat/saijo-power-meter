@@ -9,7 +9,19 @@ const NAV = [
   { href: "/history", label: "History" },
 ] as const;
 
-export function AppShell({ children }: { children: React.ReactNode }) {
+/**
+ * The shell is a presentation adapter: it renders what it is given and knows
+ * nothing about where the numbers come from. The layout reads them from the
+ * domain registry on the server and passes them down, which keeps the meter
+ * data out of the client bundle.
+ */
+export function AppShell({
+  children,
+  fleet,
+}: {
+  children: React.ReactNode;
+  fleet: { stations: number; meters: number; standbyKw: number | null };
+}) {
   const pathname = usePathname();
 
   return (
@@ -64,7 +76,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <footer className="border-t border-border px-4 py-3">
         <div className="mx-auto w-full max-w-[1600px] font-mono text-xs text-muted-foreground">
-          9 stations · 55 commissioned meters · standby 0.1 kW
+          {fleet.stations} stations · {fleet.meters} commissioned meters
+          {fleet.standbyKw === null ? "" : ` · standby ${fleet.standbyKw} kW`}
         </div>
       </footer>
     </div>

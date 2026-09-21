@@ -8,10 +8,16 @@ name: infra
 # exist, so the push has to happen before `pulumi up` in the same run.
 on:
   pull_request:
-    paths: ["infra/**", "web/**", ".github/workflows/infra.yml"]
+    paths: &deploy_paths
+      - "infra/**"
+      - "apps/**"
+      - "packages/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/infra.yml"
   push:
     branches: [main]
-    paths: ["infra/**", "web/**", ".github/workflows/infra.yml"]
+    paths: *deploy_paths
 
 concurrency:
   # Repo-wide, deliberately NOT keyed on the ref. Every run — preview or apply —
@@ -60,7 +66,11 @@ jobs:
       - name: Build web image
         uses: docker/build-push-action@v6
         with:
-          context: web
+          # The repository root, not apps/web: the app imports the workspace
+          # packages and npm hoists the dependency tree to the root, so neither
+          # is reachable from inside apps/web.
+          context: .
+          file: apps/web/Dockerfile
           push: ${{ github.event_name == 'push' }}
           tags: ${{ env.WEB_IMAGE }}
           cache-from: type=gha

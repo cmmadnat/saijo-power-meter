@@ -9,7 +9,7 @@ import json, pathlib, sys
 import openpyxl
 
 WORKBOOK = pathlib.Path("reference doc/Smart Factory - Server and MQTT Rev01.xlsx")
-OUT = pathlib.Path("docs/requirements/meters.json")
+OUT = pathlib.Path("packages/domain/src/meters.generated.json")
 FIRST_ROW, LAST_ROW, SLOTS = 18, 89, 8
 
 

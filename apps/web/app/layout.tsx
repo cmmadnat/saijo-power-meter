@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Oxanium, Source_Code_Pro } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AppShell } from "@/components/app-shell";
+import { MeterRegistry } from "@power-meter/domain";
 import "./globals.css";
 
 // The Doom 64 theme names Oxanium (sans) and Source Code Pro (mono) without
@@ -24,6 +25,18 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
+  // Read on the server so the registry never reaches the client bundle.
+  const registry = MeterRegistry.fromWorkbook();
+  const commissioned = registry.commissioned();
+  const standby = commissioned[0]?.standbyPowerKw ?? null;
+  const fleet = {
+    stations: registry.topics().length,
+    meters: commissioned.length,
+    standbyKw: commissioned.every((m) => m.standbyPowerKw === standby)
+      ? standby
+      : null,
+  };
+
   return (
     <html
       lang="en"
@@ -32,7 +45,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
         <ThemeProvider>
-          <AppShell>{children}</AppShell>
+          <AppShell fleet={fleet}>{children}</AppShell>
         </ThemeProvider>
       </body>
     </html>
