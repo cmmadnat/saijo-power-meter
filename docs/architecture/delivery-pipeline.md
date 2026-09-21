@@ -131,6 +131,65 @@ Two consequences worth knowing:
   would have cloned. The build still fails, and the log still shows the clone failing. In
   practice that means a wrong deploy key, which shows up the first time anything runs.
 
+## Being told a build failed
+
+Cloud Build has no "email me on failure" setting. There are two supported routes, and the
+choice between them is a real one:
+
+1. **Pub/Sub.** Cloud Build publishes every state change to a topic named `cloud-builds` —
+   not created automatically; it starts publishing once the topic exists — carrying
+   `buildId` and `status` as message attributes. Precise, structured, and the basis of
+   Google's own [cloud-build-notifiers](https://github.com/GoogleCloudPlatform/cloud-build-notifiers)
+   for Slack, SMTP, Google Chat and HTTP. The cost is that each notifier is a Cloud Run
+   service, and the email one also needs SMTP credentials — a service and a credential to
+   run and hold, to send one email.
+2. **A Cloud Monitoring log-based alert.** Matches on the build log and emails through a
+   notification channel. Less precise, because it reads text rather than a status field,
+   but it is declarative, adds no running service, and holds no credential.
+
+This repository takes the second, in `infra/index.ts`. If the pipeline ever needs richer
+routing — per-branch, per-trigger, into Slack — the first is the upgrade, and the topic is
+a one-line addition.
+
+### What the alert matches, and why it is three clauses
+
+```
+resource.type="build"
+(textPayload:"PIPELINE_VERDICT=FAILED"
+ OR textPayload:"ERROR: build step"
+ OR textPayload:"context deadline exceeded")
+```
+
+No single clause covers every way a run ends badly:
+
+- `PIPELINE_VERDICT=FAILED` is `ci/report.sh`'s own marker, and catches every step failure
+  exactly. It has to exist because `ci/step.sh` swallows step exit codes — so Cloud Build's
+  own error line names `report.sh`, not the thing that actually broke.
+- `ERROR: build step` catches what `report.sh` cannot: a failed **clone**, which happens
+  before `report.sh` is in the workspace at all.
+- `context deadline exceeded` catches a build that ran past its timeout, which logs
+  neither of the others.
+
+`PIPELINE_VERDICT=FAILED` is a marker, not prose. Rewording it to read more nicely silently
+disables the first clause, which is why `ci/report.sh` says so at the line that prints it.
+
+### Turning it on
+
+The address is **not** committed with a default — whose inbox this reaches is not something
+to inherit by accident. One line in `infra/Pulumi.dev.yaml`:
+
+```yaml
+saijo-power-meter:alertEmail: you@example.com
+```
+
+Until it is set, the program warns on every preview that a failed build will be announced
+nowhere. That warning is the honest state of things, not a nag: it is precisely the gap
+this section exists to close.
+
+Rate-limited to one notification per five minutes, which is required for a log-based
+policy and wanted anyway — a build that fails in three steps logs more than one matching
+line, and three emails about one build teaches people to filter the alert.
+
 ## The one security boundary that had to be rebuilt
 
 A build checks out a commit and then runs `ci/*.sh` from it, with the deployer's
@@ -169,10 +228,11 @@ stack.
 **Nothing reports back to GitHub, and this is still true.** `pulumi/actions` posted the
 preview as a comment, and GitHub posted the check, both for free. A webhook trigger can do
 neither, so a pull request whose deploy failed looks entirely clean — no red mark, nothing.
-`build-logs.yml` makes the failure *readable on request*; it does not make it *announce
-itself*. Someone still has to think to look. This remains the largest thing the migration
-gave up, and closing it properly would mean a credential that can write to GitHub, which
-is a separate decision.
+`build-logs.yml` makes the failure *readable on request*, and the alert in *Being told a
+build failed* makes it *announce itself* — by email, from Google Cloud, rather than as a
+red mark on the pull request. What is still missing is the mark itself: a reviewer looking
+only at GitHub sees nothing. Closing that last piece would mean a credential that can write
+to GitHub, which is a separate decision.
 
 ## Two invariants that cost a failed apply to learn
 

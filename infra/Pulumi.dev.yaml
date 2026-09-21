@@ -21,3 +21,8 @@ config:
   # program falls back to these same values if a new stack omits them.
   saijo-power-meter:githubRepository: cmmadnat/saijo-power-meter
   saijo-power-meter:wifPoolId: github
+  # Who gets an email when a Cloud Build run fails. Nothing reports a build
+  # result back to GitHub — a webhook trigger posts no check and no status — so
+  # with this unset a broken deploy is announced nowhere at all. Uncomment and
+  # set it; the program warns on every preview while it is missing.
+  # saijo-power-meter:alertEmail: you@example.com

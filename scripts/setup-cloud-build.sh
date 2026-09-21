@@ -42,13 +42,15 @@ gcloud services enable \
   cloudbuild.googleapis.com \
   secretmanager.googleapis.com \
   apikeys.googleapis.com \
+  monitoring.googleapis.com \
   --project "$PROJECT_ID"
 
-# The deployer already holds everything a deploy needs. These two are about
-# declaring the pipeline itself: creating triggers, and creating the API key
-# without which a webhook trigger's URL is not callable.
-log "Granting the deployer the two pipeline roles"
-for role in roles/cloudbuild.builds.editor roles/serviceusage.apiKeysAdmin; do
+# The deployer already holds everything a deploy needs. These three are about
+# declaring the pipeline itself: creating triggers, creating the API key without
+# which a webhook trigger's URL is not callable, and creating the alert that
+# emails when a build fails.
+log "Granting the deployer the three pipeline roles"
+for role in roles/cloudbuild.builds.editor roles/serviceusage.apiKeysAdmin roles/monitoring.editor; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member "serviceAccount:${SA_EMAIL}" \
     --role "$role" \
@@ -153,7 +155,13 @@ cat <<OUT
      - the preview URL, with only the "Pull requests" event
      - the apply URL, with only the "Pushes" event
 
-4. Open a pull request touching infra/ and check that a Cloud Build preview
+4. Decide who hears about a failed build. Nothing reports a Cloud Build result
+   back to GitHub, so without this a broken deploy is silent. Add one line to
+   infra/Pulumi.dev.yaml and merge it:
+
+     saijo-power-meter:alertEmail: you@example.com
+
+5. Open a pull request touching infra/ and check that a Cloud Build preview
    runs. Once it has, delete .github/workflows/infra.yml.
 
    Builds are tagged with the commit they built, so the log for one is:

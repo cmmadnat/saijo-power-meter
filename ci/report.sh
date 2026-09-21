@@ -45,10 +45,16 @@ for name in $EXPECTED_STEPS; do
 done
 echo "================================================================"
 
+# A deterministic marker, not prose. The Cloud Monitoring alert that emails on a
+# failed build matches on this exact string, so it must never be reworded to
+# read more nicely, and nothing else in the pipeline may print it.
 if [[ ${#failed[@]} -eq 0 ]]; then
+  echo "PIPELINE_VERDICT=PASSED"
   echo "All steps succeeded."
   exit 0
 fi
+
+echo "PIPELINE_VERDICT=FAILED"
 
 # The tail, not the head: a failure's useful end is the last thing printed, and
 # a log re-read from the front is how a real error gets buried under npm's

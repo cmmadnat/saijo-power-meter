@@ -115,6 +115,7 @@ ROLES=(
   roles/resourcemanager.projectIamAdmin  # bind roles to it
   roles/cloudbuild.builds.editor         # declare the pipeline's own triggers
   roles/serviceusage.apiKeysAdmin        # the webhook triggers' API key
+  roles/monitoring.editor                # the alert that emails on a failed build
 )
 log "Granting project roles"
 for role in "${ROLES[@]}"; do

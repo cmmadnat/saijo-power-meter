@@ -78,11 +78,19 @@ log read must never queue behind a deploy, least of all the read that explains w
 failed. Every read also copies log lines into the Actions run log, which has its own retention and
 audience — worth revisiting when real meter data and the passcode gate land.
 
-**Nothing reports a Cloud Build result back to GitHub, and that is the standing gap.** A webhook
+**Nothing reports a Cloud Build result back to *GitHub*, and that is the standing gap.** A webhook
 trigger posts no check, no status and no comment, so a pull request whose deploy failed looks
-entirely clean. The absence of a red mark is not evidence the deploy worked — dispatch
-`build-logs.yml` and look. Do not widen the reader account to close this; a reporting path would be
-a separate decision with a separate credential.
+entirely clean on GitHub. The absence of a red mark is not evidence the deploy worked — dispatch
+`build-logs.yml` and look. Do not widen the reader account to close this; a reporting path into
+GitHub would be a separate decision with a separate credential.
+
+**A failed build does announce itself by email, through Cloud Monitoring.** Cloud Build has no
+built-in setting for it; the alternative was Pub/Sub plus a notifier service holding SMTP
+credentials. `infra/index.ts` declares a log-based alert policy instead, matching three things —
+`PIPELINE_VERDICT=FAILED` (`ci/report.sh`'s own marker, which is a marker and not prose, so do not
+reword it), `ERROR: build step` (a failed clone, which `report.sh` cannot report), and a timeout.
+It is off until `saijo-power-meter:alertEmail` is set in `Pulumi.dev.yaml`, and the program warns on
+every preview while it is not.
 
 **`ci/step.sh` and `ci/report.sh` exist because Cloud Build has no `if: always()`.** Every real step
 runs under the wrapper, which captures its output and swallows its exit code; the report step then

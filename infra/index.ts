@@ -25,6 +25,10 @@ const services = [
     // useless without it, and a project where someone turned it off should fail
     // here rather than in a job that reads zero entries and looks healthy.
     "logging.googleapis.com",
+    // Alerting on a failed build. Declared for the same reason as logging: a
+    // project where this is off should fail here, not by silently never
+    // sending the one email anybody relies on.
+    "monitoring.googleapis.com",
 ].map(
     (service) =>
         new gcp.projects.Service(service.split(".")[0], {
@@ -428,6 +432,99 @@ const applyTrigger = new gcp.cloudbuild.Trigger(
     },
     { dependsOn: services },
 );
+
+// ---------------------------------------------------------------------------
+// Telling someone the build failed
+// ---------------------------------------------------------------------------
+// Cloud Build has no "email me on failure" setting — the two supported routes
+// are its Pub/Sub `cloud-builds` topic with a notifier service subscribed to it,
+// and a Cloud Monitoring alert. This is the second one, because the first means
+// running a Cloud Run service and holding SMTP credentials to send one email.
+//
+// It matters because nothing else says a deploy broke. A webhook trigger posts
+// no check and no status, so a pull request whose deploy failed looks entirely
+// clean; without this, finding out requires thinking to go and look.
+//
+// Set the address to turn it on. It is not committed with a default, because
+// whose inbox this reaches is not something to inherit by accident:
+//
+//   infra/Pulumi.dev.yaml:  saijo-power-meter:alertEmail: you@example.com
+const alertEmail = new pulumi.Config().get("alertEmail");
+
+if (!alertEmail) {
+    pulumi.log.warn(
+        "alertEmail is not configured, so nothing will announce a failed build. " +
+            "A Cloud Build webhook trigger posts no status back to GitHub, so a " +
+            "broken deploy will be silent. Set saijo-power-meter:alertEmail in " +
+            "Pulumi.dev.yaml to fix that.",
+    );
+} else {
+    const channel = new gcp.monitoring.NotificationChannel(
+        "build-failure-email",
+        {
+            displayName: "Power Meter build failures",
+            type: "email",
+            labels: { email_address: alertEmail },
+        },
+        { dependsOn: services },
+    );
+
+    new gcp.monitoring.AlertPolicy(
+        "build-failed",
+        {
+            displayName: "Cloud Build: a pipeline run failed",
+            combiner: "OR",
+            notificationChannels: [channel.id],
+            conditions: [
+                {
+                    displayName: "A build logged a failure",
+                    // Three clauses, because no single one covers every way a
+                    // run can end badly:
+                    //   - PIPELINE_VERDICT=FAILED is ci/report.sh's own marker,
+                    //     and catches every step failure precisely. It exists
+                    //     because the wrapper swallows step exit codes, so Cloud
+                    //     Build's own error line is about report.sh rather than
+                    //     about what actually broke.
+                    //   - "build step" failures catch what report.sh cannot: a
+                    //     failed clone, which happens before report.sh exists in
+                    //     the workspace at all.
+                    //   - the deadline catches a build that ran past its
+                    //     timeout, which logs neither of the above.
+                    conditionMatchedLog: {
+                        filter: [
+                            'resource.type="build"',
+                            '(textPayload:"PIPELINE_VERDICT=FAILED"',
+                            'OR textPayload:"ERROR: build step"',
+                            'OR textPayload:"context deadline exceeded")',
+                        ].join(" "),
+                    },
+                },
+            ],
+            // Required for a log-based policy, and wanted anyway: a build that
+            // fails in three steps logs more than one matching line, and three
+            // emails about one build teaches people to filter the alert.
+            alertStrategy: {
+                notificationRateLimit: { period: "300s" },
+                autoClose: "86400s",
+            },
+            documentation: {
+                mimeType: "text/markdown",
+                content: [
+                    "A Cloud Build run failed. Nothing reports this back to GitHub —",
+                    "a webhook trigger posts no check or status — so this email is the",
+                    "only announcement.",
+                    "",
+                    "To read the log: dispatch `.github/workflows/build-logs.yml` with",
+                    "`failed_only: true`, or run",
+                    "`gcloud builds list --filter \"status!=SUCCESS\"` followed by",
+                    "`gcloud builds log <id>`. The verdict and the failing step's last",
+                    "lines are at the very end of the log.",
+                ].join("\n"),
+            },
+        },
+        { dependsOn: services },
+    );
+}
 
 export const pipelineTriggers = {
     preview: previewTrigger.name,
