@@ -39,7 +39,7 @@ So the inline build is kept thin, and it is the same four steps every time:
 | `clone` | `cloud-builders/git` | Clones over SSH with the deploy key, checks out the exact commit. |
 | `image` | `cloud-builders/docker` | `ci/image.sh` — builds the web image; pushes it only on apply. |
 | `pulumi` | `pulumi/pulumi-nodejs` | `ci/pulumi.sh` — previews or applies the stack. |
-| `comment` | `cloud-sdk:slim` | `ci/comment-pr.sh` — posts the preview on the pull request. Preview runs only. |
+| `report` | `cloud-sdk:slim` | `ci/report.sh` — posts the outcome to GitHub, then decides the build's verdict. |
 
 Everything after the clone runs a script from `ci/` **in the cloned repository**. That is
 what keeps pipeline logic versioned, reviewable and diffable in an ordinary pull request,
@@ -55,6 +55,67 @@ it is deliberate: it already carries exactly the roles a deploy needs, and a sec
 account with the same grants would be a second thing to audit. It gained two roles for
 declaring the pipeline (`cloudbuild.builds.editor`, `serviceusage.apiKeysAdmin`) and one
 for running inside it (`logging.logWriter`).
+
+## Seeing a failure
+
+A Cloud Build failure is, by default, visible in exactly one place: the Google Cloud
+console. That is a worse place than it sounds. A reviewer on a pull request does not go
+there, and a Claude cloud session **cannot** go there — it holds no Google Cloud
+credentials, on purpose, and that is not going to change. GitHub Actions solved this
+incidentally, by being inside GitHub.
+
+So the pipeline reports back out, and GitHub is the channel, because GitHub is what both
+a reviewer and a cloud session can already read:
+
+- **A commit status** on the built commit — red or green, with a link to the build. This
+  is what replaces the check Actions posted for free.
+- **A comment** carrying the actual content: a step-by-step table, and then either the
+  Pulumi preview (on a successful preview run) or the **last 12,000 characters of
+  whatever failed**. The tail, not the head — a stack trace's useful end is the last
+  thing printed, and truncating from the front is how a real error gets replaced by
+  npm's install chatter.
+
+On a preview run the comment goes on the pull request. On an apply run there is no pull
+request number to hand, so `ci/report.sh` looks up the one the commit came from; a direct
+push to `main` with no pull request falls back to a commit comment. Either way it lands
+somewhere `mcp__github__*` can read it, which is the whole point: *"CI is red, look at it"*
+stays a thing that can actually be acted on.
+
+### Why every step runs under a wrapper
+
+Cloud Build has no `if: always()`. A failing step stops the build dead, so a reporting
+step placed last would be precisely the step that never runs on the one occasion it
+matters.
+
+`ci/step.sh` is the way around it. Every real step runs under it; it tees the step's
+output to `/workspace/logs/<name>.log`, records the exit code to
+`/workspace/status/<name>`, and always exits clean. `ci/report.sh` then reads those files,
+posts the report, and **exits non-zero itself if any step failed** — so a red build still
+reads as red in the console, and a step that never ran is reported as "did not run" rather
+than quietly counted as a pass.
+
+Two consequences worth knowing:
+
+- **A failed clone reports nothing.** `ci/report.sh` lives in the repository it would have
+  cloned. In practice a clone failure means the deploy key is wrong, which is a setup
+  problem visible the first time anything runs — not a regression that appears months
+  later. If that ever stops being acceptable, the answer is a Pub/Sub subscription on the
+  `cloud-builds` topic and a small notifier outside the build.
+- **Reporting is best-effort; the verdict is not.** A GitHub outage means no comment, and
+  the build still fails correctly. The exit code comes from the recorded step statuses
+  alone, never from whether the post succeeded.
+
+### The token, and what it costs
+
+Posting needs a GitHub credential, and that is the one place this design puts something
+back in GitHub's direction. It is outbound — held in Secret Manager, used from inside
+Google Cloud — and it is fine-grained: this repository only, `Pull requests: read and
+write` and `Commit statuses: read and write`. No contents write, so it cannot push.
+
+It is **optional**. With the sentinel `none` stored, `ci/report.sh` prints the whole
+report into the build log, says loudly that it posted nothing, and exits clean. Nothing
+fails for want of a token — you simply go blind, which is the trade to make consciously
+rather than by accident.
 
 ## The one security boundary that had to be rebuilt
 
@@ -91,12 +152,10 @@ now runs the pipeline, so a README-only commit costs a build. A wasted build, no
 deploy — the image is content-addressed by commit and Pulumi no-ops on an unchanged
 stack.
 
-**The pull request comment is hand-rolled.** `pulumi/actions` posted the preview for free.
-`ci/comment-pr.sh` does it with a stored GitHub token, and that token is the one piece of
-this that puts a GitHub credential back in the loop — an outbound one, held in Secret
-Manager and used from inside Google Cloud, which is the direction that matters. It is
-**optional**: with the sentinel value `none` stored, the step logs where to find the
-preview and exits clean. The preview is always in the build log regardless.
+**Reporting is hand-rolled.** `pulumi/actions` posted the preview for free, and GitHub
+posted the check. `ci/report.sh` does both, with a stored token. See *Seeing a failure*
+above — it is the part of this migration that took the most care, because losing it means
+losing the ability to look at a broken deploy at all.
 
 ## Two invariants that cost a failed apply to learn
 

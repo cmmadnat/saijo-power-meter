@@ -25,7 +25,7 @@ on fixture data; no meter data flows yet.
 | `bootstrap.sh` | One-time, run in Cloud Shell. Creates only what Pulumi cannot create for itself. |
 | `scripts/setup-cloud-build.sh` | One-time, after `bootstrap.sh`. The pipeline's secrets and its two extra roles. |
 | `scripts/print-webhooks.sh` | Prints the two webhook URLs to paste into GitHub. |
-| `ci/` | What the Cloud Build steps run: `image.sh`, `pulumi.sh`, `comment-pr.sh`. |
+| `ci/` | What the Cloud Build steps run: `step.sh`, `image.sh`, `pulumi.sh`, `report.sh`. |
 | `packages/domain` | Entities and rules. Imports nothing. |
 | `packages/application` | Use cases and the port interfaces they need. Imports domain only. |
 | `packages/infrastructure` | Adapters: the MQTT payload decoder, the scale-factor table, fixture data. |
@@ -59,6 +59,15 @@ that is still pending are all in `docs/architecture/delivery-pipeline.md`; read 
 the pipeline. The shape in one line: the trigger holds a thin inline build, step one clones the repo,
 and every later step runs a script from `ci/` in that clone — so pipeline logic is ordinary reviewed
 code and only its skeleton is a Pulumi resource.
+
+**A Cloud Build failure is only visible because the pipeline posts it to GitHub.** This
+session holds no Google Cloud credentials and cannot open the console, so `ci/report.sh`
+is the entire channel: it puts a commit status and a comment — the step table plus the
+tail of whatever failed — on the pull request, or on the pull request the commit came
+from. Read a red deploy with the `mcp__github__*` tools, the same way an Actions log used
+to be read. If a run reports nothing at all, the first thing to check is whether
+`github-pr-token` still holds the sentinel `none`; the second is whether the `clone` step
+failed, which is the one failure that cannot report itself.
 
 **`.github/workflows/infra.yml` is still there and still applies on main.** That is temporary and
 deliberate: the triggers are Pulumi resources, so something has to apply the stack that creates

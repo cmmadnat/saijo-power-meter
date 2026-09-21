@@ -83,11 +83,20 @@ log "Webhook secret"
 openssl rand -hex 32 > "$WORK/webhook_secret"
 create_secret github-webhook-secret "$WORK/webhook_secret"
 
-log "Pull request comment token (optional)"
+log "GitHub reporting token (optional, but it is how failures become visible)"
 # Created as the sentinel "none" rather than empty, because Secret Manager
-# rejects an empty payload. The pipeline treats that value as "do not comment"
-# and carries on, so the preview still lands in the build log either way. Fill
-# it in with a fine-grained token carrying only Pull requests: read and write.
+# rejects an empty payload. The pipeline treats that value as "do not post" and
+# carries on, so a run never fails for want of a token — but with none stored,
+# a Cloud Build failure exists only in the Google Cloud console, which is the
+# one place neither a pull request reviewer nor a cloud session can see.
+#
+# Fill it in with a fine-grained token on this repository only, carrying:
+#   Pull requests:    read and write   (the comment with the preview or the
+#                                       tail of whatever failed)
+#   Commit statuses:  read and write   (the red or green mark on the commit,
+#                                       replacing the check Actions posted)
+#   Contents:         read             (finding the pull request a commit
+#                                       belongs to)
 printf 'none' > "$WORK/pr_token"
 create_secret github-pr-token "$WORK/pr_token"
 
@@ -161,6 +170,13 @@ cat <<OUT
      - the preview URL, with only the "Pull requests" event
      - the apply URL, with only the "Pushes" event
 
-4. Open a pull request touching infra/ and check that the Cloud Build preview
+4. Store a reporting token, or failures stay invisible outside the console:
+
+     gcloud secrets versions add github-pr-token --project ${PROJECT_ID} --data-file=-
+
+   Fine-grained, this repository only, Pull requests: read and write plus
+   Commit statuses: read and write.
+
+5. Open a pull request touching infra/ and check that the Cloud Build preview
    runs and comments. Once it does, delete .github/workflows/infra.yml.
 OUT

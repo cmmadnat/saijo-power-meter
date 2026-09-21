@@ -210,12 +210,17 @@ function pipelineBuild(mode: "preview" | "apply"): gcp.types.input.cloudbuild.Tr
             secretEnvs: ["DEPLOY_KEY"],
             args: ["-c", cloneStep],
         },
+        // Both real steps run under ci/step.sh, which captures their output and
+        // swallows their exit code. Cloud Build has no `if: always()`, so a
+        // failing step would otherwise stop the build before the step that
+        // reports the failure — the one occasion reporting matters. ci/report.sh
+        // turns a recorded failure back into a failed build.
         {
             id: "image",
             name: "gcr.io/cloud-builders/docker",
             dir: "/workspace/src",
             entrypoint: "bash",
-            args: ["ci/image.sh"],
+            args: ["ci/step.sh", "image", "ci/image.sh"],
             envs: [`MODE=${mode}`, `IMAGE=${imageRef}`, `CACHE_IMAGE=${cacheRef}`],
         },
         {
@@ -223,7 +228,7 @@ function pipelineBuild(mode: "preview" | "apply"): gcp.types.input.cloudbuild.Tr
             name: "pulumi/pulumi-nodejs:latest",
             dir: "/workspace/src",
             entrypoint: "bash",
-            args: ["ci/pulumi.sh"],
+            args: ["ci/step.sh", "pulumi", "ci/pulumi.sh"],
             envs: [
                 `MODE=${mode}`,
                 `GOOGLE_PROJECT=${projectId}`,
@@ -237,29 +242,37 @@ function pipelineBuild(mode: "preview" | "apply"): gcp.types.input.cloudbuild.Tr
 
     const secrets: gcp.types.input.cloudbuild.TriggerBuildAvailableSecretsSecretManager[] = [
         { versionName: secretVersion("github-deploy-key"), env: "DEPLOY_KEY" },
+        // Needed on apply runs too, not just previews: a failed deploy on main
+        // is the report that matters most, and it is the one nobody is watching
+        // a pull request for.
+        { versionName: secretVersion("github-pr-token"), env: "GITHUB_TOKEN" },
     ];
 
+    // Always last, and always runs, because nothing ahead of it can fail. It
+    // posts the outcome to GitHub — a commit status plus a comment carrying the
+    // preview, or the tail of whatever failed — and then exits non-zero if any
+    // step failed. That comment is the only way a Cloud Build failure reaches
+    // anywhere outside the Google Cloud console.
+    const reportEnvs = [
+        `MODE=${mode}`,
+        `GOOGLE_PROJECT=${projectId}`,
+        `REPO=${repoSlug}`,
+        "SHA=${_SHA}",
+        "BUILD_ID=$BUILD_ID",
+        "EXPECTED_STEPS=image pulumi",
+    ];
     if (mode === "preview") {
-        steps.push({
-            id: "comment",
-            name: "gcr.io/google.com/cloudsdktool/cloud-sdk:slim",
-            dir: "/workspace/src",
-            entrypoint: "bash",
-            args: ["ci/comment-pr.sh"],
-            secretEnvs: ["GITHUB_TOKEN"],
-            envs: [
-                "MODE=preview",
-                `GOOGLE_PROJECT=${projectId}`,
-                `REPO=${repoSlug}`,
-                "PR=${_PR}",
-                "BUILD_ID=$BUILD_ID",
-            ],
-        });
-        secrets.push({
-            versionName: secretVersion("github-pr-token"),
-            env: "GITHUB_TOKEN",
-        });
+        reportEnvs.push("PR=${_PR}");
     }
+    steps.push({
+        id: "report",
+        name: "gcr.io/google.com/cloudsdktool/cloud-sdk:slim",
+        dir: "/workspace/src",
+        entrypoint: "bash",
+        args: ["ci/report.sh"],
+        secretEnvs: ["GITHUB_TOKEN"],
+        envs: reportEnvs,
+    });
 
     return {
         steps,
