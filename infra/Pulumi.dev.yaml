@@ -1,0 +1,17 @@
+# The secrets provider must be committed. `pulumi stack init --secrets-provider`
+# writes this key into the stack file on whatever machine ran it, and in CI that
+# file is thrown away with the runner — every later run then falls back to the
+# passphrase provider and fails. Pinning it here is what makes the stack
+# reproducible from a fresh checkout.
+#
+# Pinning the KMS key does pin the project, unlike the config below. That is the
+# cost of the state being reproducible, and it is the same trade Pulumi makes by
+# committing Pulumi.<stack>.yaml at all.
+secretsprovider: gcpkms://projects/saijo-power-meter/locations/asia-southeast1/keyRings/pulumi/cryptoKeys/state
+
+config:
+  gcp:region: asia-southeast1
+  # The GCP project is deliberately not pinned here. CI supplies it as
+  # GOOGLE_PROJECT (from the GCP_PROJECT_ID repository variable), so the same
+  # program can target another project without editing this file.
+  gcp:disableGlobalProjectWarning: "true"
