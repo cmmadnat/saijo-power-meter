@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Greenfield. `reference/` is a snapshot of an earlier, unrelated implementation kept only to be
 *looked at* — nothing is copied, ported, or carried forward from it, and it is never modified.
 
-Built so far: the Google Cloud footprint as Pulumi code, plus the pipeline that applies it. The
-application itself does not exist yet.
+Built so far: the Google Cloud footprint as Pulumi code, plus the pipeline that applies it, both
+live. The application itself does not exist yet.
 
 | Path | What it is |
 | --- | --- |
@@ -38,7 +38,11 @@ cd infra && npm ci             # after a fresh container, if the session hook di
 cd infra && npm run typecheck  # tsc --noEmit — the only check that works without credentials
 ```
 
-## First-time setup (not yet done)
+## Setup (done — repeat only for a new project)
+
+Project `saijo-power-meter` is bootstrapped and applied: the state bucket, KMS key, deployer service
+account and WIF provider exist, the five repository variables are set, and the stack has been
+applied from CI. Nothing below needs doing again unless a second project is being stood up.
 
 1. Create a GCP project and link billing.
 2. In **Google Cloud Shell** (browser-based, already authenticated — no local machine needed):
@@ -65,7 +69,7 @@ cd infra && npm run typecheck  # tsc --noEmit — the only check that works with
   `GCP_PROJECT_ID` variable, so the program can target another project without a code change.
 - **Region `asia-southeast1`** throughout.
 - **Application: Cloud Run**, from an image in the `app` Artifact Registry repository that `infra/`
-  creates. Stateless; configuration arrives as environment variables and secrets wired by Pulumi.
+  creates — it exists, at `asia-southeast1-docker.pkg.dev/saijo-power-meter/app`. Stateless; configuration arrives as environment variables and secrets wired by Pulumi.
 - **Database migrations** will be versioned, ordered, idempotent, and applied by an automated step
   *before* a new revision is promoted — never by hand against a deployed database, and
   forward-compatible so rolling back the app never requires rolling back the schema.
