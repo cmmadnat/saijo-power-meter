@@ -1,7 +1,7 @@
 # Power Meter — rebuild plan (rough, for discussion)
 
-Status: **draft for review.** Nothing here is committed to a design yet. Read the open questions at
-the bottom first — three of them change the shape of steps 6–8.
+Status: **agreed in outline.** Rate, retention, scope, auth and timezone are settled (see Answered).
+One blocker remains before step 7 can go live, and it needs an answer from the customer: see Still open.
 
 ## What the old app actually did
 
@@ -103,7 +103,8 @@ two configurations.
 readable in both themes; energy series is monotonic (it is a cumulative counter, not a rate).
 
 ### Step 5 — History (screen 4)
-Department + date/time range filters, table of Total Energy (kWh) and running hours (Hr:min).
+Department + date/time range filters, table of Total Energy (kWh) and running hours (Hr:min). All
+day boundaries and picker values in **Asia/Bangkok**; instants stored UTC, converted at the edges.
 Total energy = last kWh reading − first kWh reading in the window, **with counter-reset handling**.
 Running hours = time above standby level. Both computed client-side over fixtures for now, in pure
 functions that move to the backend unchanged in step 8.
@@ -114,30 +115,41 @@ behave.
 
 **← At this point the customer can review the whole app and we have changed no infrastructure.**
 
-### Step 6 — Pick the store, write the schema
-Decision step, not much code. See the storage section below. Ships: migration tooling (versioned,
-ordered, idempotent, per CLAUDE.md), schema, and a loader that replays fixture data into it.
+### Step 6 — Schema and migrations
+The store is decided (BigQuery, day-partitioned, 14-day partition expiry — see the storage section).
+Ships: migration tooling (versioned, ordered, idempotent, per CLAUDE.md), the raw and 1-minute-rollup
+schemas, the 45-row `latest` table, and a loader that replays step-2 fixtures into it.
 
-*Verify:* migrations run twice with no diff on the second run; fixture load succeeds; the two
-history queries (energy total, running hours) return the same numbers the step-5 pure functions do.
+*Verify:* migrations run twice with no diff on the second run; fixture load succeeds; the two history
+queries (energy total, running hours) return **the same numbers the step-5 pure functions do** — that
+equivalence is the whole point of having written them as pure functions first; partition expiry is
+set, not assumed.
 
 ### Step 7 — MQTT ingester
 **Gated on open questions 1 and 2 — do not go live before they are answered**, because wrong
 scaling silently corrupts every row it writes and a backfill cannot fix what was never captured
 correctly.
 
-A small service that holds a subscription to the 9 station topics, decodes with the **step-2 decoder
-shared verbatim**, buffers ~30–60 s, and writes raw **and a 1-minute rollup** in the same batch (the
-rollup was step 10 in the first draft; at 60 msg/min it belongs here). Broker credentials from
-Secret Manager — they are currently sitting in plaintext in the customer spreadsheet and should be
-rotated before go-live. Handles reconnect, duplicate delivery, and a broker that goes away for an
-hour.
+A single always-on service that holds a subscription to the 9 station topics, decodes with the
+**step-2 decoder shared verbatim**, buffers ~30–60 s, and writes raw **and a 1-minute rollup** in the
+same batch. It also holds the latest reading for all 45 meters **in memory** and serves them over
+HTTP — that is the realtime screen's data source, and it is what keeps the hot path free.
+
+**It must be a singleton: `min-instances=1, max-instances=1`.** Two instances means two subscriptions,
+every reading stored twice, and every energy total wrong. Fixed MQTT client ID so the broker evicts
+the stale connection across a deploy.
+
+Broker credentials from Secret Manager — they are currently plaintext in the customer spreadsheet and
+should be rotated before go-live. Handles reconnect, duplicate delivery, and a broker that goes away
+for an hour.
 
 First hour of live data also answers the `M<n>E` question: watch whether the counter only climbs.
 
 *Verify:* runs against a local broker replaying payloads at 60/min; kill the broker mid-run and
-confirm reconnect with no data loss beyond the documented window; 24 h soak with flat memory; rollup
-totals reconcile against raw for the same window; cost per day of writes measured, not estimated.
+confirm reconnect with no data loss beyond the documented window; **force a second instance and
+confirm it refuses to start or the broker evicts one** — duplicate ingestion must be impossible, not
+merely unlikely; restart and confirm the in-memory hot state rehydrates from the `latest` table; 24 h
+soak with flat memory; rollup totals reconcile against raw; cost per day measured, not estimated.
 
 ### Step 8 — Wire the UI to real data
 Replace fixture calls with API routes / server components. The step-5 aggregation functions move
@@ -146,136 +158,146 @@ server-side unchanged. Fixtures stay as the test fixtures.
 *Verify:* every screen matches its step 3–5 behaviour against real stored data; p95 page load
 measured; the four screens are the only thing that changed.
 
-### Step 9 — Deploy
-Cloud Run service + ingester in `infra/`, image build and push, secrets wired, `asia-southeast1`.
+### Step 9 — Passcode gate
+A single shared passcode, checked server-side against Secret Manager, httpOnly + secure session
+cookie, every route and API behind it. No user accounts. Rate-limit the attempt endpoint.
+
+*Verify:* every route and API path 302s or 401s when unauthenticated (enumerate them, don't spot
+check); the passcode never reaches the client bundle or a log line; rotating it invalidates existing
+sessions; cookie flags correct over HTTPS.
+
+### Step 10 — Deploy
+Cloud Run web service + the singleton ingester in `infra/`, image build and push, Secret Manager
+wiring (broker credentials, passcode), `asia-southeast1`.
 Preview on the PR, apply on merge — no credentials in-session, per CLAUDE.md.
 
 *Verify:* `pulumi preview` comment is clean; post-merge the deployed app shows live meter data;
 rollback path exercised once.
 
-### Step 10 — Retention, hourly rollup, operations
-The 1-minute rollup already landed in step 7. This adds the 1-hour rollup for long-range History,
-the retention policy on raw data (open question 3), and an alert when a station stops publishing —
-otherwise the customer notices bad data before we do.
+### Step 11 — Operations
+The 1-minute rollup landed in step 7 and retention is a partition-expiry setting from step 6, so the
+hourly rollup this step used to carry is **no longer needed** — 14 days is not a long enough range to
+justify it. What remains: an alert when a station stops publishing, and one when the ingester's
+subscription drops. Otherwise the customer notices bad data before we do.
 
-*Verify:* history query cost and latency before/after the hourly rollup; retention actually deletes;
-unplug a station in staging and confirm the alert fires.
+*Verify:* unplug a station in staging and confirm the alert fires within a defined window; confirm
+14-day-old partitions are actually gone; confirm a killed ingester pages someone.
 
 ---
 
 ## Where to put the data, and cheaply
 
-Volume, now that the publish rate is known: **~60 messages/minute**. Each station payload carries 8
-meter slots, ~45 of them live.
+All the inputs are now known: **60 messages/minute total across the 9 stations**, **14 days of
+history**, Asia/Bangkok.
 
-| Reading of "60/min" | Messages/day | Readings/day | Readings/year | Raw/year (~100 B each) |
-| --- | --- | --- | --- | --- |
-| 60/min **total** across 9 stations | 86 k | ~690 k | ~250 M | ~25 GB |
-| 60/min **per station** (540/min total) | 778 k | ~6.2 M | ~2.3 B | ~225 GB |
+That works out much smaller than the first two drafts assumed:
 
-*(Which of these it is, is open question 7 below — but the recommendation holds either way, which is
-why it is not blocking.)*
+| | |
+| --- | --- |
+| Each station publishes every | ~9 s (so each meter gets a reading every ~9 s) |
+| Readings/day | ~691,000 |
+| Rows in the 14-day window | ~9.7 M |
+| Raw size | **~1 GB — steady state, not growing** |
 
-A meter reading is append-only, never updated, and always queried by (meter, time range). That is a
-time-series shape, and at this rate the hot/cold split stops being a nicety:
+One gigabyte that never grows. That is small enough that the interesting cost is not history at all:
 
-**Recommended: hot latest-state + cold history.**
+**The expensive part is the realtime screen, not the history.** 691 k readings/day is ~20.7 M
+writes/month. If every reading upserts a "latest value" row, that is **~$19/month in Firestore
+writes alone** — more than the rest of the system combined, to serve 45 numbers that are obsolete a
+second later. Cold storage of the same data in BigQuery is **~$0.07/month**. The intuition inverts:
+keeping 14 days of history is nearly free, and it is the live view that costs money if built
+carelessly.
 
-- **Hot** — one row per meter holding the newest reading, overwritten each tick. 45 rows, forever.
-  Screen 1 is a single cheap read, and it stays fast no matter how fast the meters publish.
-- **Cold** — append-only history for screens 2–4. **BigQuery**, day-partitioned and meter-clustered:
-  $0.02/GB/month storage, ~$0.025/GB ingest via the Storage Write API, 1 TB of query free monthly.
-  Even at the high end of the table that is **single-digit dollars a month**, and it does not care
-  which row of the table turns out to be true.
+So don't store the hot state at all:
 
-The rate changes the *alternatives* more than it changes the recommendation:
+- **Hot (screen 1, and the live end of screens 2–3)** — the ingester is already a persistent process
+  holding the MQTT connection. It keeps the latest reading for 45 meters **in memory** and serves
+  them over HTTP (or pushes via SSE). Cost: nothing. It also flushes those 45 rows to the database
+  every ~30 s purely so a restart doesn't start blind.
+- **Cold (screens 2–4)** — **BigQuery**, day-partitioned with a **14-day partition expiry** so
+  retention is configuration rather than a cleanup job. ~$0.07/month at this volume, and queries sit
+  inside the 1 TB free tier with room to spare.
 
-- **Firestore** (what the old app assumed) is now clearly wrong. 690 k writes/day is ~21 M
-  writes/month ≈ **$19/month in writes alone** at the low end, ~$170/month at the high end, before
-  a single chart is drawn — and charts bill per document read on exactly the query this app runs all
-  day.
-- **Postgres** (Cloud SQL or Supabase) needs real partitioning at 250 M rows/year and outgrows
-  Supabase's free tier immediately. Viable, but it is now a tuning exercise rather than the simple
-  option it would have been at 1/min.
+**This makes the ingester a singleton, which is a correctness requirement, not a tuning choice.**
+Cloud Run `min-instances=1, max-instances=1`. Two instances means two subscriptions to the same
+topics, which means every reading stored twice and every energy total wrong. Use a fixed MQTT client
+ID so that during a deploy the broker evicts the old connection when the new one attaches, instead
+of both running briefly.
 
-**Two things follow directly from the rate:**
+**At ~1 GB, Postgres is now genuinely competitive** — it was a tuning exercise at the volumes I
+assumed two drafts ago, and isn't anymore. One store, real SQL, no streaming-buffer latency. The
+only reason I still lead with BigQuery is cost: Cloud SQL's smallest always-on instance is
+~$10–25/month, which roughly doubles the bill to remove a modest amount of complexity. Worth
+revisiting if the query patterns get richer than these four screens.
 
-1. **Roll up in the ingester, not later.** Write raw *and* a 1-minute aggregate in the same batch.
-   Charts and History read the rollup and never touch raw. This was step 10 in the first draft; at
-   60/min it belongs in step 7.
-2. **Raw data gets a short retention** (30 days, say) while rollups are kept forever. Rollups are
-   ~1/60th the volume, so "keep history for three years" costs almost nothing if raw is not what is
-   being kept. This is open question 3.
+Rollups get simpler too. A 1-minute rollup is still worth writing in the same batch as raw (a
+14-day chart is ~20 k points per meter at 1-minute resolution versus ~134 k raw), but the hourly
+rollup from step 10 is now **unnecessary** — there is no long range left to serve.
 
 ### Monitor continuously, or cron?
 
-**Settled by the rate: continuous.** MQTT is push-only so cron cannot poll it, and the one trick
-that makes cron work — a persistent session (`cleanSession=false`, QoS 1) letting HiveMQ queue
-messages while disconnected, drained by a scheduled job — needs the queue to outlast the gap. HiveMQ
-Cloud's free-plan queue is 1000 messages per client; at 60/min that **overflows in under 17 minutes**,
-and silently. It was marginal at 1/min. At this rate it is not an option.
+**Settled: continuous.** MQTT is push-only so cron cannot poll it, and the one trick that makes cron
+work — a persistent session (`cleanSession=false`, QoS 1) letting HiveMQ queue while disconnected,
+drained by a scheduled job — needs the queue to outlast the gap. HiveMQ Cloud's free-plan queue is
+1000 messages per client; at 60/min that **overflows in under 17 minutes**, silently.
 
-So: **an always-on subscriber** — a Cloud Run service with `min-instances=1` and CPU always
-allocated, holding the connection. Roughly **$6–13/month** for the smallest size. That is the
-cheapest correct answer, and the gap to the "cheaper" broken one is a few dollars.
+So: an always-on subscriber on Cloud Run, `min/max-instances=1`, CPU always allocated. Roughly
+**$6–13/month**, and it is what makes the free in-memory hot path possible.
 
-Worth one sentence: if the factory side can be changed, having the gateway POST to an HTTPS endpoint
-instead of publishing MQTT removes the always-on cost entirely (Cloud Run scales to zero between
-requests). That is a customer conversation, not a technical blocker.
+### Rough monthly bill
 
-## Answered since the first draft
+| | |
+| --- | --- |
+| Cloud Run ingester (always on, singleton) | $6–13 |
+| Cloud Run web app (scales to zero) | $0–3 |
+| BigQuery storage + ingest + queries | ~$1 |
+| Artifact Registry | ~$0.10 |
+| **Total** | **~$10–18/month** |
 
-**Publish rate: ~60 messages/minute.** 10–40x the 1/min the first draft assumed. This kills the
-cron-drain option outright (see below), makes raw-data retention a real cost decision rather than a
-footnote, and moves rollups from step 10 into the ingester itself.
+Swapping BigQuery for Cloud SQL would put this at ~$25–40.
 
-**Voltage scaling is confirmed: `data / 10`.** The `Sample data` tab documents `FT01VL1 2325` →
-`232.5 V`. That is the only field in the entire workbook with a documented power-meter conversion.
+## Answered
 
-**Cumulative-vs-interval for `M<n>E` will be settled empirically** in step 7 by watching live data
-for an hour: a counter that only ever climbs is cumulative. Until then the decoder treats it as
-cumulative and flags any decrease, so the ambiguity surfaces as data rather than as a silent wrong
-number in History.
+- **Rate: 60 messages/minute, total across all 9 stations.** ~691 k readings/day.
+- **History: 14 days.** Raw retention is therefore 14 days and there is no long-term archive —
+  a `require_partition_filter` table with a 14-day partition expiry covers it.
+- **Scope: Power Meter only.** The other four modules in `reference doc/` are out.
+- **Auth: a single shared passcode.** Not per-user accounts. Checked server-side against a value in
+  Secret Manager, with an httpOnly session cookie; every route behind it. Deliberate consequence:
+  there is no audit trail of who looked at what, and rotating the passcode signs everyone out. Both
+  are fine for a factory dashboard and both are cheap to revisit later. **Flagging one reading I had
+  to make:** I took "passkey" to mean a shared passcode rather than WebAuthn/FIDO passkeys — say the
+  word if you meant the latter, it is a different (and not simple) piece of work.
+- **Timezone: Asia/Bangkok** for day boundaries, the History picker, and rollup bucket edges. Stored
+  as UTC instants, converted at the edges only.
+- **Voltage scaling: `data / 10`,** documented in the `Sample data` tab.
+- **`M<n>E` cumulative-vs-interval:** settled empirically in step 7's first hour of live data.
 
 ## Still open
 
-**1. Current, active power, PF and energy scaling.** I went through all four tabs of the workbook
-looking for these and they are not documented. What is there cannot settle it, for two reasons:
+**The one blocker left, and it is a customer question, not a technical one:** current, active power,
+PF and energy scaling, plus whether active power is kW or W.
+
+I went through all four tabs of the workbook for these. They are not documented, and what is there
+cannot settle it:
 
 - *The sample payloads are filler.* `"M1VL1":2321,"M1CL1":1522,"M1P":4995,"M1PF":095` appears
-  byte-identical on every topic and every one of the 8 meter slots, and again on the Function Test
-  and Field Test topics. It is placeholder text, not a capture.
-- *They are not physically consistent.* Taking V = 232.1 (the one confirmed conversion) and
-  PF = 0.95, three-phase power must be `3 x V x I x PF`. That gives **100.7 kW** if current is
-  `data/10`, or **10.07 kW** if it is `data/100`. The payload's own `M1P` is 4995 — which reads as
-  4995 kW, 49.95 kW, or 4995 W depending on scaling. **No combination reconciles.** So the sample
-  cannot be reverse-engineered into a scaling rule; it was never a real reading.
+  byte-identical on every topic and all 8 meter slots, and again on the Function Test and Field Test
+  topics.
+- *They are not physically consistent.* With V = 232.1 (the one confirmed conversion) and PF = 0.95,
+  three-phase power must be `3 x V x I x PF` — which gives **100.7 kW** if current is `data/10`, or
+  **10.07 kW** if `data/100`. The payload's own `M1P` of 4995 reads as 4995 kW, 49.95 kW or 4995 W
+  depending on scaling. **Nothing reconciles.** It was never a real reading.
+- *The workbook contradicts itself on units.* The `MQTT Protocol` tab's power-meter header says
+  **kW**; the `Sample data` tab labels the equivalent field **W**. With 300–500 ton presses on the
+  other end, 4995 W versus 4995 kW is not a guess worth making.
 
-**2. Is active power in kW or W?** The `MQTT Protocol` tab's power-meter header row says **kW**. The
-`Sample data` tab labels the equivalent field `FT01PL1` as **W**. These contradict each other, and
-with a 300–500 ton press on the other end the difference between 4995 W and 4995 kW is not something
-to guess at.
+**What settles all of it in one shot:** one real captured payload from a meter that is running, plus
+that meter's own display reading at the same moment.
 
-Both are one question to the customer: *send one real captured payload from a meter that is running,
-with the meter's actual instantaneous reading from its own display.* That single datapoint settles
-scaling and units for every field at once. Everything through step 5 can be built without it — the
-decoder is one tested function and the fixtures are synthetic — but step 7 must not go live until it
-is answered, because wrong scaling silently corrupts every stored reading.
-
-**3. Raw retention.** Now a cost question rather than a detail — see the sizing below. How far back
-must History go at full resolution, versus at 1-minute or 1-hour rollup?
-
-**4. Scope.** This plan is Power Meter only. The other four modules in `reference doc/` (Function
-Test, Calorie Meter, EMC, Field & Reliability) are a much larger piece of work.
-
-**5. Auth.** The old app had none ("admin UI without login per PRD"). Same here, or real accounts?
-
-**6. Timezone.** Asia/Bangkok for day boundaries and the History picker, presumably — worth stating
-once rather than discovering it in a rollup bug.
-
-**7. Is 60/min the total across all 9 stations, or 60/min from each?** A 9x difference in volume.
-Not blocking — BigQuery absorbs either — but it decides raw retention and rollup granularity in
-step 10.
+Steps 0–6 do not need it — fixtures are synthetic and the scale factors live in one constants table.
+**Step 7 is gated on it**, because wrong scaling silently corrupts every row it writes and no
+backfill recovers data that was never captured correctly.
 
 ## Explicitly not doing
 
