@@ -49,7 +49,7 @@ const WORD: Record<"live" | "stale" | "offline", string> = {
 
 const tile = "flex flex-col gap-2 border border-border bg-card p-4";
 const label =
-  "font-mono text-[11px] uppercase tracking-wider text-muted-foreground";
+  "font-mono text-2xs uppercase tracking-wider text-muted-foreground";
 const figure = "font-mono text-2xl tabular-nums";
 
 export function FleetStrip({

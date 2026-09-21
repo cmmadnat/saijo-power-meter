@@ -27,7 +27,7 @@ export function AppShell({
   return (
     <div className="flex min-h-dvh flex-1 flex-col">
       <header className="border-b border-border bg-card">
-        <div className="mx-auto flex w-full max-w-[1600px] flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3">
+        <div className="mx-auto flex w-full max-w-400 flex-wrap items-center gap-x-6 gap-y-3 px-4 py-3">
           <div className="flex min-w-0 items-baseline gap-3">
             <span className="truncate text-lg font-semibold tracking-wide uppercase">
               Power Meter
@@ -70,12 +70,12 @@ export function AppShell({
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-[1600px] flex-1 px-4 py-6">
+      <main className="mx-auto w-full max-w-400 flex-1 px-4 py-6">
         {children}
       </main>
 
       <footer className="border-t border-border px-4 py-3">
-        <div className="mx-auto w-full max-w-[1600px] font-mono text-xs text-muted-foreground">
+        <div className="mx-auto w-full max-w-400 font-mono text-xs text-muted-foreground">
           {fleet.stations} stations · {fleet.meters} commissioned meters
           {fleet.standbyKw === null ? "" : ` · standby ${fleet.standbyKw} kW`}
         </div>

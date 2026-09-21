@@ -268,11 +268,11 @@ export function MeterChart({
             {title}
           </h3>
           {subtitle ? (
-            <p className="font-mono text-[11px] text-muted-foreground">{subtitle}</p>
+            <p className="font-mono text-2xs text-muted-foreground">{subtitle}</p>
           ) : null}
         </div>
         <div className="flex items-center gap-3">
-          <span className="font-mono text-[11px] text-muted-foreground">
+          <span className="font-mono text-2xs text-muted-foreground">
             {Math.round(bucketMs / 60_000)} min buckets
           </span>
           <button
@@ -280,7 +280,7 @@ export function MeterChart({
             onClick={() => setShowTable((on) => !on)}
             aria-pressed={showTable}
             className={[
-              "border px-2 py-0.5 font-mono text-[11px] uppercase tracking-wider transition-colors",
+              "border px-2 py-0.5 font-mono text-2xs uppercase tracking-wider transition-colors",
               showTable
                 ? "border-accent-strong text-foreground"
                 : "border-border text-muted-foreground hover:border-accent-strong hover:text-foreground",
@@ -463,14 +463,14 @@ export function MeterChart({
 
         {hover !== null && hoverTime != null && !empty ? (
           <div
-            className="pointer-events-none absolute z-20 min-w-[180px] border border-border bg-card p-2 shadow-md"
+            className="pointer-events-none absolute z-20 min-w-45 border border-border bg-card p-2 shadow-md"
             style={{
               top: MARGIN.top,
               left: tooltipOnLeft ? undefined : tooltipLeft + 12,
               right: tooltipOnLeft ? width - tooltipLeft + 12 : undefined,
             }}
           >
-            <p className="mb-1 font-mono text-[11px] tabular-nums text-muted-foreground">
+            <p className="mb-1 font-mono text-2xs tabular-nums text-muted-foreground">
               {DATE_TIME_LABEL.format(hoverTime)}
             </p>
             <ul className="flex flex-col gap-0.5">
@@ -505,7 +505,7 @@ export function MeterChart({
               <tr>
                 <th
                   scope="col"
-                  className="border-b border-border px-2 py-1.5 text-left font-mono text-[11px] font-normal uppercase tracking-wider text-muted-foreground"
+                  className="border-b border-border px-2 py-1.5 text-left font-mono text-2xs font-normal uppercase tracking-wider text-muted-foreground"
                 >
                   Time
                 </th>
@@ -513,7 +513,7 @@ export function MeterChart({
                   <th
                     key={s.meterId}
                     scope="col"
-                    className="border-b border-border px-2 py-1.5 text-right font-mono text-[11px] font-normal uppercase tracking-wider text-muted-foreground"
+                    className="border-b border-border px-2 py-1.5 text-right font-mono text-2xs font-normal uppercase tracking-wider text-muted-foreground"
                   >
                     {s.meterNumber} ({unit})
                   </th>
