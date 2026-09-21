@@ -152,17 +152,38 @@ else
 fi
 
 POOL_NAME="projects/${PROJECT_NUMBER}/locations/global/workloadIdentityPools/${POOL_ID}"
-gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
-  --project "$PROJECT_ID" \
-  --role roles/iam.workloadIdentityUser \
-  --member "principalSet://iam.googleapis.com/${POOL_NAME}/attribute.repository/${GITHUB_REPO}" \
-  --quiet >/dev/null
-skip "$GITHUB_REPO may impersonate $SA_NAME"
+# This is the one step that touches the service account's OWN IAM policy, which
+# needs iam.serviceAccounts.setIamPolicy — a permission roles/editor does not
+# carry. It also runs seconds after the account was created, so a first failure
+# is often just IAM propagation. Retry before believing it.
+IMPERSONATION_OK=true
+for attempt in 1 2 3 4; do
+  if gcloud iam service-accounts add-iam-policy-binding "$SA_EMAIL" \
+      --project "$PROJECT_ID" \
+      --role roles/iam.workloadIdentityUser \
+      --member "principalSet://iam.googleapis.com/${POOL_NAME}/attribute.repository/${GITHUB_REPO}" \
+      --quiet >/dev/null 2>&1; then
+    IMPERSONATION_OK=true
+    skip "$GITHUB_REPO may impersonate $SA_NAME"
+    break
+  fi
+  IMPERSONATION_OK=false
+  if [[ $attempt -lt 4 ]]; then
+    skip "binding failed (attempt $attempt), retrying in $((attempt * 5))s..."
+    sleep $((attempt * 5))
+  fi
+done
 
 # --- Hand off to GitHub -------------------------------------------------------
+if [[ "$IMPERSONATION_OK" == true ]]; then
+  BANNER="$(printf '\033[1;32m')Bootstrap complete.$(printf '\033[0m')"
+else
+  BANNER="$(printf '\033[1;33m')Bootstrap incomplete — see the warning below.$(printf '\033[0m')"
+fi
+
 cat <<OUT
 
-$(printf '\033[1;32m')Bootstrap complete.$(printf '\033[0m')
+${BANNER}
 
 Set these as GitHub Actions *variables* (none of them are secrets) on
 ${GITHUB_REPO} — Settings > Secrets and variables > Actions > Variables,
@@ -177,3 +198,29 @@ or with the gh CLI:
 Then open a pull request touching infra/ — the workflow posts a preview on it,
 and merging to main applies.
 OUT
+
+if [[ "$IMPERSONATION_OK" != true ]]; then
+  cat >&2 <<OUT
+$(printf '\033[1;31m')One step did not complete.$(printf '\033[0m') Everything above exists; CI cannot
+authenticate until this last binding lands:
+
+  the repo ${GITHUB_REPO} is not yet allowed to impersonate ${SA_NAME}
+
+That binding needs the permission iam.serviceAccounts.setIamPolicy on the
+service account. roles/owner and roles/iam.serviceAccountAdmin carry it;
+roles/editor does not. Check what you hold:
+
+  gcloud projects get-iam-policy ${PROJECT_ID} \\
+    --flatten="bindings[].members" \\
+    --filter="bindings.members:\$(gcloud config get-value account)" \\
+    --format="value(bindings.role)"
+
+If you can change project IAM, grant yourself the role and re-run this script:
+
+  gcloud projects add-iam-policy-binding ${PROJECT_ID} \\
+    --member="user:\$(gcloud config get-value account)" \\
+    --role="roles/iam.serviceAccountAdmin"
+
+OUT
+  exit 1
+fi
