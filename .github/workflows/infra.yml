@@ -75,5 +75,9 @@ jobs:
           command: ${{ github.event_name == 'push' && 'up' || 'preview' }}
           stack-name: dev
           work-dir: infra
+          # Stated explicitly: without it the action announces "Logging into the
+          # Pulumi Cloud backend", which is at best confusing when state lives in
+          # a bucket we own.
+          cloud-url: gs://${{ vars.GCP_STATE_BUCKET }}
           comment-on-pr: true
           diff: true

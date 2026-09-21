@@ -55,6 +55,12 @@ cd infra && npm run typecheck  # tsc --noEmit — the only check that works with
   *before* Pulumi can run at all. That script is the boundary; anything else belongs in the program.
 - **State** lives in a versioned GCS bucket, with secrets encrypted by a Cloud KMS key. The stack
   name is `dev`; add environments as separate stacks rather than branching inside the program.
+- **`infra/Pulumi.dev.yaml` carries `secretsprovider` and must stay committed.** CI runs on a fresh
+  runner every time, so a secrets provider set by `pulumi stack init --secrets-provider` exists only
+  for that one job; without the committed key, later runs fall back to the passphrase provider and
+  fail. The same applies the first time a secret config value is added: Pulumi writes an
+  `encryptedkey` alongside it, and that has to be committed too or the value cannot be decrypted on
+  the next run.
 - **The GCP project is not pinned in `Pulumi.dev.yaml`** — CI passes it as `GOOGLE_PROJECT` from the
   `GCP_PROJECT_ID` variable, so the program can target another project without a code change.
 - **Region `asia-southeast1`** throughout.
