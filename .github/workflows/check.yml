@@ -1,0 +1,47 @@
+name: check
+
+# Application checks. Holds no cloud credentials and touches nothing outside the
+# runner — deploying is infra.yml's job, and the two are kept apart so a failing
+# unit test cannot be confused with a failing apply.
+on:
+  pull_request:
+    paths: &code_paths
+      - "apps/**"
+      - "packages/**"
+      - "scripts/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/check.yml"
+  push:
+    branches: [main]
+    paths: *code_paths
+
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # First, because it is the cheapest to run and the easiest to regress:
+      # clean architecture is a claim about which way imports point, and a claim
+      # nothing checks stops being true within a few pull requests.
+      - name: Dependency rule
+        run: npm run boundaries
+
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm test
