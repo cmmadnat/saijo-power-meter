@@ -1,0 +1,17 @@
+{
+  "emulators": {
+    "firestore": {
+      "port": 8089,
+      "host": "localhost"
+    },
+    "ui": {
+      "enabled": true,
+      "port": 4000,
+      "host": "localhost"
+    }
+  },
+  "firestore": {
+    "rules": "firestore.rules",
+    "indexes": "firestore.indexes.json"
+  }
+}

@@ -1,0 +1,51 @@
+steps:
+  # Build frontend with Node first (required for Maven copy step)
+  - name: 'node:18-alpine'
+    dir: 'frontend'
+    entrypoint: 'npm'
+    args: ['ci']
+
+  - name: 'node:18-alpine'
+    dir: 'frontend'
+    entrypoint: 'npm'
+    args: ['run', 'build']
+
+  # Copy frontend build to backend static resources
+  - name: 'alpine:latest'
+    args: ['sh', '-c', 'mkdir -p smart-factory-backend/src/main/resources/META-INF/resources && cp -r frontend/dist/* smart-factory-backend/src/main/resources/META-INF/resources/']
+
+  # Build and package backend with Maven (after React build)
+  - name: 'maven:3.9.6-eclipse-temurin-17-alpine'
+    dir: 'smart-factory-backend'
+    entrypoint: 'mvn'
+    args: ['clean', 'package', '-Dquarkus.package.type=uber-jar', '-DskipTests', '-Dcheckstyle.skip=true', '-B']
+
+  # Build container image using simple Dockerfile
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/saijo-monitoring/smart-factory:$SHORT_SHA', '.']
+
+  # Push image to registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/saijo-monitoring/smart-factory:$SHORT_SHA']
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - 'smart-factory'
+      - '--image=gcr.io/saijo-monitoring/smart-factory:$SHORT_SHA'
+      - '--region=asia-southeast1'
+      - '--platform=managed'
+      - '--allow-unauthenticated'
+      - '--port=8080'
+      - '--memory=1Gi'
+      - '--timeout=300'
+      - '--service-account=smart-factory@saijo-monitoring.iam.gserviceaccount.com'
+
+images:
+  - 'gcr.io/saijo-monitoring/smart-factory:$SHORT_SHA'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'

@@ -1,0 +1,7 @@
+name: saijo-backend-deploy
+description: Auto-deploy Saijo Backend when main branch is updated
+repositoryEventConfig:
+  repository: projects/saijo-monitoring/locations/asia-southeast1/connections/github/repositories/saijo-backend
+  push:
+    branch: main
+filename: cloudbuild.yaml

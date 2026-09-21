@@ -1,0 +1,525 @@
+---
+openapi: 3.0.3
+info:
+  title: field-reliability-app API
+  version: 1.0.0
+paths:
+  /api/analytics/benchmark:
+    get:
+      tags:
+      - Analytics Controller
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Not Allowed
+        "401":
+          description: Not Authorized
+      security:
+      - SecurityScheme: []
+  /api/analytics/predictions/{equipmentId}:
+    get:
+      tags:
+      - Analytics Controller
+      parameters:
+      - name: equipmentId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Not Allowed
+        "401":
+          description: Not Authorized
+      security:
+      - SecurityScheme: []
+  /api/analytics/reliability/{equipmentId}:
+    get:
+      tags:
+      - Analytics Controller
+      parameters:
+      - name: equipmentId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Not Allowed
+        "401":
+          description: Not Authorized
+      security:
+      - SecurityScheme: []
+  /api/analytics/reports:
+    post:
+      tags:
+      - Analytics Controller
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: {}
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Not Allowed
+        "401":
+          description: Not Authorized
+      security:
+      - SecurityScheme: []
+  /api/analytics/schedule-report:
+    post:
+      tags:
+      - Analytics Controller
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: {}
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Not Allowed
+        "401":
+          description: Not Authorized
+      security:
+      - SecurityScheme: []
+  /api/analytics/summary:
+    get:
+      tags:
+      - Analytics Controller
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Not Allowed
+        "401":
+          description: Not Authorized
+      security:
+      - SecurityScheme: []
+  /api/analytics/trends/{equipmentId}:
+    get:
+      tags:
+      - Analytics Controller
+      parameters:
+      - name: equipmentId
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: period
+        in: query
+        schema:
+          format: int32
+          default: 30
+          type: integer
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Not Allowed
+        "401":
+          description: Not Authorized
+      security:
+      - SecurityScheme: []
+  /api/auth/change-password:
+    post:
+      tags:
+      - Auth Controller
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChangePasswordRequest'
+      responses:
+        "200":
+          description: OK
+  /api/auth/login:
+    post:
+      tags:
+      - Auth Controller
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        "200":
+          description: OK
+  /api/auth/logout:
+    post:
+      tags:
+      - Auth Controller
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogoutRequest'
+      responses:
+        "200":
+          description: OK
+  /api/auth/session:
+    get:
+      tags:
+      - Auth Controller
+      parameters:
+      - name: sessionId
+        in: query
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/dashboard/alerts:
+    get:
+      tags:
+      - Dashboard Controller
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Not Allowed
+        "401":
+          description: Not Authorized
+      security:
+      - SecurityScheme: []
+  /api/dashboard/equipment/{equipmentId}:
+    get:
+      tags:
+      - Dashboard Controller
+      parameters:
+      - name: equipmentId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+        "403":
+          description: Not Allowed
+        "401":
+          description: Not Authorized
+      security:
+      - SecurityScheme: []
+  /api/dashboard/health:
+    get:
+      tags:
+      - Dashboard Controller
+      responses:
+        "200":
+          description: OK
+  /api/dashboard/realtime:
+    get:
+      tags:
+      - Dashboard Controller
+      responses:
+        "200":
+          description: OK
+  /api/health:
+    get:
+      tags:
+      - Health Controller
+      responses:
+        "200":
+          description: OK
+  /api/maintenance/calendar:
+    get:
+      tags:
+      - Maintenance Controller
+      parameters:
+      - name: end
+        in: query
+        schema:
+          type: string
+      - name: start
+        in: query
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/maintenance/dashboard:
+    get:
+      tags:
+      - Maintenance Controller
+      responses:
+        "200":
+          description: OK
+  /api/maintenance/health:
+    get:
+      tags:
+      - Maintenance Controller
+      responses:
+        "200":
+          description: OK
+  /api/maintenance/predictions/convert:
+    post:
+      tags:
+      - Maintenance Controller
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConvertPredictionRequest'
+      responses:
+        "200":
+          description: OK
+  /api/maintenance/tasks:
+    get:
+      tags:
+      - Maintenance Controller
+      parameters:
+      - name: assignedTechnician
+        in: query
+        schema:
+          type: string
+      - name: equipmentId
+        in: query
+        schema:
+          type: string
+      - name: status
+        in: query
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+    post:
+      tags:
+      - Maintenance Controller
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MaintenanceTask'
+      responses:
+        "200":
+          description: OK
+  /api/maintenance/tasks/{id}:
+    get:
+      tags:
+      - Maintenance Controller
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+    put:
+      tags:
+      - Maintenance Controller
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MaintenanceTask'
+      responses:
+        "200":
+          description: OK
+    delete:
+      tags:
+      - Maintenance Controller
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+  /api/maintenance/technicians:
+    get:
+      tags:
+      - Maintenance Controller
+      parameters:
+      - name: available
+        in: query
+        schema:
+          type: boolean
+      responses:
+        "200":
+          description: OK
+  /api/maintenance/technicians/{id}:
+    get:
+      tags:
+      - Maintenance Controller
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          description: OK
+components:
+  schemas:
+    ChangePasswordRequest:
+      required:
+      - userId
+      - currentPassword
+      - newPassword
+      type: object
+      properties:
+        userId:
+          pattern: \S
+          type: string
+        currentPassword:
+          pattern: \S
+          type: string
+        newPassword:
+          pattern: \S
+          type: string
+    ConvertPredictionRequest:
+      type: object
+      properties:
+        predictionId:
+          type: string
+        equipmentId:
+          type: string
+        failureType:
+          type: string
+        riskLevel:
+          type: string
+        predictedDate:
+          type: string
+    Instant:
+      format: date-time
+      type: string
+      example: 2022-03-10T16:15:50Z
+    LoginRequest:
+      required:
+      - username
+      - password
+      type: object
+      properties:
+        username:
+          pattern: \S
+          type: string
+        password:
+          pattern: \S
+          type: string
+    LogoutRequest:
+      required:
+      - sessionId
+      type: object
+      properties:
+        sessionId:
+          pattern: \S
+          type: string
+    MaintenanceTask:
+      required:
+      - equipmentId
+      - title
+      - type
+      - priority
+      - status
+      - scheduledDate
+      type: object
+      properties:
+        id:
+          type: string
+        equipmentId:
+          pattern: \S
+          type: string
+        title:
+          maxLength: 100
+          minLength: 3
+          pattern: \S
+          type: string
+        description:
+          maxLength: 500
+          type: string
+        type:
+          $ref: '#/components/schemas/MaintenanceType'
+        priority:
+          $ref: '#/components/schemas/Priority'
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        scheduledDate:
+          $ref: '#/components/schemas/Instant'
+        estimatedDuration:
+          format: int32
+          type: integer
+        assignedTechnician:
+          type: string
+        requiredParts:
+          type: array
+          items:
+            type: string
+        safetyNotes:
+          type: string
+        createdAt:
+          $ref: '#/components/schemas/Instant'
+        completedAt:
+          $ref: '#/components/schemas/Instant'
+        createdBy:
+          type: string
+        location:
+          type: string
+        equipmentName:
+          type: string
+        technicianName:
+          type: string
+        predictionId:
+          type: string
+        estimatedCost:
+          format: double
+          type: number
+        workOrderNumber:
+          type: string
+        isOverdue:
+          type: boolean
+        isDueToday:
+          type: boolean
+        isHighPriority:
+          type: boolean
+    MaintenanceType:
+      enum:
+      - PREVENTIVE
+      - CORRECTIVE
+      - PREDICTIVE
+      - EMERGENCY
+      - INSPECTION
+      type: string
+    Priority:
+      enum:
+      - LOW
+      - MEDIUM
+      - HIGH
+      - CRITICAL
+      type: string
+    TaskStatus:
+      enum:
+      - PLANNED
+      - IN_PROGRESS
+      - COMPLETED
+      - POSTPONED
+      - CANCELLED
+      type: string
+  securitySchemes:
+    SecurityScheme:
+      type: http
+      description: Authentication
+      scheme: bearer
+      bearerFormat: JWT

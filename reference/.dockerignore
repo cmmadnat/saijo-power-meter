@@ -1,0 +1,48 @@
+# Version control
+.git
+.gitignore
+
+# Documentation
+README.md
+docs/
+*.md
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Build artifacts not needed (keep the ones we need)
+admin-ui/node_modules/
+admin-ui/src/
+admin-ui/public/
+smart-factory-backend/src/
+
+# Logs and temp files
+*.log
+logs/
+.npm/
+.cache/
+
+# Cloud Build files (not needed in container)
+cloudbuild.yaml
+.gcloudignore
+
+# Testing
+smart-factory-backend/src/test/
+admin-ui/coverage/
+
+# Development tools
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Playwright test artifacts
+.playwright-mcp/
