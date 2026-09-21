@@ -1,1 +1,25 @@
+node_modules/
+*.log
+
+# Local environment / credentials — nothing of the sort belongs in this repo
+.env
+.env.*
+*-service-account.json
+*.key.json
+
+# Pulumi: stack config files are committed, local state and secrets are not
+Pulumi.*.yaml.bak
+.pulumi/
+
+# Build output
+dist/
+build/
+.next/
+out/
+
+# OS / editor
 /.DS_Store
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
