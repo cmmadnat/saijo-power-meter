@@ -10,8 +10,11 @@ on:
     paths: ["infra/**", ".github/workflows/infra.yml"]
 
 concurrency:
-  # One deploy at a time — Pulumi state is a single object in GCS.
-  group: infra-${{ github.ref }}
+  # Repo-wide, deliberately NOT keyed on the ref. Every run — preview or apply —
+  # touches the same stack state object in GCS, so a pull request run and a main
+  # run must never overlap. Keying this per-ref let exactly that happen and the
+  # second run died on the first one's lock.
+  group: infra
   cancel-in-progress: false
 
 permissions:
@@ -52,12 +55,20 @@ jobs:
           curl -fsSL https://get.pulumi.com | sh
           echo "$HOME/.pulumi/bin" >> "$GITHUB_PATH"
 
-      # Idempotent: creates the stack on the very first run, selects it after.
-      - name: Select or create stack
+      # Create the stack if it does not exist yet. Existence is checked with
+      # `stack ls`, which is read-only: `stack select` on a missing stack takes a
+      # lock in the state bucket and abandons it on failure, so the `stack init`
+      # that followed tripped over a lock its own predecessor had left behind.
+      # pulumi/actions selects the stack itself, so nothing selects it here.
+      - name: Create stack if missing
         run: |
           pulumi login
-          pulumi stack select dev 2>/dev/null \
-            || pulumi stack init dev --secrets-provider "gcpkms://${{ vars.GCP_KMS_KEY }}"
+          if pulumi stack ls --json | jq -e '.[] | select(.name == "dev")' >/dev/null 2>&1; then
+            echo "Stack 'dev' already exists."
+          else
+            echo "Stack 'dev' not found — creating it."
+            pulumi stack init dev --secrets-provider "gcpkms://${{ vars.GCP_KMS_KEY }}"
+          fi
 
       - uses: pulumi/actions@v6
         with:
