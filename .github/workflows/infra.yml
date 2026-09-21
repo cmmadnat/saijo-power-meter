@@ -1,0 +1,68 @@
+name: infra
+
+# Pulumi runs here and nowhere else: this is the only place holding an identity
+# that can change Google Cloud. Pull requests get a preview, main gets applied.
+on:
+  pull_request:
+    paths: ["infra/**", ".github/workflows/infra.yml"]
+  push:
+    branches: [main]
+    paths: ["infra/**", ".github/workflows/infra.yml"]
+
+concurrency:
+  # One deploy at a time — Pulumi state is a single object in GCS.
+  group: infra-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write        # required to mint the OIDC token for WIF
+  pull-requests: write   # required to post the preview comment
+
+jobs:
+  pulumi:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    env:
+      GOOGLE_PROJECT: ${{ vars.GCP_PROJECT_ID }}
+      PULUMI_BACKEND_URL: gs://${{ vars.GCP_STATE_BUCKET }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keyless: exchanges the job's OIDC token for short-lived credentials.
+      # No service account key exists to leak.
+      - uses: google-github-actions/auth@v2
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOYER_SA }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: infra/package-lock.json
+
+      - run: npm ci
+
+      - name: Install Pulumi CLI
+        run: |
+          curl -fsSL https://get.pulumi.com | sh
+          echo "$HOME/.pulumi/bin" >> "$GITHUB_PATH"
+
+      # Idempotent: creates the stack on the very first run, selects it after.
+      - name: Select or create stack
+        run: |
+          pulumi login
+          pulumi stack select dev 2>/dev/null \
+            || pulumi stack init dev --secrets-provider "gcpkms://${{ vars.GCP_KMS_KEY }}"
+
+      - uses: pulumi/actions@v6
+        with:
+          command: ${{ github.event_name == 'push' && 'up' || 'preview' }}
+          stack-name: dev
+          work-dir: infra
+          comment-on-pr: true
+          diff: true

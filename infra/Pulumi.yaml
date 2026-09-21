@@ -1,0 +1,6 @@
+name: saijo-power-meter
+description: Google Cloud infrastructure for saijo-power-meter
+runtime:
+  name: nodejs
+  options:
+    packagemanager: npm
