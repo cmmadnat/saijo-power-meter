@@ -57,6 +57,24 @@ Nothing else is on the page: no chart per row, no status column, no actions, no 
 - *No sort or filter.* With 5 mock rows none is needed; with 55 both are. The implementation sorts
   by any column and filters by department — the same department values the History screen filters
   on, so the two screens agree.
+- *No summary, and no grouping.* Fifty-five rows answer "what is this machine drawing" and never
+  answer "is the factory alright". Two additions were made, and both are flagged to the customer
+  rather than assumed:
+  - a **fleet strip** above the table — meters reporting out of 55 with one square per meter,
+    total load now, running against idle and silent, and the freshness split. Every figure is
+    derived from the same snapshot the table already holds; nothing here costs a second query.
+    **Offline meters are excluded from the total load.** Their last reading stays on screen, but it
+    is history, and adding an hour-old 90 kW to a figure labelled "now" would overstate the load by
+    exactly the meters that have stopped reporting. The offline count sits beside it so the gap is
+    visible.
+  - **department bands with a kW subtotal**, on by default and dismissable. Sorting applies inside
+    a band rather than across the table, so pointing the Power column at its largest value answers
+    "the biggest machine in each department" without dissolving the departments. There is no energy
+    subtotal: those are cumulative counters, and their sum says only how long a department's meters
+    have been installed.
+
+  **Open question for the customer:** neither is on the mock-up. If they want the table alone, both
+  come out without touching the specified columns.
 - *No refresh rate.* "Real time" against a 9-second publish interval means the screen re-reads on
   that order. The implementation polls every 10 seconds and shows the time of the last refresh.
 

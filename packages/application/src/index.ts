@@ -16,6 +16,7 @@ export {
   historyTable,
 } from "./history.ts";
 export type {
+  DepartmentLoad,
   FreshnessThresholds,
   MeterStatus,
   RealtimeRow,

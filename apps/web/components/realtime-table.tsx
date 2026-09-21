@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { formatAge, formatNumber } from "@/lib/format";
 
@@ -15,6 +15,15 @@ import { formatAge, formatNumber } from "@/lib/format";
  */
 
 export type MeterStatus = "live" | "stale" | "offline";
+
+/** A department's own census and load, summed in the application layer. */
+export interface DepartmentSummary {
+  readonly department: string;
+  readonly meters: number;
+  readonly reporting: number;
+  readonly running: number;
+  readonly activePowerKw: number;
+}
 
 export interface RealtimeTableRow {
   readonly meterId: string;
@@ -185,11 +194,14 @@ const REFRESH_MS = 10_000;
 export function RealtimeTable({
   rows,
   departments,
+  byDepartment,
   asOf,
   counts,
 }: {
   rows: readonly RealtimeTableRow[];
   departments: readonly string[];
+  /** Per-department census and load, summed in the application layer. */
+  byDepartment: readonly DepartmentSummary[];
   /** Formatted on the server, in Asia/Bangkok, so hydration cannot disagree. */
   asOf: string;
   counts: {
@@ -202,6 +214,9 @@ export function RealtimeTable({
   const router = useRouter();
   const [department, setDepartment] = useState<string>(ALL);
   const [live, setLive] = useState(true);
+  // Grouping is on by default: 55 rows in five departments read as a list of
+  // machines, and a supervisor's question is usually about a department.
+  const [grouped, setGrouped] = useState(true);
   const [sort, setSort] = useState<{ key: SortKey; direction: SortDirection }>({
     key: "meterNumber",
     direction: "asc",
@@ -230,6 +245,26 @@ export function RealtimeTable({
         : collator.compare(a.meterNumber, b.meterNumber);
     });
   }, [rows, department, sort]);
+
+  /**
+   * The rows as the table draws them: one flat list, or one list per
+   * department with a band ahead of each.
+   *
+   * Sorting applies inside a group rather than across the whole table, which is
+   * what makes grouping and sorting compose instead of fight: pointing the
+   * Power column at its largest value answers "the biggest machine in each
+   * department" without dissolving the departments.
+   */
+  const groups = useMemo(() => {
+    if (!grouped || department !== ALL) return null;
+    return departments
+      .map((name) => ({
+        department: name,
+        rows: visible.filter((row) => row.department === name),
+        summary: byDepartment.find((d) => d.department === name) ?? null,
+      }))
+      .filter((group) => group.rows.length > 0);
+  }, [grouped, department, departments, visible, byDepartment]);
 
   const onSort = (key: SortKey) =>
     setSort((current) =>
@@ -270,6 +305,22 @@ export function RealtimeTable({
             );
           })}
         </div>
+
+        {department === ALL && (
+          <button
+            type="button"
+            onClick={() => setGrouped((on) => !on)}
+            aria-pressed={grouped}
+            className={[
+              "border px-2.5 py-1 font-mono text-[11px] uppercase tracking-wider transition-colors",
+              grouped
+                ? "border-accent-strong text-foreground"
+                : "border-border text-muted-foreground hover:border-accent-strong hover:text-foreground",
+            ].join(" ")}
+          >
+            group by แผนก
+          </button>
+        )}
 
         <div className="ms-auto flex flex-wrap items-center gap-3 font-mono text-[11px] uppercase tracking-wider text-muted-foreground">
           <span className="flex items-center gap-1.5">
@@ -412,67 +463,42 @@ export function RealtimeTable({
           </thead>
 
           <tbody>
-            {visible.map((row) => {
-              const dim = row.status === "offline";
-              return (
-                <tr
-                  key={row.meterId}
-                  className={[
-                    "border-b border-border/60 last:border-b-0",
-                    dim ? "bg-muted/30 text-muted-foreground" : "",
-                  ].join(" ")}
-                >
-                  <td className={`${cell} font-mono whitespace-nowrap`}>
-                    <span className="flex items-center gap-2">
-                      <Marker row={row} />
-                      {row.meterNumber}
-                      {dim ? (
-                        <span className="text-[11px] tracking-wider">
-                          {formatAge(row.ageMs)}
-                        </span>
-                      ) : null}
-                    </span>
-                  </td>
-                  <td className={`${cell} whitespace-nowrap`}>
-                    {row.department ?? "—"}
-                  </td>
-                  <td className={`${cell} font-mono whitespace-nowrap`}>
-                    {row.machineNumber ?? "—"}
-                  </td>
-                  <td className={cell}>{row.machineName ?? "—"}</td>
-                  {[0, 1, 2].map((phase) => (
+            {groups !== null &&
+              groups.map((group) => (
+                <Fragment key={group.department}>
+                  <tr className="bg-muted">
                     <td
-                      key={`v${phase}`}
-                      className={`${numeric} ${phase === 0 ? "border-s border-border" : ""}`}
+                      colSpan={11}
+                      className={`${cell} font-mono text-[11px] uppercase tracking-widest text-muted-foreground`}
                     >
-                      {formatNumber(row.voltage?.[phase] ?? null, 1)}
+                      {group.department}
+                      <span className="ms-3 normal-case tracking-wider">
+                        {group.summary
+                          ? `${group.summary.running} of ${group.summary.meters} running` +
+                            (group.summary.reporting < group.summary.meters
+                              ? ` · ${group.summary.meters - group.summary.reporting} silent`
+                              : "")
+                          : `${group.rows.length} meters`}
+                      </span>
                     </td>
-                  ))}
-                  {[0, 1, 2].map((phase) => (
-                    <td
-                      key={`c${phase}`}
-                      className={`${numeric} ${phase === 0 ? "border-s border-border" : ""}`}
-                    >
-                      {formatNumber(row.current?.[phase] ?? null, 1)}
+                    <td className={`${numeric} font-semibold`}>
+                      {formatNumber(group.summary?.activePowerKw ?? null, 1)}
                     </td>
+                    {/* No energy subtotal: these are cumulative counters, and
+                        adding them together yields a number that means nothing
+                        — how long the department's meters have been installed. */}
+                    <td className={numeric} />
+                  </tr>
+                  {group.rows.map((row) => (
+                    <Row key={row.meterId} row={row} cell={cell} numeric={numeric} />
                   ))}
-                  <td className={`${numeric} border-s border-border`}>
-                    {formatNumber(row.powerFactor, 2)}
-                  </td>
-                  <td
-                    className={[
-                      numeric,
-                      row.running && !dim ? "text-foreground" : "",
-                    ].join(" ")}
-                  >
-                    {formatNumber(row.activePowerKw, 1)}
-                  </td>
-                  <td className={numeric}>
-                    {formatNumber(row.energyKwh, 1)}
-                  </td>
-                </tr>
-              );
-            })}
+                </Fragment>
+              ))}
+
+            {groups === null &&
+              visible.map((row) => (
+                <Row key={row.meterId} row={row} cell={cell} numeric={numeric} />
+              ))}
           </tbody>
         </table>
       </div>
@@ -484,5 +510,75 @@ export function RealtimeTable({
         values.
       </p>
     </section>
+  );
+}
+
+/** One meter. Extracted so the grouped and flat bodies draw the same row. */
+function Row({
+  row,
+  cell,
+  numeric,
+}: {
+  row: RealtimeTableRow;
+  cell: string;
+  numeric: string;
+}) {
+  const dim = row.status === "offline";
+  return (
+    <tr
+      className={[
+        "border-b border-border/60 last:border-b-0",
+        dim ? "bg-muted/30 text-muted-foreground" : "",
+      ].join(" ")}
+    >
+      <td className={`${cell} font-mono whitespace-nowrap`}>
+        <span className="flex items-center gap-2">
+          <Marker row={row} />
+          {row.meterNumber}
+          {dim ? (
+            <span className="text-[11px] tracking-wider">
+              {formatAge(row.ageMs)}
+            </span>
+          ) : null}
+        </span>
+      </td>
+      <td className={`${cell} whitespace-nowrap`}>
+        {row.department ?? "—"}
+      </td>
+      <td className={`${cell} font-mono whitespace-nowrap`}>
+        {row.machineNumber ?? "—"}
+      </td>
+      <td className={cell}>{row.machineName ?? "—"}</td>
+      {[0, 1, 2].map((phase) => (
+        <td
+          key={`v${phase}`}
+          className={`${numeric} ${phase === 0 ? "border-s border-border" : ""}`}
+        >
+          {formatNumber(row.voltage?.[phase] ?? null, 1)}
+        </td>
+      ))}
+      {[0, 1, 2].map((phase) => (
+        <td
+          key={`c${phase}`}
+          className={`${numeric} ${phase === 0 ? "border-s border-border" : ""}`}
+        >
+          {formatNumber(row.current?.[phase] ?? null, 1)}
+        </td>
+      ))}
+      <td className={`${numeric} border-s border-border`}>
+        {formatNumber(row.powerFactor, 2)}
+      </td>
+      <td
+        className={[
+          numeric,
+          row.running && !dim ? "text-foreground" : "",
+        ].join(" ")}
+      >
+        {formatNumber(row.activePowerKw, 1)}
+      </td>
+      <td className={numeric}>
+        {formatNumber(row.energyKwh, 1)}
+      </td>
+    </tr>
   );
 }

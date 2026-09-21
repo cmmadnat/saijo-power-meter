@@ -261,6 +261,32 @@ half-open boundary, and an inverted range that is rejected. Built and run: an 08
 over the 55 fixtures totals 12 938.9 kWh and 332:12, with continuously-running meters at 8:59 of a
 nine-hour window; screenshots taken in both themes, and the malformed-range fallback checked.
 
+### Step 5b — Fleet strip and department grouping — **done**
+Not in the specification, and not in this plan until it was asked for: two additions to the Real
+time screen that make 55 rows readable. Shipped:
+
+- `packages/application/src/realtime.ts` — `totalActivePowerKw` and `byDepartment`, summed where the
+  rows are built. Aggregates are data, not presentation: the same numbers head the bands and the
+  strip, and a second summation in the component would have been free to disagree.
+- `apps/web/components/fleet-strip.tsx` — reporting out of 55 with a square per meter, total load,
+  running against idle and silent, the freshness split, and the busiest department.
+- `apps/web/components/realtime-table.tsx` — department bands carrying each department's census and
+  its kW subtotal, on by default, dismissable, with sorting applied inside a band.
+
+**Offline meters do not count toward total load.** Their last reading stays on screen — that is the
+point of showing it — but it is history, and adding an hour-old 90 kW into a figure labelled "now"
+would overstate the factory by exactly the meters that have stopped saying what they are doing.
+
+**The strip carries nothing that needs history.** The design sketch had an "energy today" tile and a
+sparkline; both need a baseline or a window, neither is available from the latest reading per meter,
+and putting a warehouse query behind a screen that refreshes every ten seconds is a cost decision
+for step 8 rather than a detail to slip in here.
+
+*Verified:* three tests on the aggregates — an offline meter's kW excluded from the total, per
+department census and loads that sum to the fleet figure, and an all-silent fleet that reads zero
+rather than empty. Built and run in both themes: strip and bands on 55 fixture meters, subtotals
+matching the strip's total.
+
 **← At this point the customer can review the whole app and we have changed no infrastructure.**
 
 ### Step 6 — Schema and migrations

@@ -188,6 +188,15 @@ that know the numbers are fixtures: everything above them goes through a use cas
 `packages/application` and a port. Step 8 replaces those three files, not the screens — keep it that
 way, and do not reach for `generateFixtures` from a component.
 
+**The fleet strip and the department bands are additions to the specification, and both are
+flagged to the customer.** Their numbers — `totalActivePowerKw` and `byDepartment` — are summed in
+`realtimeTable`, not in the components, so the strip and the bands cannot disagree. Two rules ride
+with them: an offline meter's last reading is history and is excluded from "total load now", and
+there is no energy subtotal on a band, because summing cumulative counters yields only how long a
+department's meters have been installed. The strip deliberately carries nothing that needs history
+— no energy-today tile, no sparkline — because that would put a warehouse query behind a screen
+that refreshes every ten seconds.
+
 **History's two quantities come from `packages/application/src/history.ts`, and its running-hours
 rule is a judgement worth keeping.** Total energy is the last value of the same `consumptionFrom()`
 walk the energy chart plots, reset rule included — do not write a second one. Running time sums the
