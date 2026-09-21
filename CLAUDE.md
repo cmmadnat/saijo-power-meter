@@ -14,8 +14,9 @@ Greenfield. Two kinds of material sit alongside the code, and they pull in oppos
   been derived from them yet; no requirement in this repo traces to them so far.
 
 Built so far: the Google Cloud footprint as Pulumi code, the pipeline that builds and applies it,
-and the frontend shell — scaffolded, themed, and deployed to Cloud Run so there is a live URL from
-the start. The screens themselves are placeholders; no meter data flows yet.
+the frontend shell — scaffolded, themed, and deployed to Cloud Run so there is a live URL from the
+start — and the domain model, the MQTT payload decoder and the fixture generator the screens will be
+built on. The screens themselves are still placeholders; no meter data flows yet.
 
 | Path | What it is |
 | --- | --- |
@@ -23,6 +24,7 @@ the start. The screens themselves are placeholders; no meter data flows yet.
 | `bootstrap.sh` | One-time, run in Cloud Shell. Creates only what Pulumi cannot create for itself. |
 | `packages/domain` | Entities and rules. Imports nothing. |
 | `packages/application` | Use cases and the port interfaces they need. Imports domain only. |
+| `packages/infrastructure` | Adapters: the MQTT payload decoder, the scale-factor table, fixture data. |
 | `apps/web` | Next.js + shadcn/ui frontend. Deployed to Cloud Run. |
 | `scripts/check-boundaries.mjs` | Enforces the dependency rule. Runs first in CI. |
 | `.github/workflows/check.yml` | Application checks. Holds no cloud credentials. |
@@ -92,9 +94,10 @@ at all — that is the rule that bites, and it is what stops a BigQuery type or 
 welding a use case to its delivery mechanism. `npm run boundaries` fails the build on a violation.
 The reasoning, and where a given piece of code belongs, is in
 `docs/architecture/clean-architecture.md`; read it before adding a package or moving logic between
-layers. Two consequences worth knowing up front: the MQTT payload decoder is *infrastructure*, not
-domain, because it translates one specific wire format; and `packages/infrastructure` does not exist
-yet by design — it arrives with the first real adapter rather than as an empty shell.
+layers. One consequence worth knowing up front: the MQTT payload decoder is *infrastructure*, not domain,
+because it translates one specific wire format. `packages/infrastructure` now exists, holding that
+decoder and the fixture data the screens are built against — it arrived with the first real adapter
+rather than as an empty shell, which was the point of leaving it out until now.
 
 - **All Google Cloud resources are declared in `infra/`.** Nothing is created by hand in the console
   or with a one-off `gcloud` command. The one exception is `bootstrap.sh`, which exists because the
@@ -158,8 +161,15 @@ Working in `apps/web` has two traps, both hit once already:
   traced in at all. There is no hoisted `node_modules` beside it — tracing puts everything under
   `apps/web`. The Dockerfile flattens this; changing either setting means re-checking it.
 
-Remaining, in order: the domain model and payload decoder with fixtures, then the three screens on
+Steps 0–2 are done: the spec is frozen into `docs/requirements/`, the shell is deployed, and the
+domain model, decoder and fixtures are in place with tests. Remaining, in order: the four screens on
 those fixtures, then the store, the MQTT ingester, and the passcode gate.
+
+**Two of the nine scale factors are guesses, and the code says so.** `packages/infrastructure/src/mqtt/scaling.ts`
+holds every divisor with its confidence and the evidence behind it; the two marked `assumed` — active
+power and energy — each have a test asserting the current guess, so changing one is loud rather than
+silent. `unconfirmedScales()` is what step 7's startup check uses to refuse a live broker while they
+remain. Do not quietly settle one from inference; it takes a captured payload.
 
 **The ingester is blocked on the customer.** The scaling divisors for active power and energy are
 not documented anywhere in the workbook, and its sample payload is filler that does not reconcile —
