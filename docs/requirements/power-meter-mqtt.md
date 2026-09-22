@@ -48,8 +48,55 @@ Topic: PMeterStation01
 key-layout reference only — see *Scaling* below.
 
 Note `"M1PF":095` is **not valid JSON**: a leading zero on a number is illegal, and `095` would be
-rejected by a strict parser. Either the device emits it quoted (`"095"`) or the sheet is being loose
-with notation. The decoder must tolerate both, and this is worth confirming alongside the scaling.
+rejected by a strict parser. **Settled by the 2026-09-22 capture below: the device sends `50`**, so
+the sheet was being loose with notation. The decoder tolerates both either way.
+
+## The first real capture, 2026-09-22
+
+One message off `PMeterStation05`, read from the live broker with
+`apps/ingester/tools/capture.ts` (the address and credentials arrived that day in
+`reference doc/mqtt`). Verbatim:
+
+```json
+{"M1VL1":2240,"M1VL2":2240,"M1VL3":2240,"M1CL1":1877,"M1CL2":1877,"M1CL3":1877,"M1P":5350,"M1PF":50,"M1E":2679, ... M7 ...}
+```
+
+Three things it settles, and one it does not.
+
+**The payload is ordinary JSON, and `PF` is not zero-padded.** It arrives as `"M1PF":50`, not
+`095`. So the workbook's `095` was the sheet being loose with notation, not the device emitting
+illegal JSON. The decoder tolerates both and needs no change; the open question is closed.
+
+**Positional identity holds, and uncommissioned slots are absent rather than renumbered.** Station
+05 published `M1`–`M7`. The registry has exactly seven commissioned slots there and the eighth,
+`M8`, is the uncommissioned one — so the publisher omits the empty tail rather than shifting the
+remaining meters down into it. Had it renumbered, every meter on that station would have been
+mislabelled by one, silently. Worth re-checking on a station whose gap is in the middle.
+
+**The broker, the topics and the credentials all work.** Nine messages, nine stations, one a second.
+
+**It does not settle the scaling, because it is not a measurement.** All seven slots carry
+*identical* values — the same signature as the workbook's filler, with a different constant. And
+the numbers do not cohere with each other:
+
+| | |
+| --- | --- |
+| V = 2240 / 10 | 224.0 V |
+| PF = 50 / 100 | 0.50 |
+| I = 1877 / 10 | 187.7 A |
+| 3 x V x I x PF | **63.07 kW** |
+| P = 5350 / 100 | **53.50 kW** |
+
+Off by a factor of 1.179. No power of ten reconciles it from either side: the divisor `M<n>P`
+would need is **84.83**. Scaling `I` by 100 instead moves both sides together and leaves the same
+ratio. The workbook's filler failed the same test by a factor of 2.016, so the two fakes are not
+even the same fake.
+
+**What is still wanted:** a capture taken while real machines are running, in which the meters on
+one station *differ from each other*, plus one of those meters' own display reading at the same
+moment. The first settles active power arithmetically; the second is the only thing that can settle
+energy, which has nothing in the payload to check against. Worth asking the customer in the same
+breath whether these topics are being fed by the meters yet or by a test publisher.
 
 ## Scaling
 
@@ -73,7 +120,9 @@ conversion anywhere in the workbook. What can be inferred:
   kWh counter, to be confirmed by observation.
 
 **One real captured payload from a running meter, plus that meter's own display reading at the same
-moment, settles all of it.** Until then the decoder keeps every factor in one constants table with
+moment, settles all of it.** The 2026-09-22 capture was real traffic but not a running meter — see
+above: identical values across every slot, and a power figure 1.179x away from what its own V, I and
+PF imply. Until a coherent one arrives the decoder keeps every factor in one constants table with
 the unconfirmed ones marked, and each has a test asserting the assumption so changing it is loud.
 
 ## Errata in the source
