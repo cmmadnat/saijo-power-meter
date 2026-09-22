@@ -15,12 +15,10 @@ const services = [
     "run.googleapis.com",
     "artifactregistry.googleapis.com",
     "iam.googleapis.com", // creating the service the app runs as
-    // The delivery pipeline itself. Cloud Build replaced GitHub Actions as the
-    // thing that builds and applies; apikeys is not optional alongside it,
-    // because a webhook trigger's URL is only callable with an API key.
+    // The delivery pipeline itself. Neither secretmanager nor apikeys is here
+    // any more: the App connection fetches the source, so there is no deploy
+    // key, no webhook secret and no API key left to hold.
     "cloudbuild.googleapis.com",
-    "secretmanager.googleapis.com",
-    "apikeys.googleapis.com",
     // On by default in every project, declared anyway: the logs workflows are
     // useless without it, and a project where someone turned it off should fail
     // here rather than in a job that reads zero entries and looks healthy.
@@ -190,23 +188,27 @@ export const webServiceAccount = webIdentity.email;
 // ---------------------------------------------------------------------------
 // The delivery pipeline
 // ---------------------------------------------------------------------------
-// Cloud Build replaced GitHub Actions here, so that GitHub is a git remote and
-// nothing else. It holds a read-only deploy key and two webhooks; it holds no
-// identity that can change this project, and no app with write access to the
-// repository. Everything that builds or deploys runs inside Google Cloud.
+// Cloud Build, connected to GitHub through the Cloud Build GitHub App.
 //
-// What that costs, and what makes the pieces below look the way they do:
+// This started as webhook triggers, so that GitHub would hold nothing but a
+// read-only deploy key and two URLs. That design is recorded in
+// docs/architecture/delivery-pipeline.md along with why it was abandoned: four
+// separate defects, every one of them accepted at trigger-create time and
+// failing only at invocation, with errors that named nothing. Not one build was
+// ever created.
 //
-//   - A webhook trigger is only callable with an API key, so one is declared
-//     here and restricted to the Cloud Build API alone.
-//   - A webhook trigger cannot read its build config out of a private
-//     repository — that needs the GitHub App connection this setup exists to
-//     avoid. So the build is inline, and deliberately thin: step one clones the
-//     repo, every later step runs a script from `ci/` in that clone. Pipeline
-//     logic stays versioned and reviewable; only its skeleton lives here.
-//   - A webhook trigger cannot filter on changed paths the way the workflow's
-//     `paths:` did. Every push to main runs the pipeline, and a no-op deploy is
-//     a wasted build rather than a wrong one.
+// What the App connection buys, beyond working: Cloud Build fetches the source
+// itself, so the deploy key, the SSH clone step, the webhook secret and the API
+// key all disappear — four credentials down to none. It also posts build status
+// back to the pull request as a check, which closes the reporting gap the
+// webhook design could not.
+//
+// What it costs: a GitHub App installed on the repository, with write access to
+// statuses. That is a real concession against "GitHub holds nothing", and it is
+// the reason this was the second choice rather than the first.
+//
+// The App connection is a one-time console handshake and must exist BEFORE
+// these triggers can be created; see scripts/setup-cloud-build.sh.
 
 const projectId = process.env.GOOGLE_PROJECT ?? gcp.config.project;
 if (!projectId) {
@@ -216,24 +218,15 @@ if (!projectId) {
     );
 }
 
-// The same `githubRepository` the log reader is scoped to, deliberately not a
-// second source of truth: the repository the pipeline builds and the repository
-// allowed to read its logs must be one value, or they drift apart silently.
-const repoSlug = githubRepository;
+const [repoOwner, repoName] = githubRepository.split("/");
 const stateBucket = process.env.PULUMI_STATE_BUCKET ?? `${projectId}-pulumi-state`;
 const kmsKey = `projects/${projectId}/locations/${region}/keyRings/pulumi/cryptoKeys/state`;
 
-// Builds run as the deployer account GitHub Actions used to impersonate. Reusing
-// it is deliberate: it already carries exactly the roles a deploy needs, and a
-// second account with the same grants would be a second thing to audit.
+// Builds run as the deployer account. Reusing it is deliberate: it already
+// carries exactly the roles a deploy needs, and a second account with the same
+// grants would be a second thing to audit.
 const deployerEmail =
     process.env.DEPLOYER_SA ?? `pulumi-deployer@${projectId}.iam.gserviceaccount.com`;
-
-// Created by scripts/setup-cloud-build.sh, not here. A secret's *value* cannot
-// live in code, and the deploy key has to exist before the first build can
-// clone anything — the same reason the state bucket is bootstrap.sh's job.
-const secretVersion = (name: string) =>
-    `projects/${projectId}/secrets/${name}/versions/latest`;
 
 // CLOUD_LOGGING_ONLY is required, not a preference: a build running as a
 // user-specified service account has no default log bucket to write to, and
@@ -241,146 +234,80 @@ const secretVersion = (name: string) =>
 // that does not mention logging at all.
 const buildOptions = {
     logging: "CLOUD_LOGGING_ONLY",
-    // The filters below read the webhook payload into substitutions that no
-    // build step consumes. Without this, an unreferenced substitution fails the
-    // build rather than being ignored.
-    substitutionOption: "ALLOW_LOOSE",
 };
 
-const imageRef =
-    `${region}-docker.pkg.dev/${projectId}/app/web:` + "${_SHA}";
-// Floating on purpose, and never deployed: this tag is only ever read from and
-// written to as a BuildKit layer cache, replacing the workflow's type=gha cache.
+// $COMMIT_SHA is supplied by Cloud Build for a GitHub-connected trigger, so
+// nothing here has to bind it out of a payload.
+const imageRef = `${region}-docker.pkg.dev/${projectId}/app/web:` + "$COMMIT_SHA";
+// Floating on purpose, and never deployed: only ever read from and written to
+// as a BuildKit layer cache.
 const cacheRef = `${region}-docker.pkg.dev/${projectId}/app/web:cache`;
 
-const cloneStep = [
-    "set -euo pipefail",
-    "mkdir -p /root/.ssh",
-    // $$ is how Cloud Build escapes a literal $; a single one would be read as
-    // a substitution and the key would arrive empty.
-    'printf "%s\\n" "$$DEPLOY_KEY" > /root/.ssh/id_ed25519',
-    "chmod 600 /root/.ssh/id_ed25519",
-    "ssh-keyscan -t rsa,ecdsa,ed25519 github.com > /root/.ssh/known_hosts 2>/dev/null",
-    // The repository is the configured one, never a name out of the webhook
-    // payload. A payload is attacker-controlled the moment the URL leaks, and
-    // this step runs with the deployer's credentials.
-    `git clone --quiet git@github.com:${repoSlug}.git /workspace/src`,
-    "cd /workspace/src",
-    // Detached: the pull request head is what was reviewed, not the branch tip,
-    // which may have moved since the webhook fired.
-    "git checkout --detach --quiet ${_SHA}",
-    "git --no-pager log -1 --oneline",
-].join("\n");
-
 function pipelineBuild(mode: "preview" | "apply"): gcp.types.input.cloudbuild.TriggerBuild {
-    const steps: gcp.types.input.cloudbuild.TriggerBuildStep[] = [
-        {
-            id: "clone",
-            name: "gcr.io/cloud-builders/git",
-            entrypoint: "bash",
-            secretEnvs: ["DEPLOY_KEY"],
-            args: ["-c", cloneStep],
-        },
-        // Both real steps run under ci/step.sh, which captures their output and
-        // swallows their exit code. Cloud Build has no `if: always()`, so a
-        // failing step would otherwise stop the build before the step that
-        // reports the failure — the one occasion reporting matters. ci/report.sh
-        // turns a recorded failure back into a failed build.
-        {
-            id: "image",
-            name: "gcr.io/cloud-builders/docker",
-            dir: "/workspace/src",
-            entrypoint: "bash",
-            args: ["ci/step.sh", "image", "ci/image.sh"],
-            envs: [`MODE=${mode}`, `IMAGE=${imageRef}`, `CACHE_IMAGE=${cacheRef}`],
-        },
-        {
-            id: "pulumi",
-            name: "pulumi/pulumi-nodejs:latest",
-            dir: "/workspace/src",
-            entrypoint: "bash",
-            args: ["ci/step.sh", "pulumi", "ci/pulumi.sh"],
-            envs: [
-                `MODE=${mode}`,
-                `GOOGLE_PROJECT=${projectId}`,
-                `GITHUB_REPO=${repoSlug}`,
-                `PULUMI_BACKEND_URL=gs://${stateBucket}`,
-                `WEB_IMAGE=${imageRef}`,
-                `KMS_KEY=${kmsKey}`,
-            ],
-        },
-    ];
-
-    const secrets: gcp.types.input.cloudbuild.TriggerBuildAvailableSecretsSecretManager[] = [
-        { versionName: secretVersion("github-deploy-key"), env: "DEPLOY_KEY" },
-    ];
-
-    // Always last, and always runs, because nothing ahead of it can fail. It
-    // posts nothing anywhere — pulling this log into GitHub is a separate
-    // workflow's job. What it does is end the log with a step-by-step verdict
-    // and the tail of whatever failed, so that a pulled log is readable from its
-    // last page rather than its first, and then exit non-zero if any step
-    // failed, which is what makes the build's own status honest.
-    steps.push({
-        id: "report",
-        name: "gcr.io/google.com/cloudsdktool/cloud-sdk:slim",
-        dir: "/workspace/src",
-        entrypoint: "bash",
-        args: ["ci/report.sh"],
-        envs: [
-            `MODE=${mode}`,
-            `GOOGLE_PROJECT=${projectId}`,
-            "SHA=${_SHA}",
-            "BUILD_ID=$BUILD_ID",
-            "EXPECTED_STEPS=image pulumi",
-        ],
-    });
-
+    // No clone step. Cloud Build fetches the source into /workspace itself,
+    // which is most of what the App connection is worth: the deploy key, the
+    // ssh-keyscan, the detached checkout and the one failure that could not
+    // report itself are all gone.
     return {
-        steps,
-        // Only the mode, and only a literal. Substitutions resolve in `steps`
-        // and `images`; `tags` is not one of them, so `${_SHA}` here is stored
-        // verbatim — and a tag must match [\w][\w.-]*, which `$`, `{` and `}`
-        // do not. The trigger still creates cleanly, because the tag is just a
-        // string until a build is made from it; then every single invocation
-        // fails with a bare INVALID_ARGUMENT, after the API key, the secret and
-        // the trigger lookup have all succeeded. Nothing is logged, because the
-        // trigger was never the problem.
-        //
-        // Finding a build by commit moved to the substitution instead:
-        // `gcloud builds list --filter "substitutions._SHA=<sha>"`.
+        steps: [
+            {
+                id: "image",
+                name: "gcr.io/cloud-builders/docker",
+                entrypoint: "bash",
+                args: ["ci/step.sh", "image", "ci/image.sh"],
+                envs: [`MODE=${mode}`, `IMAGE=${imageRef}`, `CACHE_IMAGE=${cacheRef}`],
+            },
+            {
+                id: "pulumi",
+                name: "pulumi/pulumi-nodejs:latest",
+                entrypoint: "bash",
+                args: ["ci/step.sh", "pulumi", "ci/pulumi.sh"],
+                envs: [
+                    `MODE=${mode}`,
+                    `GOOGLE_PROJECT=${projectId}`,
+                    `GITHUB_REPO=${githubRepository}`,
+                    `PULUMI_BACKEND_URL=gs://${stateBucket}`,
+                    `WEB_IMAGE=${imageRef}`,
+                    `KMS_KEY=${kmsKey}`,
+                ],
+            },
+            // Always last, and always runs, because nothing ahead of it can
+            // fail — see ci/step.sh. It ends the log with a step-by-step verdict
+            // and the tail of whatever failed, then exits non-zero if any step
+            // failed, which is what makes the build's own status honest.
+            {
+                id: "report",
+                name: "gcr.io/google.com/cloudsdktool/cloud-sdk:slim",
+                entrypoint: "bash",
+                args: ["ci/report.sh"],
+                envs: [
+                    `MODE=${mode}`,
+                    `GOOGLE_PROJECT=${projectId}`,
+                    "SHA=$COMMIT_SHA",
+                    "BUILD_ID=$BUILD_ID",
+                    "EXPECTED_STEPS=image pulumi",
+                ],
+            },
+        ],
+        // Literals only. Substitutions do not resolve in `tags`; a `$COMMIT_SHA`
+        // tag would be stored verbatim and every build creation rejected. The
+        // commit is findable through the substitution instead:
+        // `gcloud builds list --filter "substitutions.COMMIT_SHA=<sha>"`.
         tags: [mode],
         timeout: "2400s",
-        // Cloud Build has no equivalent of the workflow's repo-wide concurrency
-        // group. Two runs can start at once, and the second one waits on
+        // Cloud Build has no equivalent of the old workflow's repo-wide
+        // concurrency group. Two runs can start at once, and the second waits on
         // Pulumi's state lock inside ci/pulumi.sh rather than dying on it. This
         // is the outer bound on that wait.
         queueTtl: "3600s",
         options: buildOptions,
-        availableSecrets: { secretManagers: secrets },
     };
 }
 
-const webhookKey = new gcp.projects.ApiKey(
-    "pipeline-webhook",
-    {
-        name: "cloud-build-webhook",
-        displayName: "Cloud Build webhook triggers",
-        project: projectId,
-        // Restricted to Cloud Build alone. The key travels in a URL held by
-        // GitHub, so the blast radius of it leaking is "someone can attempt to
-        // call a trigger" — and the webhook secret is what stops that.
-        restrictions: {
-            apiTargets: [{ service: "cloudbuild.googleapis.com" }],
-        },
-    },
-    { dependsOn: services },
-);
-
 const triggerServiceAccount = `projects/${projectId}/serviceAccounts/${deployerEmail}`;
 
-// Writing build logs is the one permission the deployer account did not already
-// need, and it needs it because the builds now run as that account.
+// Writing build logs is the one permission the deployer did not already need,
+// and it needs it because the builds run as that account.
 new gcp.projects.IAMMember("deployer-log-writer", {
     project: projectId,
     role: "roles/logging.logWriter",
@@ -393,37 +320,21 @@ const previewTrigger = new gcp.cloudbuild.Trigger(
         name: "infra-preview",
         location: "global",
         project: projectId,
-        description: "Pull request: build the image, preview the stack, comment.",
+        description: "Pull request: build the image and preview the stack.",
         serviceAccount: triggerServiceAccount,
-        webhookConfig: { secret: secretVersion("github-webhook-secret") },
-        // A webhook trigger's filter sees its SUBSTITUTIONS, not the payload:
-        // `body` is undeclared there and a filter naming it is rejected at
-        // create time with "undeclared reference to 'body'". Payload bindings
-        // are a substitution feature, so anything the filter tests has to be
-        // lifted into one first — which is why three of the four below are read
-        // and then never used by a build step.
-        //
-        // Three clauses, and only the first is about noise. GitHub sends every
-        // pull_request action, and these three are the ones that change what
-        // would be deployed — without that, labelling a pull request would run
-        // a build.
-        //
-        // The other two are the security boundary. This build runs arbitrary
-        // `ci/*.sh` from the commit it checks out, with the deployer's
-        // credentials, so it must never check out a commit an outsider chose:
-        // the head has to live in this repository, not a fork. GitHub Actions
-        // got the equivalent for free by withholding secrets from fork runs.
-        substitutions: {
-            _SHA: "$(body.pull_request.head.sha)",
-            _ACTION: "$(body.action)",
-            _BASE_REPO: "$(body.repository.full_name)",
-            _HEAD_REPO: "$(body.pull_request.head.repo.full_name)",
+        github: {
+            owner: repoOwner,
+            name: repoName,
+            pullRequest: {
+                branch: ".*",
+                // The fork guard, and the reason it no longer has to be
+                // hand-built: a pull request from outside this repository does
+                // not build until someone with write access comments /gcbrun.
+                // The webhook design had to reconstruct this from the payload,
+                // because a webhook is just a webhook; here it is a setting.
+                commentControl: "COMMENTS_ENABLED_FOR_EXTERNAL_CONTRIBUTORS_ONLY",
+            },
         },
-        filter: [
-            '_ACTION in ["opened", "synchronize", "reopened"]',
-            `_BASE_REPO == "${repoSlug}"`,
-            "_HEAD_REPO == _BASE_REPO",
-        ].join(" && "),
         build: pipelineBuild("preview"),
     },
     { dependsOn: services },
@@ -437,39 +348,16 @@ const applyTrigger = new gcp.cloudbuild.Trigger(
         project: projectId,
         description: "Push to main: build and push the image, then apply the stack.",
         serviceAccount: triggerServiceAccount,
-        webhookConfig: { secret: secretVersion("github-webhook-secret") },
-        // Same rule as the preview trigger: the filter tests substitutions,
-        // never `body`.
-        substitutions: {
-            _SHA: "$(body.after)",
-            _REF: "$(body.ref)",
-            _BASE_REPO: "$(body.repository.full_name)",
+        github: {
+            owner: repoOwner,
+            name: repoName,
+            push: { branch: "^main$" },
         },
-        filter: [
-            '_REF == "refs/heads/main"',
-            `_BASE_REPO == "${repoSlug}"`,
-        ].join(" && "),
         build: pipelineBuild("apply"),
     },
     { dependsOn: services },
 );
 
-// ---------------------------------------------------------------------------
-// Telling someone the build failed
-// ---------------------------------------------------------------------------
-// Cloud Build has no "email me on failure" setting — the two supported routes
-// are its Pub/Sub `cloud-builds` topic with a notifier service subscribed to it,
-// and a Cloud Monitoring alert. This is the second one, because the first means
-// running a Cloud Run service and holding SMTP credentials to send one email.
-//
-// It matters because nothing else says a deploy broke. A webhook trigger posts
-// no check and no status, so a pull request whose deploy failed looks entirely
-// clean; without this, finding out requires thinking to go and look.
-//
-// Set the address to turn it on. It is not committed with a default, because
-// whose inbox this reaches is not something to inherit by accident:
-//
-//   infra/Pulumi.dev.yaml:  saijo-power-meter:alertEmail: you@example.com
 const alertEmail = new pulumi.Config().get("alertEmail");
 
 if (!alertEmail) {
@@ -558,9 +446,5 @@ export const pipelineTriggers = {
     apply: applyTrigger.name,
 };
 
-// The full webhook URLs also need the webhook secret's plaintext, which this
-// program never sees — it lives in Secret Manager and is created outside. Run
-// scripts/print-webhooks.sh to get the two URLs ready to paste into GitHub.
-export const pipelineApiKey = pulumi.secret(webhookKey.keyString);
 export const logReaderServiceAccount = logReader.email;
 export const webServiceName = web.name;
