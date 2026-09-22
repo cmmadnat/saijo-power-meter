@@ -19,6 +19,10 @@ const services = [
     // any more: the App connection fetches the source, so there is no deploy
     // key, no webhook secret and no API key left to hold.
     "cloudbuild.googleapis.com",
+    // The warehouse. The dataset is declared below; its tables are not, because
+    // they are schema and arrive through the migration runner in
+    // packages/infrastructure/src/warehouse.
+    "bigquery.googleapis.com",
     // On by default in every project, declared anyway: the logs workflows are
     // useless without it, and a project where someone turned it off should fail
     // here rather than in a job that reads zero entries and looks healthy.
@@ -120,6 +124,56 @@ new gcp.cloudrunv2.ServiceIamMember("web-public", {
     role: "roles/run.invoker",
     member: "allUsers",
 });
+
+// --- The warehouse -----------------------------------------------------------
+//
+// The dataset is a Google Cloud resource, so it is declared here with
+// everything else. Its tables are not: they are schema, and schema is versioned,
+// ordered and idempotent migrations applied by a runner — CLAUDE.md's rule, and
+// the line this file draws is the same one bootstrap.sh draws for the state
+// bucket. `npm run warehouse -w @power-meter/infrastructure -- migrate` creates
+// them; nothing in the pipeline runs it yet, because nothing reads the tables
+// until step 8 and an apply that also migrates is a pipeline change worth
+// making on its own.
+//
+// Retention is a table setting (a 14-day partition expiry), not a resource and
+// not a cleanup job, so it lives with the DDL rather than here.
+const warehouse = new gcp.bigquery.Dataset(
+    "warehouse",
+    {
+        datasetId: "power_meter",
+        friendlyName: "Power Meter readings",
+        description:
+            "Meter readings, the 1-minute rollup and the latest-reading table. Schema is applied by the migration runner in packages/infrastructure/src/warehouse.",
+        location: region,
+        // Never on a dataset holding the only copy of the history: Pulumi would
+        // otherwise drop fourteen days of readings to replace a description.
+        deleteContentsOnDestroy: false,
+    },
+    { dependsOn: services },
+);
+
+// Read-only access for the web app, granted here because this is the step that
+// creates the thing to read. It cannot write, and it cannot see any other
+// dataset. Nothing in apps/web queries it yet — step 8 is what wires the three
+// fixture adapters over to the warehouse, and this is what makes that a code
+// change rather than a code change and an IAM change.
+new gcp.bigquery.DatasetIamMember("web-warehouse-reader", {
+    datasetId: warehouse.datasetId,
+    role: "roles/bigquery.dataViewer",
+    member: pulumi.interpolate`serviceAccount:${webIdentity.email}`,
+});
+
+// Running a query is a project-level permission, and there is no narrower one:
+// jobUser grants the right to start a job and bill it to this project, not the
+// right to read anything. What it can read is still only the dataset above.
+new gcp.projects.IAMMember("web-warehouse-jobs", {
+    project: warehouse.project,
+    role: "roles/bigquery.jobUser",
+    member: pulumi.interpolate`serviceAccount:${webIdentity.email}`,
+});
+
+export const warehouseDataset = warehouse.datasetId;
 
 // --- Reading the application's logs from CI ----------------------------------
 //

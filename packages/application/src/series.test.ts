@@ -7,6 +7,7 @@ import {
   consumptionFrom,
   meterSeries,
   MIN_BUCKET_MS,
+  rollupReadings,
 } from "./series.ts";
 
 const FROM = new Date("2025-09-21T00:00:00.000Z");
@@ -270,5 +271,97 @@ test("each series carries consumption alongside the counter", async () => {
     points.map((p) => p.energyConsumedKwh),
     [0, 1.5, 3],
     "the same window, read as the rise rather than as the counter",
+  );
+});
+
+// --- the warehouse's 1-minute rollup -----------------------------------------
+
+test("rollup averages power and takes the last counter in each minute", () => {
+  const rows = rollupReadings([
+    reading("s01m1", 0, 10, 100),
+    reading("s01m1", 30_000, 20, 100.2),
+    reading("s01m1", 60_000, 5, 100.3),
+  ]);
+
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[0]?.at, FROM);
+  assert.equal(rows[0]?.readingCount, 2);
+  assert.equal(rows[0]?.activePowerKw, 15);
+  assert.equal(rows[0]?.energyKwh, 100.2);
+  assert.equal(rows[1]?.readingCount, 1);
+  assert.equal(rows[1]?.energyKwh, 100.3);
+});
+
+test("rollup buckets align to absolute minutes, not to the first reading", () => {
+  // First reading at 00:00:42 — the bucket it lands in still starts at 00:00:00,
+  // so a second batch covering the same minute writes the same row rather than
+  // a shifted one.
+  const rows = rollupReadings([reading("s01m1", 42_000, 3, 100)]);
+  assert.deepEqual(rows[0]?.at, FROM);
+});
+
+test("rollup is independent of the order readings arrive in", () => {
+  const ordered = rollupReadings([
+    reading("s01m1", 0, 10, 100),
+    reading("s01m1", 30_000, 20, 100.2),
+  ]);
+  const shuffled = rollupReadings([
+    reading("s01m1", 30_000, 20, 100.2),
+    reading("s01m1", 0, 10, 100),
+  ]);
+  assert.deepEqual(shuffled, ordered);
+  assert.equal(shuffled[0]?.energyKwh, 100.2);
+});
+
+test("a minute with no readings produces no row", () => {
+  const rows = rollupReadings([
+    reading("s01m1", 0, 10, 100),
+    reading("s01m1", 120_000, 10, 100.5),
+  ]);
+  assert.equal(rows.length, 2);
+  assert.deepEqual(
+    rows.map((row) => row.at.getTime() - FROM.getTime()),
+    [0, 120_000],
+  );
+});
+
+test("rollup rows come back meter-major then ascending in time", () => {
+  const rows = rollupReadings([
+    reading("s01m2", 0, 1, 10),
+    reading("s01m1", 60_000, 1, 10),
+    reading("s01m1", 0, 1, 10),
+  ]);
+  assert.deepEqual(
+    rows.map((row) => `${row.meterId}@${row.at.getTime() - FROM.getTime()}`),
+    ["s01m1@0", "s01m1@60000", "s01m2@0"],
+  );
+});
+
+test("rollup rejects a non-positive bucket width", () => {
+  assert.throws(() => rollupReadings([], 0), RangeError);
+});
+
+test("a rollup at the chart's bucket width matches what the chart plots", async () => {
+  // The rollup and the charts are one definition, and this is the assertion
+  // that says so: same readings, same width, same numbers.
+  const readings = [
+    reading("s01m1", 0, 10, 100),
+    reading("s01m1", 30_000, 20, 100.2),
+    reading("s01m1", 90_000, 6, 100.5),
+  ];
+  const view = await meterSeries({
+    registry,
+    repository: repository(readings),
+    meterIds: ["s01m1" as MeterId],
+    range: range(2),
+  });
+  const rows = rollupReadings(readings, MIN_BUCKET_MS);
+
+  assert.deepEqual(
+    rows.map((row) => [row.activePowerKw, row.energyKwh]),
+    view.series[0]?.points.map((point) => [
+      point.activePowerKw,
+      point.energyKwh,
+    ]),
   );
 });

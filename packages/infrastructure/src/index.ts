@@ -34,3 +34,40 @@ export {
   FixtureLatestReadingStore,
   FixtureReadingRepository,
 } from "./fixtures/repository.ts";
+export { bigQueryClient } from "./warehouse/client.ts";
+export type {
+  BigQueryClientOptions,
+  QueryParams,
+  WarehouseClient,
+} from "./warehouse/client.ts";
+export {
+  loadFixtures,
+  verifyAgainstFixtures,
+  type LoadFixturesOptions,
+  type LoadReport,
+  type Verification,
+} from "./warehouse/loader.ts";
+export {
+  MIGRATIONS,
+  checksum as migrationChecksum,
+  render as renderMigration,
+  validate as validateMigrations,
+  type Migration,
+} from "./warehouse/migrations.ts";
+export {
+  WarehouseLatestReadingStore,
+  WarehouseReadingRepository,
+} from "./warehouse/repository.ts";
+export {
+  partitionSettings,
+  runMigrations,
+  type MigrationOutcome,
+  type PartitionSetting,
+} from "./warehouse/runner.ts";
+export {
+  DEFAULT_DATASET,
+  RETENTION_DAYS,
+  TABLES,
+  tableRef,
+  type WarehouseTarget,
+} from "./warehouse/schema.ts";
