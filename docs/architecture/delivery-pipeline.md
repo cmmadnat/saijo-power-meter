@@ -81,12 +81,33 @@ different permissions.
 
 ### The identity to fetch with, and the workflow that uses it
 
-`.github/workflows/build-logs.yml` is that fetcher. Dispatch-only, it resolves a build from a
-commit SHA (or takes an explicit build id, or finds the most recent, or the most recent
-*failed* one), then prints the build record and its full log into its own run log and step
-summary. A cloud session dispatches it and reads the result back through the GitHub API —
-the same trick `logs.yml` uses for the running application's logs, and deliberately the
-same shape.
+`.github/workflows/build-logs.yml` is that fetcher. It resolves a build from a commit SHA
+(or takes an explicit build id, or finds the most recent, or the most recent *failed* one),
+then prints the build record and its full log into its own run log and step summary. A
+cloud session starts it and reads the result back through the GitHub API — the same trick
+`logs.yml` uses for the running application's logs, and deliberately the same shape.
+
+**A session starts it by commenting, not by dispatching.** `workflow_dispatch` needs
+`actions: write`, which a session token does not carry — it answers `403 Resource not
+accessible by integration`. So the workflow also triggers on `issue_comment`, on a first
+line beginning `/buildlog`, guarded by `author_association` in
+`OWNER`/`MEMBER`/`COLLABORATOR`:
+
+```
+/buildlog                       the most recent build
+/buildlog failed                the most recent build that did not succeed
+/buildlog 4f2c1ab               the build for that commit
+/buildlog sha=4f2c1ab mode=apply
+/buildlog build=abc-123-def     an exact build id
+```
+
+Both triggers resolve their parameters in one step, so they cannot drift into meaning
+different things, and the comment body reaches that parser through the environment — never
+interpolated into a `run:` block, which is the standard way a comment becomes shell. The
+guard decides who may start the job, not what they may put in the text.
+
+`issue_comment` always runs the **default branch's** copy of a workflow, so a change to
+this file does nothing until it is merged.
 
 It authenticates as `power-meter-log-reader`, the account `logs.yml` already introduced,
 which carries `roles/logging.viewer` and `roles/cloudbuild.builds.viewer` and nothing else.

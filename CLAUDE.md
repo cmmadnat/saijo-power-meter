@@ -33,8 +33,8 @@ on fixture data; no meter data flows yet.
 | `scripts/check-boundaries.mjs` | Enforces the dependency rule. Runs first in CI. |
 | `.github/workflows/check.yml` | Application checks. Holds no cloud credentials. |
 | `.github/workflows/infra.yml` | Being retired. Applies the stack until a Cloud Build run has gone green. |
-| `.github/workflows/logs.yml` | Reads the Cloud Run service's logs on dispatch. Runs no Pulumi and holds a read-only identity. |
-| `.github/workflows/build-logs.yml` | Reads a Cloud Build run's status and log on dispatch. Same identity, same reason. |
+| `.github/workflows/logs.yml` | Reads the Cloud Run service's logs, on dispatch or a `/logs` comment. Runs no Pulumi and holds a read-only identity. |
+| `.github/workflows/build-logs.yml` | Reads a Cloud Build run's status and log, on dispatch or a `/buildlog` comment. Same identity. |
 | `docs/architecture/delivery-pipeline.md` | Why builds run on Cloud Build, and what that cost. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
 | `docs/requirements/` | The frozen spec: the MQTT protocol, the meter registry, and the four screens. |
@@ -62,26 +62,49 @@ the pipeline. The shape in one line: the trigger holds a thin inline build, step
 and every later step runs a script from `ci/` in that clone — so pipeline logic is ordinary reviewed
 code and only its skeleton is a Pulumi resource.
 
-**Reading any log works the same way round: dispatch a workflow, read its output back.** The session
-cannot query Google Cloud, so two dispatch-only workflows do it, both authenticating as
+**Reading any log works the same way round: a workflow does it, and the output is read back through
+the GitHub API.** The session cannot query Google Cloud, so two workflows do, both authenticating as
 `power-meter-log-reader` — one account holding `roles/logging.viewer` and
-`roles/cloudbuild.builds.viewer`, and nothing else, so neither job can deploy.
+`roles/cloudbuild.builds.viewer` and nothing else, so neither job can deploy.
 
 - `.github/workflows/logs.yml` — the running app. "What is the deployed service doing."
 - `.github/workflows/build-logs.yml` — a Cloud Build run, its status and full log. "Why did the
-  deploy fail." Builds are tagged with the commit they built, so a SHA is the handle; blank finds
-  the most recent, and `failed_only` finds the last red one.
+  deploy fail."
 
-Both cost a CI round trip per read, which is why one wide read beats several narrow ones, and why
-`logs.yml` takes a free-form `filter`. Their concurrency groups are deliberately *not* `infra`: a
-log read must never queue behind a deploy, least of all the read that explains why the deploy
-failed. Every read also copies log lines into the Actions run log, which has its own retention and
-audience — worth revisiting when real meter data and the passcode gate land.
+**A session cannot start either by dispatching it.** `workflow_dispatch` needs `actions: write`, and
+a session's GitHub token answers `403 Resource not accessible by integration` — measured, both
+before and after the workflow reached `main`, so it is the token and not the registration. What a
+session can do is comment, so both also trigger on `issue_comment`:
+
+```
+/logs                    /logs 6h ERROR                    /logs freshness=2d -- textPayload:"ECONNREFUSED"
+/buildlog                /buildlog failed                  /buildlog sha=4f2c1ab mode=apply
+```
+
+Issue #12 is the channel for those; any issue or PR works. Builds are tagged with the commit they
+built, so a SHA is `/buildlog`'s handle; bare gives the most recent, and `failed` the last red one.
+Four things about this are deliberate:
+
+- **The guard is `author_association`** in `OWNER`/`MEMBER`/`COLLABORATOR`. Without it, anyone able
+  to comment could start runs against the project. It cannot tell a session from its owner — a
+  session's comments are authored by the account that authorized it — and that is the intent.
+- **The comment body is never interpolated into a `run:` block.** It reaches the parser through the
+  environment, because `${{ github.event.comment.body }}` in a script is the standard way a comment
+  becomes shell.
+- **It is a second service account, not a role on the deployer.** The deployer holds eleven admin
+  roles; the value is that a log read cannot deploy a revision, push an image or touch state.
+- **Their concurrency groups are not `infra`**, or a log read would queue behind a deploy and a
+  deploy behind a log read — least of all the read that explains why the deploy failed.
+
+Neither trigger works from a branch: `issue_comment` always runs the default branch's copy, so a
+change to either workflow does nothing until it is merged. Every read also copies log lines into the
+Actions run log, which has its own retention and audience — worth revisiting when real meter data
+and the passcode gate land.
 
 **Nothing reports a Cloud Build result back to *GitHub*, and that is the standing gap.** A webhook
 trigger posts no check, no status and no comment, so a pull request whose deploy failed looks
-entirely clean on GitHub. The absence of a red mark is not evidence the deploy worked — dispatch
-`build-logs.yml` and look. Do not widen the reader account to close this; a reporting path into
+entirely clean on GitHub. The absence of a red mark is not evidence the deploy worked — comment
+`/buildlog failed` and look. Do not widen the reader account to close this; a reporting path into
 GitHub would be a separate decision with a separate credential.
 
 **A failed build does announce itself by email, through Cloud Monitoring.** Cloud Build has no
@@ -89,8 +112,8 @@ built-in setting for it; the alternative was Pub/Sub plus a notifier service hol
 credentials. `infra/index.ts` declares a log-based alert policy instead, matching three things —
 `PIPELINE_VERDICT=FAILED` (`ci/report.sh`'s own marker, which is a marker and not prose, so do not
 reword it), `ERROR: build step` (a failed clone, which `report.sh` cannot report), and a timeout.
-It is off until `saijo-power-meter:alertEmail` is set in `Pulumi.dev.yaml`, and the program warns on
-every preview while it is not.
+The address is `saijo-power-meter:alertEmail` in `Pulumi.dev.yaml`, and the channel delivers nothing
+until the confirmation email Cloud Monitoring sends has been clicked.
 
 **`ci/step.sh` and `ci/report.sh` exist because Cloud Build has no `if: always()`.** Every real step
 runs under the wrapper, which captures its output and swallows its exit code; the report step then

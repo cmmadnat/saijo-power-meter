@@ -5,12 +5,34 @@ name: logs
 # It exists so a cloud session can answer a question about the running app
 # without holding Google Cloud credentials: this session has none and gets none
 # (see CLAUDE.md), so the read happens here, where Workload Identity Federation
-# already provides a keyless identity, and Claude dispatches this workflow and
-# reads the output back through the GitHub API.
+# already provides a keyless identity, and the output is fetched back through the
+# GitHub API.
 #
-# Dispatch-only. Nothing about this runs on a push or a pull request, and
-# workflow_dispatch is only offered for workflows present on the default branch —
-# so this file does nothing until it is merged to main.
+# Two ways in, because the obvious one is not available to a session:
+#
+#   workflow_dispatch  — the Actions tab, for a human with the form.
+#   issue_comment      — a comment starting with /logs, which is how a session
+#                        starts it. Dispatching needs `actions: write`, which a
+#                        session token does not carry (it answers 403 Resource
+#                        not accessible by integration); commenting it can do.
+#
+# Comment grammar, first line only:
+#
+#   /logs
+#   /logs 6h ERROR
+#   /logs freshness=6h severity=ERROR limit=500
+#   /logs freshness=2d -- textPayload:"ECONNREFUSED"
+#
+# A bare word is read as a duration if it has a unit suffix and as a severity if
+# it names one; everything else takes key=value.
+#
+# Everything after `--` is the Cloud Logging filter, unparsed: it is the one
+# field that legitimately contains spaces, quotes and colons, so it gets the rest
+# of the line rather than a quoting convention to get wrong.
+#
+# Neither trigger works from a branch. workflow_dispatch is only offered for
+# workflows on the default branch, and issue_comment always runs the default
+# branch's copy — so a change to this file does nothing until it is merged.
 on:
   workflow_dispatch:
     inputs:
@@ -28,9 +50,6 @@ on:
         default: ANY
         options: [ANY, INFO, WARNING, ERROR, CRITICAL]
       filter:
-        # The free-form escape hatch. Without it, every new question about the
-        # logs would need an input added here and merged to main before it could
-        # be asked once.
         description: 'Extra Cloud Logging filter, ANDed with the rest (e.g. textPayload:"ECONNREFUSED")'
         type: string
         default: ""
@@ -38,28 +57,139 @@ on:
         description: "Cloud Run service name"
         type: string
         default: "power-meter-web"
+  issue_comment:
+    types: [created]
 
 concurrency:
   # Deliberately NOT the infra workflow's group. That one is repo-wide and never
   # cancels, because every run of it touches one Pulumi state object; joining it
-  # would mean a log read waits behind a deploy, and a deploy waits behind a log
-  # read. This job touches no shared state, so it only needs to not pile up.
+  # would mean a log read waits behind a deploy, and a deploy behind a log read.
+  # This job touches no shared state, so it only needs to not pile up.
   group: logs
   cancel-in-progress: false
 
 permissions:
   contents: read
   id-token: write   # to mint the OIDC token for WIF
-  # No pull-requests: write. This workflow posts nothing.
+  # No issues: write. The result goes to the run log and the step summary, not
+  # back into the thread: a session reads the run, and a human reading the
+  # comment is one click from the same place.
 
 jobs:
   read:
+    # The dispatch form, or a /logs comment from someone who can already change
+    # this repository. author_association is the whole guard: without it, any
+    # passer-by who can comment could start runs against the project, and that
+    # is true of an issue on a private repo as soon as it has an outside
+    # collaborator. Note what it cannot do: a session's comments are authored by
+    # the account that authorized it, so this permits the human and the sessions
+    # they run on equal terms, by design.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (startsWith(github.event.comment.body, '/logs') &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
     runs-on: ubuntu-latest
     env:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
     steps:
       # No checkout: nothing here reads a repository file, and the job's whole
       # value is how fast it comes back.
+
+      # One place decides the four parameters, so the two triggers cannot drift
+      # into meaning different things. Everything arrives through the
+      # environment rather than interpolated into the script: a comment body is
+      # attacker-controlled in the general case — the guard above decides who may
+      # start the job, not what they may put in the text — and `${{ }}` of a
+      # comment into a run: block is the standard way that becomes shell.
+      - name: Resolve parameters
+        id: params
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          IN_FRESHNESS: ${{ inputs.freshness }}
+          IN_LIMIT: ${{ inputs.limit }}
+          IN_SEVERITY: ${{ inputs.severity }}
+          IN_FILTER: ${{ inputs.filter }}
+          IN_SERVICE: ${{ inputs.service }}
+        run: |
+          python3 <<'PY'
+          import os, re, sys
+
+          DEFAULTS = {
+              "freshness": "1h",
+              "limit": "200",
+              "severity": "ANY",
+              "filter": "",
+              "service": "power-meter-web",
+          }
+          SEVERITIES = {"ANY", "DEFAULT", "INFO", "NOTICE", "WARNING", "ERROR", "CRITICAL", "ALERT", "EMERGENCY"}
+
+          def fail(message):
+              print(f"::error::{message}")
+              sys.exit(1)
+
+          values = dict(DEFAULTS)
+
+          if os.environ["EVENT_NAME"] == "workflow_dispatch":
+              for key in values:
+                  supplied = os.environ.get(f"IN_{key.upper()}", "").strip()
+                  if supplied:
+                      values[key] = supplied
+          else:
+              # First line only. A comment can carry prose under the command, and
+              # a /logs line inside a quoted reply should not silently widen the
+              # read.
+              line = os.environ.get("COMMENT_BODY", "").splitlines()[0].strip()
+              body, _, trailing = line.partition("--")
+              if trailing.strip():
+                  values["filter"] = trailing.strip()
+              words = body.split()
+              # The job's `if` can only test a prefix, so "/logscale is broken"
+              # reaches here. Loud rather than silently reading a default window:
+              # a run that should not have started should look like one.
+              if not words or words[0] != "/logs":
+                  fail(f"{words[0] if words else '(empty)'!r} is not the /logs command.")
+              for word in words[1:]:
+                  key, sep, value = word.partition("=")
+                  if not sep:
+                      # Two positional forms, because they are what a person
+                      # types and neither can be mistaken for the other: a
+                      # duration always carries a unit suffix, a severity never
+                      # does. Anything else asks for the key=value form.
+                      if re.fullmatch(r"\d{1,4}[smhd]", word):
+                          values["freshness"] = word
+                      elif word.upper() in SEVERITIES:
+                          values["severity"] = word
+                      else:
+                          fail(f"Cannot place {word!r}. Use freshness=6h, severity=ERROR, "
+                               f"limit=500, service=NAME, or a bare duration or severity.")
+                      continue
+                  if key not in DEFAULTS or key == "filter":
+                      allowed = ", ".join(k for k in DEFAULTS if k != "filter")
+                      fail(f"Unknown parameter {key!r}. Allowed: {allowed}, and a filter after `--`.")
+                  values[key] = value
+
+          # Validated because these do reach a command line as arguments, and
+          # because a typo should say so rather than read the wrong window and
+          # look like an answer.
+          if not re.fullmatch(r"\d{1,4}[smhd]", values["freshness"]):
+              fail(f"freshness {values['freshness']!r} is not a duration like 30m, 6h or 2d.")
+          if not re.fullmatch(r"\d{1,4}", values["limit"]) or not 1 <= int(values["limit"]) <= 2000:
+              fail(f"limit {values['limit']!r} is not a number between 1 and 2000.")
+          if values["severity"].upper() not in SEVERITIES:
+              fail(f"severity {values['severity']!r} is not one of: {', '.join(sorted(SEVERITIES))}")
+          values["severity"] = values["severity"].upper()
+          if not re.fullmatch(r"[a-z]([a-z0-9-]{0,61}[a-z0-9])?", values["service"]):
+              fail(f"service {values['service']!r} is not a Cloud Run service name.")
+          if len(values["filter"]) > 500 or "\n" in values["filter"]:
+              fail("filter is too long to be one clause; narrow it.")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              for key, value in values.items():
+                  out.write(f"{key}={value}\n")
+          for key, value in values.items():
+              print(f"{key}={value!r}")
+          PY
 
       - uses: google-github-actions/auth@v2
         id: auth
@@ -83,18 +213,14 @@ jobs:
 
       - name: Read logs
         env:
-          SERVICE: ${{ inputs.service }}
-          FRESHNESS: ${{ inputs.freshness }}
-          LIMIT: ${{ inputs.limit }}
-          SEVERITY: ${{ inputs.severity }}
-          EXTRA: ${{ inputs.filter }}
+          SERVICE: ${{ steps.params.outputs.service }}
+          FRESHNESS: ${{ steps.params.outputs.freshness }}
+          LIMIT: ${{ steps.params.outputs.limit }}
+          SEVERITY: ${{ steps.params.outputs.severity }}
+          EXTRA: ${{ steps.params.outputs.filter }}
         run: |
           set -euo pipefail
 
-          # Inputs are interpolated through the environment, never into the
-          # script text: a dispatch input is attacker-controlled in the general
-          # case, and a filter string containing a quote would otherwise end the
-          # quoting and run as shell.
           filter="resource.type=\"cloud_run_revision\" resource.labels.service_name=\"${SERVICE}\""
           if [ "${SEVERITY}" != "ANY" ]; then
             filter="${filter} severity>=${SEVERITY}"
@@ -107,8 +233,8 @@ jobs:
           echo "Freshness: ${FRESHNESS}, limit: ${LIMIT}"
           echo
 
-          # Read once, render twice. json is the copy Claude reads back through
-          # the API — it carries the fields a terse line drops (revision,
+          # Read once, render twice. json is the copy a session reads back
+          # through the API — it carries the fields a terse line drops (revision,
           # httpRequest, jsonPayload, trace) and needs no guessing about which
           # payload field a given entry used.
           gcloud logging read "${filter}" \
