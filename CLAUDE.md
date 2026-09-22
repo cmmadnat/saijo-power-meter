@@ -31,7 +31,6 @@ on fixture data; no meter data flows yet.
 | `apps/web` | Next.js + shadcn/ui frontend. Deployed to Cloud Run. |
 | `scripts/check-boundaries.mjs` | Enforces the dependency rule. Runs first in CI. |
 | `.github/workflows/check.yml` | Application checks. Holds no cloud credentials. |
-| `.github/workflows/infra.yml` | Being retired. Applies the stack until a Cloud Build run has gone green. |
 | `.github/workflows/logs.yml` | Reads the Cloud Run service's logs, on dispatch or a `/logs` comment. Runs no Pulumi and holds a read-only identity. |
 | `.github/workflows/build-logs.yml` | Reads a Cloud Build run's status and log, on dispatch or a `/buildlog` comment. Same identity. |
 | `docs/architecture/delivery-pipeline.md` | Why builds run on Cloud Build, and what that cost. |
@@ -114,12 +113,17 @@ always runs, ends the log with a step-by-step verdict and the last 80 lines of w
 exits non-zero itself so a red build reads as red. A step that never ran is reported as "did not
 run", never as a pass.
 
-**`.github/workflows/infra.yml` is still there and still applies on main.** That is temporary and
-deliberate: the triggers are Pulumi resources, so something has to apply the stack that creates
-them. It goes once a Cloud Build preview and apply have both gone green. The WIF section of
-`bootstrap.sh` stays — both log workflows authenticate through it. `check.yml` is staying too: it
-holds no cloud credentials, and moving it would blur the split that keeps a failing unit test from
-looking like a failing apply.
+**GitHub Actions no longer deploys anything.** `.github/workflows/infra.yml` is gone: Cloud Build
+runs the preview on a pull request and the apply on `main`, and both have gone green. What is left
+on Actions is `check.yml` — boundaries, typecheck, lint, test — which holds no cloud credentials and
+stays, because moving it would blur the split that keeps a failing unit test from looking like a
+failing apply.
+
+**Three of the five `GCP_*` repository variables went with it, and two must stay.**
+`GCP_STATE_BUCKET`, `GCP_KMS_KEY` and `GCP_DEPLOYER_SA` were only ever read by `infra.yml` — the
+equivalents now live in `infra/index.ts` and are passed to the build as step environment variables.
+`GCP_PROJECT_ID` and `GCP_WIF_PROVIDER` are still read by `logs.yml` and `build-logs.yml`; deleting
+them breaks `/logs` and `/buildlog`. The WIF section of `bootstrap.sh` stays for the same reason.
 
 **CI is the only thing that runs Pulumi at all.** Two things in `ci/pulumi.sh` look like they could
 be simplified and must not be: stack creation stays on `pulumi stack ls` rather than `stack select`,
@@ -155,9 +159,12 @@ applied from CI. Nothing below needs doing again unless a second project is bein
 1. Create a GCP project and link billing.
 2. In **Google Cloud Shell** (browser-based, already authenticated — no local machine needed):
    `PROJECT_ID=your-project ./bootstrap.sh`
-3. Set the five GitHub Actions *variables* the script prints at the end (`GCP_PROJECT_ID`,
-   `GCP_STATE_BUCKET`, `GCP_KMS_KEY`, `GCP_DEPLOYER_SA`, `GCP_WIF_PROVIDER`). They are not secrets.
-4. Open a PR touching `infra/` and check the preview comment.
+3. Set the two GitHub Actions *variables* the log workflows need — `GCP_PROJECT_ID` and
+   `GCP_WIF_PROVIDER`. They are not secrets. The other three the script prints were for the
+   retired `infra.yml` and are no longer used.
+4. `PROJECT_ID=your-project ./scripts/setup-cloud-build.sh`, then connect the repository in the
+   Cloud Build console as it instructs.
+5. Open a PR touching `infra/` and check that the Cloud Build check appears on it.
 
 ## Architecture
 

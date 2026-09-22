@@ -154,6 +154,19 @@ no cloud credentials and touches nothing outside the runner, so it is not part o
 was about. Moving it would mean paying for build minutes to do what a free runner does, and
 would blur the split that keeps a failing unit test from looking like a failing apply.
 
+## The cutover, which is done
+
+`.github/workflows/infra.yml` applied the stack until Cloud Build had proved it could, and is now
+deleted — a preview and an apply have both gone green. Three of its five `GCP_*` repository
+variables went with it: `GCP_STATE_BUCKET`, `GCP_KMS_KEY` and `GCP_DEPLOYER_SA`. **`GCP_PROJECT_ID`
+and `GCP_WIF_PROVIDER` stay**, because `logs.yml` and `build-logs.yml` read them, and so does the
+Workload Identity Federation section of `bootstrap.sh`.
+
+One consequence worth stating: the concurrency worry above shrinks with it. The risk was a workflow
+and a trigger applying the same stack on the same merge; now only Cloud Build applies, and two of
+its runs overlapping is far rarer. The retry in `ci/pulumi.sh` remains the guard, and it is still
+weaker than the guarantee `concurrency: infra` gave.
+
 ## Standing up the pipeline
 
 `scripts/setup-cloud-build.sh`, once per project. It enables the APIs and grants the
