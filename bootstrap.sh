@@ -216,16 +216,14 @@ For reference, since bootstrap.sh created them:
 
   state bucket  gs://${BUCKET}
   KMS key       ${KMS_KEY}
-  deployer      ${SA_EMAIL}"
+  deployer      ${SA_EMAIL}
 
 Then run the Cloud Build setup, which is what actually builds and deploys:
 
   PROJECT_ID=${PROJECT_ID} ./scripts/setup-cloud-build.sh
 
-The five variables above are only for .github/workflows/infra.yml, which exists
-to apply the stack that creates the Cloud Build pipeline in the first place.
-Once a Cloud Build run has gone green, that workflow and these variables both
-go away.
+It prints the one step no script can do: connecting the repository to Cloud
+Build in the console.
 OUT
 
 if [[ "$IMPERSONATION_OK" != true ]]; then
