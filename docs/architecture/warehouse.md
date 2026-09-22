@@ -108,25 +108,45 @@ The BigQuery SDK is reached through a four-method `WarehouseClient` interface an
 dynamic, `@google-cloud/bigquery` and its fifty-odd transitive packages stay out of the web app's
 traced standalone output until something in `apps/web` actually constructs a client.
 
-## What exists, and what has not been run
+## What has been run, and against what
 
-**The dataset exists.** `power_meter` was applied to `saijo-power-meter` on 2026-09-22 from the step
-6 merge, along with `bigquery.googleapis.com` and the web service account's two read-only bindings.
-The deployer holds `roles/bigquery.admin`; the apply creating a dataset is what proved that, since a
-`pulumi preview` plans rather than creates and passes over a missing role.
+**All of it, once, against `saijo-power-meter` on 2026-09-22.** The dataset came
+from the step 6 apply — which is also what proved the deployer's
+`roles/bigquery.admin`, since a `pulumi preview` plans rather than creates and
+passes over a missing role. The tables came from `migrate`, run by hand: nothing
+in the delivery pipeline runs it, and that stays true until step 7 needs it.
 
-**The tables do not.** Nothing in the delivery pipeline runs `migrate`, so `readings`,
-`readings_1m` and `latest` have never been created anywhere. Until someone runs it against the
-project, the whole of this file below the schema section describes code that has been tested only
-against a fake client:
+What that run established, in order:
 
-- The migration SQL has never been submitted to BigQuery. `sql` renders it without credentials and
-  that output has been read; whether it *parses* is BigQuery's opinion, and has not been asked.
-- `load`, `verify` and `settings` have never run against a project.
+- **The DDL parses.** It did not at first. `at` is a reserved keyword in
+  GoogleSQL, and BigQuery rejected migration `0001` on its first statement —
+  after the column had passed review, a full suite against the fake client, and
+  a green preview. It is `reading_at` now, and a test asserts no column in any
+  migration is named for a reserved word. Nothing that runs without credentials
+  knows what BigQuery's parser will refuse; that test is the closest substitute.
+- **The migrations are idempotent.** A second `migrate` applied nothing.
+- **Retention is real.** `settings` read `partition_expiration_days = 14` and
+  `require_partition_filter` back off `readings` and `readings_1m`, and neither
+  off `latest`.
+- **The load path works.** A two-hour window loaded 41 730 readings, 6 314
+  rollup rows and 55 `latest` rows. Those reconcile: 6.61 readings per rollup
+  bucket against 60/9 = 6.67 at the real publish rate, the shortfall being the
+  offline-profile meters that stop partway through the window.
+- **The adapter is faithful.** `verify` ran `historyTable` over the same window
+  twice, once against the fixtures in memory and once against what BigQuery
+  returned, and all 55 rows agreed on total energy, running time and reading
+  count.
 
-Running `migrate` once is what closes that gap, and it needs credentials — so it happens in Cloud
-Shell or from a machine with `gcloud auth application-default login`, not from a session here. Node
-22 or newer: the CLI runs TypeScript through `--experimental-strip-types`.
+Two things follow from that run and are worth knowing:
+
+- **The fixtures are still in the tables.** There is no `unload`, so they sit in
+  `readings` and `readings_1m` until their partitions expire 14 days on. Before
+  step 7 writes real readings, drop the three tables and re-migrate, or the
+  warehouse will hold synthetic and real data with nothing telling them apart.
+- **`load` and `verify` must be given the same window.** Fixture load is a
+  function of absolute time, so the same window is the same readings — but a
+  window ending "now" ends at a different instant in each command. `load` prints
+  the exact window it used as the `verify` line to paste.
 
 The commands:
 
@@ -134,14 +154,19 @@ The commands:
 npm run warehouse -w @power-meter/infrastructure -- sql
 npm run warehouse -w @power-meter/infrastructure -- migrate --dry-run
 npm run warehouse -w @power-meter/infrastructure -- migrate
-npm run warehouse -w @power-meter/infrastructure -- load --hours 24
-npm run warehouse -w @power-meter/infrastructure -- verify --hours 24
 npm run warehouse -w @power-meter/infrastructure -- settings
+npm run warehouse -w @power-meter/infrastructure -- load --hours 2
+npm run warehouse -w @power-meter/infrastructure -- verify --from <T> --to <T>
 ```
 
-`settings` reads `INFORMATION_SCHEMA.TABLE_OPTIONS` and prints each table's expiry and partition
-filter, because "partition expiry is set, not assumed" can only be answered by asking the database:
-a table created without the option looks identical to the DDL that was meant to carry it.
+`settings` joins `INFORMATION_SCHEMA.TABLES` to `TABLE_OPTIONS` and prints every table's expiry and
+partition filter, because "partition expiry is set, not assumed" can only be answered by asking the
+database: a table created without the option looks identical to the DDL that was meant to carry it.
+It reads from `TABLES` rather than from the options alone so that a table with neither option — 
+`latest` — is reported as having neither, rather than being absent and indistinguishable from a
+table that was never created.
+
+`verify` needs the window `load` printed, not `--hours`; see above.
 
 Nothing in the delivery pipeline runs `migrate` yet. Wiring it in is a change to a pipeline that
 `docs/architecture/delivery-pipeline.md` records the cost of getting wrong, and it belongs with

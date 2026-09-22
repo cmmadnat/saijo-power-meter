@@ -27,7 +27,7 @@ import {
   WarehouseLatestReadingStore,
   WarehouseReadingRepository,
 } from "./repository.ts";
-import { runMigrations } from "./runner.ts";
+import { partitionSettings, runMigrations } from "./runner.ts";
 import {
   readingToRow,
   rowToReading,
@@ -305,6 +305,28 @@ test("a dry run records nothing", async () => {
   assert.equal(client.rows(TABLES.migrations).length, 0);
   // And a real run afterwards still has everything to do.
   assert.equal((await runMigrations(client, TARGET)).applied.length, MIGRATIONS.length);
+});
+
+test("settings reports a table that carries neither option", async () => {
+  // The join returns a row with both option columns null for `latest`. It has
+  // to come back as a table with no expiry, not vanish from the report.
+  const client: WarehouseClient = {
+    async query<Row>() {
+      return [
+        { table_name: "readings", option_name: "partition_expiration_days", option_value: "14" },
+        { table_name: "readings", option_name: "require_partition_filter", option_value: "true" },
+        { table_name: "latest", option_name: null, option_value: null },
+      ] as Row[];
+    },
+    async *stream<Row>(): AsyncIterable<Row> {},
+    async load() { return 0; },
+    async replace() { return 0; },
+  };
+
+  assert.deepEqual(await partitionSettings(client, TARGET), [
+    { table: "latest", expirationDays: null, requirePartitionFilter: false },
+    { table: "readings", expirationDays: 14, requirePartitionFilter: true },
+  ]);
 });
 
 // --- rows --------------------------------------------------------------------

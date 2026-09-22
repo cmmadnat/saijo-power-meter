@@ -350,12 +350,19 @@ remain. Do not quietly settle one from inference; it takes a captured payload.
 `packages/infrastructure/src/warehouse`. That line is the same one `bootstrap.sh` draws for the state
 bucket — a container that must exist before anything can run is infrastructure, what goes inside it
 is the application's own shape. Retention is a table setting (a 14-day partition expiry), so it lives
-with the DDL and there is no cleanup job. **The dataset exists** — applied 2026-09-22, which is also
-what proved the deployer's `roles/bigquery.admin`, since a preview plans rather than creates. **The
-tables do not:** nothing in the pipeline runs `migrate`, so `readings`, `readings_1m` and `latest`
-have never been created and no statement has ever reached BigQuery. Everything in the warehouse
-module is tested against a fake client and nothing else. `docs/architecture/warehouse.md` has the
-rest, and says what running `migrate` once would settle.
+with the DDL and there is no cleanup job. **Dataset and tables both exist**, applied and migrated on
+2026-09-22 — `migrate` twice (the second applied nothing), `settings` reading the 14-day expiry back
+off both readings tables, a two-hour fixture load, and `verify` matching all 55 History rows between
+the fixtures and the warehouse. Nothing in the pipeline runs `migrate`; that stays a hand-run
+command until step 7 needs it. `docs/architecture/warehouse.md` has the evidence and the two things
+that follow from it — chiefly that **the fixtures are still in those tables** and want dropping
+before real readings land beside them.
+
+**BigQuery's parser is the one reviewer the fake client cannot stand in for.** `at` was a column name
+here until BigQuery rejected it as a reserved keyword on the first real `migrate` — after review, a
+full suite against the fake, and a green preview. A test now checks every migration's column names
+against GoogleSQL's reserved list. Treat any DDL change the same way: the credential-free tests say
+the code is consistent, never that the SQL is legal.
 
 **The History aggregation did not move into SQL, and must not.** `consumptionFrom()`'s reset rule and
 the three-minute running-hours cap have one implementation, in `packages/application`. The warehouse
