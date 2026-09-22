@@ -114,6 +114,16 @@ then rejected with a bare `INVALID_ARGUMENT` — while the trigger itself create
 tag is only a string until a build is made from it. `build-logs.yml` finds a build by
 `--filter "substitutions.COMMIT_SHA=<sha>"`; the mode stays a tag because it is a literal.
 
+**A `ci/*.sh` must run under the trigger that is already deployed, not the one in its own commit.**
+The trigger's steps and their environment live in `infra/index.ts` and reach Cloud Build only when
+Pulumi applies them — which is a step in this pipeline. So a script that demands an environment
+variable the *running* trigger does not set can never be applied: the apply that would update the
+trigger is the run that fails. That is a red `main` on the step 7 merge, and the reason `ci/image.sh`
+still reads the pre-step-7 `IMAGE`/`CACHE_IMAGE` as fallbacks and `ci/pulumi.sh` derives
+`INGESTER_IMAGE` from `WEB_IMAGE` rather than requiring it. Keep the fallbacks: they are two lines,
+and they are what makes the *next* pipeline change survivable. Adding a step is safe — it does not
+run until the trigger knows about it. Adding a requirement to an existing step is not.
+
 **Cloud Build validates very little at trigger-create time and a great deal at invocation.** "The
 trigger was created" is not evidence that it works, and a `pulumi preview` is weaker still: it
 plans rather than creates, so it passes over missing roles and missing secrets alike. That

@@ -63,6 +63,37 @@ second account with the same grants would be a second thing to audit.
 
 `$COMMIT_SHA` is supplied by Cloud Build, so nothing has to bind it out of a payload.
 
+### A script must run under the trigger that is already deployed
+
+**This cost a red `main`, on the step 7 merge.** The trigger's step definitions — which steps
+exist, and what environment each one gets — live in `infra/index.ts` and reach Cloud Build only
+when Pulumi applies them. Applying them is a step *in this pipeline*. So:
+
+> A `ci/*.sh` that requires something the **currently deployed** trigger does not provide can never
+> be applied. The apply that would update the trigger is the run that fails, and it fails the same
+> way every time.
+
+Step 7 renamed the image step's `IMAGE`/`CACHE_IMAGE` to `WEB_IMAGE`/`INGESTER_IMAGE` and friends,
+and made `ci/image.sh` and `ci/pulumi.sh` demand the new names. The commit changed both sides
+together and looked consistent. But the build that ran was the *old* trigger handing the *new*
+scripts the old names: both steps died on their `:?` checks about a minute in, and no apply
+happened, so the trigger kept its old definition. Deadlock.
+
+The rule that follows, and it is cheap:
+
+- **Read the old names as a fallback when adding new ones**, and keep the fallback afterwards. Two
+  lines in `ci/image.sh` are what let a run under the previous trigger succeed and apply the next
+  one.
+- **Derive rather than require**, where a value can be derived. `ci/pulumi.sh` computes
+  `INGESTER_IMAGE` from `WEB_IMAGE` if it is absent; the Pulumi program only insists on it when
+  `deployIngester` is true, so a derived value cannot deploy anything by accident.
+- A new *step* is safe to add — it simply does not run until the trigger knows about it. A new
+  *requirement* in an existing step is not.
+
+The same asymmetry this document records elsewhere is what hides it: nothing validates a trigger's
+environment against the scripts it invokes until a build runs, and a `pulumi preview` plans rather
+than creates.
+
 ### Why every step runs under a wrapper
 
 Cloud Build has no `if: always()`. A failing step stops the build dead, so a reporting step
