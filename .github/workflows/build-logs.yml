@@ -11,9 +11,10 @@ name: build-logs
 #
 # What it covers is the other half. logs.yml answers "what is the deployed app
 # doing"; this answers "why did the deploy fail" — a question nothing else can
-# answer, because a Cloud Build webhook trigger posts no check, no status and no
-# comment back to GitHub. Without this, a failed deploy leaves a pull request
-# looking entirely clean.
+# answer in full. Cloud Build does post a check on a pull request now, so the
+# common case needs nothing; this is for an apply on main, for reading the log
+# rather than the verdict, and for a session that holds no Google Cloud
+# credentials at all.
 #
 # Two ways in, for the reason logs.yml records: a session cannot dispatch.
 # workflow_dispatch needs `actions: write` and a session token answers 403
@@ -41,8 +42,8 @@ on:
     inputs:
       sha:
         # The usual way in. Every build is tagged with the commit it built, so a
-        # commit is enough of a handle — nothing else about a webhook-triggered
-        # build is announced anywhere.
+        # commit is enough of a handle, and is what Cloud Build itself records
+        # as the COMMIT_SHA substitution.
         description: "Commit SHA to find the build for. Blank = most recent build."
         type: string
         default: ""
@@ -235,9 +236,10 @@ jobs:
 
           if [ -z "${id}" ]; then
             echo "No build matched."
-            echo "A webhook trigger only fires on a pull_request or a push to main, so a"
-            echo "commit that was never pushed as one has no build. Widen the filter, or"
-            echo "check that the webhooks are actually configured on the repository."
+            echo "The triggers fire on a pull request, or a push to main. A commit that"
+            echo "was neither has no build, and a commit pushed BEFORE the trigger existed"
+            echo "has none either — the trigger is not applied retrospectively. Widen the"
+            echo "filter, or check the repository is still connected in Cloud Build."
             {
               echo "### No build matched"
               echo
