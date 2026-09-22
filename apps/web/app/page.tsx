@@ -105,14 +105,15 @@ export default async function RealTimePage(props: PageProps<"/">) {
         asOf={formatClock(table.at)}
       />
 
-      <RealtimeTable
-        rows={rows}
-        departments={table.departments}
-        byDepartment={table.byDepartment.map((d) => ({ ...d }))}
-        asOf={formatClock(table.at)}
-        counts={table.counts}
-      />
-
+      {/*
+        Charts above the table, which inverts the mock-up: page 1 draws the
+        table first with the kW panel beginning below it. The reorder is the
+        customer's own call and is flagged as a deviation in
+        docs/requirements/power-meter-ui.md. The reasoning behind it: the strip
+        and the two charts are what a glance is for, and a 55-row, 15-column
+        table pushes them below the fold on every screen it was checked on. The
+        table stays the detail view, reached by scrolling to it.
+      */}
       <RealtimeCharts
         meters={meters}
         selection={[...selection]}
@@ -126,6 +127,14 @@ export default async function RealTimePage(props: PageProps<"/">) {
         series={chartSeriesData}
         bucketMs={charts.view.bucketMs}
         maxSeries={MAX_SERIES}
+      />
+
+      <RealtimeTable
+        rows={rows}
+        departments={table.departments}
+        byDepartment={table.byDepartment.map((d) => ({ ...d }))}
+        asOf={formatClock(table.at)}
+        counts={table.counts}
       />
     </div>
   );
