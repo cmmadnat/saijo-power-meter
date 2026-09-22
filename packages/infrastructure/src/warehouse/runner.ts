@@ -152,14 +152,22 @@ export async function partitionSettings(
   client: WarehouseClient,
   target: WarehouseTarget,
 ): Promise<PartitionSetting[]> {
+  // Driven from TABLES rather than TABLE_OPTIONS, so a table that carries
+  // neither option is reported as having neither. Selecting only the options
+  // makes such a table absent from the result, and "absent" is indistinguishable
+  // from "does not exist" — which is exactly the wrong thing to be vague about
+  // in the one command whose job is to confirm retention really is set.
   const rows = await client.query<{
     table_name: string;
-    option_name: string;
-    option_value: string;
+    option_name: string | null;
+    option_value: string | null;
   }>(
-    `SELECT table_name, option_name, option_value
-     FROM ${informationSchemaRef(target, "TABLE_OPTIONS")}
-     WHERE option_name IN ('partition_expiration_days', 'require_partition_filter')`,
+    `SELECT t.table_name, o.option_name, o.option_value
+     FROM ${informationSchemaRef(target, "TABLES")} AS t
+     LEFT JOIN ${informationSchemaRef(target, "TABLE_OPTIONS")} AS o
+       ON o.table_name = t.table_name
+      AND o.option_name IN ('partition_expiration_days', 'require_partition_filter')
+     ORDER BY t.table_name`,
   );
 
   const byTable = new Map<string, PartitionSetting>();
@@ -177,7 +185,7 @@ export async function partitionSettings(
           : current.expirationDays,
       requirePartitionFilter:
         row.option_name === "require_partition_filter"
-          ? row.option_value.toUpperCase() === "TRUE"
+          ? (row.option_value ?? "").toUpperCase() === "TRUE"
           : current.requirePartitionFilter,
     });
   }

@@ -341,10 +341,23 @@ History over the warehouse matches History over the fixtures for all 55 rows. `n
 green across the workspace (108 tests), the web build is unchanged, and the BigQuery SDK stays out
 of its 58 MB standalone output because the client is imported dynamically.
 
-*Not verified, and it needs a project:* no statement has been submitted to BigQuery, so its opinion
-of the DDL is unasked; `load`, `verify` and `settings` have never run; and the existing project's
-deployer has not been granted `roles/bigquery.admin`, without which the apply fails. Nothing in the
-pipeline runs `migrate` — that belongs with step 7, where something first depends on the tables.
+*Applied and migrated, 2026-09-22.* The dataset, the API and the two bindings went in on the apply
+after #24 — which is what proved the deployer's `roles/bigquery.admin`, a preview having planned
+rather than created. The tables followed from `migrate`, run by hand.
+
+*Verified against the project:* a second `migrate` applied nothing; `settings` read
+`partition_expiration_days = 14` and `require_partition_filter` back off both readings tables and
+neither off `latest`; a two-hour load wrote 41 730 readings, 6 314 rollup rows and 55 `latest` rows,
+which reconcile at 6.61 readings per bucket against 60/9 expected; and `verify` matched all 55
+History rows between the fixtures and the warehouse.
+
+*What that run cost, and it is the lesson of the step:* the DDL did not parse the first time. `at` is
+reserved in GoogleSQL, and it had passed review, 54 tests against the fake client and a green
+preview. A test now checks every column name against the reserved list. **Nothing that runs without
+credentials knows what BigQuery's parser will refuse.**
+
+*Left behind:* the fixtures are still in the tables and expire in 14 days. Drop and re-migrate before
+step 7 writes real readings, or the warehouse holds both with nothing telling them apart.
 
 ### Step 7 — MQTT ingester
 **Gated on open questions 1 and 2 — do not go live before they are answered**, because wrong

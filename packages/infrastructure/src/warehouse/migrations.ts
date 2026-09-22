@@ -40,7 +40,7 @@ export interface Migration {
 /** The reading columns, shared by `readings` and `latest`. */
 const READING_COLUMNS = `
   meter_id STRING NOT NULL OPTIONS (description = "Stable id from the meter registry, s<station>m<slot>."),
-  at TIMESTAMP NOT NULL OPTIONS (description = "When the reading was received. UTC; rendered in Asia/Bangkok."),
+  reading_at TIMESTAMP NOT NULL OPTIONS (description = "When the reading was received. UTC; rendered in Asia/Bangkok. Named reading_at rather than at because AT is a reserved keyword in GoogleSQL."),
   voltage_l1 FLOAT64 NOT NULL,
   voltage_l2 FLOAT64 NOT NULL,
   voltage_l3 FLOAT64 NOT NULL,
@@ -59,7 +59,7 @@ export const MIGRATIONS: readonly Migration[] = [
     statements: [
       `CREATE TABLE IF NOT EXISTS {{dataset}}.${TABLES.readings} (${READING_COLUMNS}
 )
-PARTITION BY DATE(at)
+PARTITION BY DATE(reading_at)
 CLUSTER BY meter_id
 OPTIONS (
   partition_expiration_days = ${RETENTION_DAYS},
