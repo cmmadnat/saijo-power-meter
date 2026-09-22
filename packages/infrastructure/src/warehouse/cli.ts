@@ -45,7 +45,35 @@ function log(message: string): void {
   process.stdout.write(`${message}\n`);
 }
 
+/**
+ * The window to generate fixtures for.
+ *
+ * `--from` and `--to` exist because `load` and `verify` have to agree on it
+ * exactly. Fixture load is a function of absolute time, so the same window
+ * yields the same readings on either side — but a window that ends at "now"
+ * ends at a different instant in each command, and `verify` would compare a
+ * table written minutes ago against fixtures generated up to this second, then
+ * report every meter as short. That reads like a broken adapter and is not one.
+ *
+ * So `--hours` stays the convenient default for `load`, which prints the exact
+ * window it used, and `verify` is handed that window back.
+ */
 function window(): { from: Date; to: Date } {
+  const fromFlag = flag("from");
+  const toFlag = flag("to");
+  if (fromFlag !== undefined && toFlag !== undefined) {
+    const from = new Date(fromFlag);
+    const to = new Date(toFlag);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+      throw new RangeError(
+        `--from and --to must be timestamps: ${fromFlag} ${toFlag}`,
+      );
+    }
+    return { from, to };
+  }
+  if (fromFlag !== undefined || toFlag !== undefined) {
+    throw new RangeError("--from and --to go together, or neither");
+  }
   const to = new Date();
   return { from: new Date(to.getTime() - hours * 3_600_000), to };
 }
@@ -87,6 +115,12 @@ switch (command) {
       `loaded ${report.readings} readings, ${report.rollupRows} rollup rows, ` +
         `${report.latestRows} latest rows`,
     );
+    // The window, in the form verify needs it back. Anything else compares this
+    // table against fixtures generated for a different window.
+    log(
+      `verify it with:\n  npm run warehouse -w @power-meter/infrastructure -- ` +
+        `verify --from ${report.from.toISOString()} --to ${report.to.toISOString()}`,
+    );
     break;
   }
 
@@ -118,6 +152,12 @@ switch (command) {
   }
 
   default:
-    log("usage: warehouse <sql|migrate|load|verify|settings> [--project P] [--dataset D] [--hours N] [--dry-run]");
+    log(
+      "usage: warehouse <sql|migrate|load|verify|settings>\n" +
+        "  --project P  --dataset D  --location L\n" +
+        "  --hours N          window ending now; load prints the exact one it used\n" +
+        "  --from T --to T    an exact window; verify needs the one load printed\n" +
+        "  --dry-run          migrate only: connect, read the ledger, apply nothing",
+    );
     process.exitCode = 1;
 }
