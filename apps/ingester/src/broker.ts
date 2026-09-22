@@ -27,6 +27,26 @@
  * has to lose, permanently. Duplicate ingestion is then impossible rather than
  * unlikely — the invariant the plan asks for.
  *
+ * ## Why retained messages are not replayed at subscribe time
+ *
+ * The first real capture, on 2026-09-22, delivered all nine topics within 193
+ * ms of subscribing, out of order — the fingerprint of **retained messages**,
+ * which a broker flushes to a new subscription immediately. A publisher at 60
+ * messages a minute would have spread them across nine seconds.
+ *
+ * That matters because this service stamps a reading with the time it was
+ * received: the protocol carries no timestamp. A retained frame replayed after
+ * a ten-minute outage would be written as fifty-five readings taken *now*, when
+ * they are the last thing seen before the outage — inflating that minute's
+ * rollup count and putting a stale figure on a screen that says "live".
+ *
+ * MQTT 5's retain handling option says exactly this: `rh: 2`, do not send
+ * retained messages when the subscription is made. It suppresses the replay
+ * only. A live message that happens to carry the retain flag still arrives, and
+ * it must — an industrial publisher that sets retain on every publish is
+ * ordinary, and dropping flagged messages in the handler would drop the whole
+ * feed.
+ *
  * ## Why the session is not clean
  *
  * `clean: false` with QoS 1 asks the broker to hold messages while the
@@ -74,6 +94,23 @@ export interface MqttBrokerOptions {
 
 /** MQTT 5 reason code 142: another connection used this client id. */
 const SESSION_TAKEN_OVER = 0x8e;
+
+/**
+ * How to subscribe, given what the broker speaks.
+ *
+ * `rh: 2` is *retain handling: do not send retained messages at subscribe
+ * time*, and it exists in MQTT 5 only — see the note at the top of this file
+ * for why an ingester that stamps reception time needs it. On 3.1.1 there is no
+ * such option and a broker will replay retained frames at every reconnect;
+ * that is the local replay harness, which publishes nothing retained, and it is
+ * never a deployment.
+ */
+export function subscribeOptions(protocolVersion: 4 | 5): {
+  qos: 1;
+  rh?: number;
+} {
+  return protocolVersion === 5 ? { qos: 1, rh: 2 } : { qos: 1 };
+}
 
 export class MqttBroker implements Broker {
   readonly #options: MqttBrokerOptions;
@@ -123,7 +160,7 @@ export class MqttBroker implements Broker {
       handlers.onConnect({ sessionPresent: Boolean(packet.sessionPresent) });
       client.subscribe(
         [...this.#options.topics],
-        { qos: 1 },
+        subscribeOptions(this.#options.protocolVersion ?? 5),
         (error) => {
           if (error) handlers.onError(error);
         },

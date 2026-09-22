@@ -53,9 +53,10 @@ the sheet was being loose with notation. The decoder tolerates both either way.
 
 ## The first real capture, 2026-09-22
 
-One message off `PMeterStation05`, read from the live broker with
+Nine messages, one per station, read from the live broker with
 `apps/ingester/tools/capture.ts` (the address and credentials arrived that day in
-`reference doc/mqtt`). Verbatim:
+`reference doc/mqtt`). The whole capture is committed at `apps/ingester/capture.jsonl`.
+`PMeterStation05`, verbatim:
 
 ```json
 {"M1VL1":2240,"M1VL2":2240,"M1VL3":2240,"M1CL1":1877,"M1CL2":1877,"M1CL3":1877,"M1P":5350,"M1PF":50,"M1E":2679, ... M7 ...}
@@ -73,11 +74,27 @@ illegal JSON. The decoder tolerates both and needs no change; the open question 
 remaining meters down into it. Had it renumbered, every meter on that station would have been
 mislabelled by one, silently. Worth re-checking on a station whose gap is in the middle.
 
-**The broker, the topics and the credentials all work.** Nine messages, nine stations, one a second.
+**The broker, the topics and the credentials all work.** Nine messages, nine stations.
 
-**It does not settle the scaling, because it is not a measurement.** All seven slots carry
-*identical* values — the same signature as the workbook's filler, with a different constant. And
-the numbers do not cohere with each other:
+**Every station publishes exactly its commissioned slots, and the counts match the registry
+across all nine.** 5, 5, 8, 7, 7, 6, 7, 6, 4 — station for station, the same numbers
+`meters.json` carries. Whatever is publishing agrees with the workbook about which slots have a
+machine behind them, which is the assumption the whole positional-identity scheme rests on.
+
+**The nine arrived within 193 ms of subscribing, out of topic order.** That is the fingerprint of
+**retained messages**, which a broker flushes to a new subscription immediately; a publisher at 60
+messages a minute would have spread them across nine seconds. So this capture says nothing about
+the real publish rate — and it exposed a defect in the ingester, since a reading is stamped with
+the time it was received. A retained frame replayed after an outage would be stored as fifty-five
+readings taken *now*. The subscription now sets MQTT 5 retain handling to `2` (do not replay at
+subscribe time), which suppresses the replay without dropping live messages that happen to carry
+the retain flag — a publisher that sets retain on every publish is ordinary, and filtering on the
+flag would drop the whole feed. See `apps/ingester/src/broker.ts`.
+
+**It does not settle the scaling, because it is not a measurement.** All 55 slots across all nine
+stations carry the *same* values — `2240/1877/5350/50/2679`, meter for meter and topic for topic.
+It is one synthetic frame fanned out, the same signature as the workbook's filler with a different
+constant. And the numbers do not cohere with each other:
 
 | | |
 | --- | --- |

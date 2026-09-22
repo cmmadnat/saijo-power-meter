@@ -15,7 +15,7 @@ import { describe, it } from "node:test";
 import type { ReadingBatch, ReadingWriter } from "@power-meter/application";
 import { MeterRegistry, type Reading } from "@power-meter/domain";
 import { generateFixtures, toStationPayload } from "@power-meter/infrastructure";
-import type { Broker, BrokerHandlers } from "./broker.ts";
+import { subscribeOptions, type Broker, type BrokerHandlers } from "./broker.ts";
 import type { Config } from "./config.ts";
 import { startService } from "./service.ts";
 
@@ -153,5 +153,22 @@ describe("the service", () => {
 
     assert.equal(writer.latestWrites, 1, "one final flush, not three");
     assert.equal(writer.appended, 5);
+  });
+});
+
+describe("subscribing", () => {
+  it("does not let the broker replay retained messages at subscribe time", () => {
+    // The 2026-09-22 capture arrived as nine retained frames within 193 ms of
+    // subscribing. Replayed after an outage they would be written as readings
+    // taken now — the ingester stamps reception time, because the protocol
+    // carries none — so the minute they land in would count fifty-five
+    // readings that are not observations.
+    assert.deepEqual(subscribeOptions(5), { qos: 1, rh: 2 });
+  });
+
+  it("asks for nothing MQTT 3.1.1 cannot give", () => {
+    // Retain handling is an MQTT 5 subscription option. The replay harness runs
+    // on 3.1.1 and publishes nothing retained, so there is nothing to suppress.
+    assert.deepEqual(subscribeOptions(4), { qos: 1 });
   });
 });

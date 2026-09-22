@@ -374,10 +374,19 @@ of 55 have one) and the **meter number** (station and meter id, `01-1`, not the 
 **A real capture arrived on 2026-09-22 and the divisors are still guesses.** It confirmed the
 wire format (ordinary JSON, `PF` unpadded as `50` — the workbook's `095` was notation), that slot
 identity is positional with the uncommissioned tail simply absent, and that the broker and all nine
-topics work. It did not confirm any scaling: every slot on the station carried identical values, and
-V, I and PF imply 63.07 kW where `M<n>P` reads 53.50 kW — a factor of 1.179, reconciled by no power
-of ten. Treat what is on those topics today as a test publisher until the customer says otherwise.
-`docs/requirements/power-meter-mqtt.md` holds the frame and the arithmetic.
+topics work. It also confirmed the registry: every station publishes exactly its commissioned
+slots, 5/5/8/7/7/6/7/6/4, station for station. It did not confirm any scaling — all 55 slots across
+all nine topics carried the *same* values, and V, I and PF imply 63.07 kW where `M<n>P` reads 53.50
+kW, a factor of 1.179 that no power of ten reconciles. Treat what is on those topics today as a test
+publisher until the customer says otherwise. `apps/ingester/capture.jsonl` is the capture;
+`docs/requirements/power-meter-mqtt.md` has the arithmetic.
+
+**Retained messages are not replayed to the ingester, and that was found the hard way.** Those nine
+arrived within 193 ms of subscribing, out of order — a broker flushing retained frames to a new
+subscription. Since a reading is stamped with the time it was *received* (the protocol carries no
+timestamp), a replay after an outage would be stored as 55 readings taken now. The subscription sets
+MQTT 5 `rh: 2`. Do not "improve" this by dropping messages whose retain flag is set: a publisher
+that retains every publish is ordinary, and that filter would drop the entire feed.
 
 **Two of the nine scale factors are guesses, and the code says so.** `packages/infrastructure/src/mqtt/scaling.ts`
 holds every divisor with its confidence and the evidence behind it; the two marked `assumed` — active
