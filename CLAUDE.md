@@ -371,6 +371,14 @@ written down as questions back to the customer in `docs/requirements/power-meter
 of 55 have one) and the **meter number** (station and meter id, `01-1`, not the mock-up's flat
 1–55). Both live in `packages/domain/src/meter.ts` with their cases as tests.
 
+**A real capture arrived on 2026-09-22 and the divisors are still guesses.** It confirmed the
+wire format (ordinary JSON, `PF` unpadded as `50` — the workbook's `095` was notation), that slot
+identity is positional with the uncommissioned tail simply absent, and that the broker and all nine
+topics work. It did not confirm any scaling: every slot on the station carried identical values, and
+V, I and PF imply 63.07 kW where `M<n>P` reads 53.50 kW — a factor of 1.179, reconciled by no power
+of ten. Treat what is on those topics today as a test publisher until the customer says otherwise.
+`docs/requirements/power-meter-mqtt.md` holds the frame and the arithmetic.
+
 **Two of the nine scale factors are guesses, and the code says so.** `packages/infrastructure/src/mqtt/scaling.ts`
 holds every divisor with its confidence and the evidence behind it; the two marked `assumed` — active
 power and energy — each have a test asserting the current guess, so changing one is loud rather than
