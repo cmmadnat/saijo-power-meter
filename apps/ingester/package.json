@@ -1,0 +1,26 @@
+{
+  "name": "@power-meter/ingester",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --experimental-strip-types src/main.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types \"src/**/*.test.ts\"",
+    "replay": "node --experimental-strip-types tools/replay.ts",
+    "reconcile": "node --experimental-strip-types tools/reconcile.ts",
+    "capture": "node --experimental-strip-types tools/capture.ts",
+    "takeover": "node --experimental-strip-types tools/takeover.ts"
+  },
+  "dependencies": {
+    "@power-meter/application": "*",
+    "@power-meter/domain": "*",
+    "@power-meter/infrastructure": "*",
+    "mqtt": "^5.16.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "aedes": "^1.2.0",
+    "typescript": "^5"
+  }
+}

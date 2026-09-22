@@ -191,3 +191,44 @@ export async function partitionSettings(
   }
   return [...byTable.values()].sort((a, b) => a.table.localeCompare(b.table));
 }
+
+/**
+ * Drop every table this code owns, ledger included.
+ *
+ * It exists because of one specific hazard and not as a convenience. The
+ * fixture loader writes synthetic readings into the same three tables the
+ * ingester writes real ones into, and nothing in a row says which it is: a
+ * `load` run to exercise the adapter leaves data that reads exactly like
+ * measurement for the fourteen days its partitions live. So the rule is that
+ * the dataset is emptied before the first real reading is written, and this is
+ * the command that does it — followed by `migrate`, which recreates the tables
+ * from the same migrations and re-records them.
+ *
+ * The ledger goes with them. Dropping the tables while keeping the record that
+ * says they were created is precisely the drift the runner refuses to run
+ * through, so the reset leaves a dataset that looks untouched rather than one
+ * that looks half-applied.
+ *
+ * Nothing calls this from the pipeline, and nothing should: it is a
+ * hand-run command, and after go-live it destroys history that cannot be
+ * recovered from anywhere.
+ */
+export async function resetWarehouse(
+  client: WarehouseClient,
+  target: WarehouseTarget,
+  options: { readonly onProgress?: (message: string) => void } = {},
+): Promise<readonly string[]> {
+  const report = options.onProgress ?? (() => {});
+  const dropped: string[] = [];
+  for (const table of [
+    TABLES.readings,
+    TABLES.rollup,
+    TABLES.latest,
+    TABLES.migrations,
+  ]) {
+    report(`dropping ${table}`);
+    await client.query(`DROP TABLE IF EXISTS ${tableRef(target, table)}`);
+    dropped.push(table);
+  }
+  return dropped;
+}

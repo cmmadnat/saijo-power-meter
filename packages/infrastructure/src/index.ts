@@ -58,8 +58,10 @@ export {
   WarehouseLatestReadingStore,
   WarehouseReadingRepository,
 } from "./warehouse/repository.ts";
+export { WarehouseReadingWriter } from "./warehouse/writer.ts";
 export {
   partitionSettings,
+  resetWarehouse,
   runMigrations,
   type MigrationOutcome,
   type PartitionSetting,

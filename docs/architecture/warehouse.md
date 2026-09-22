@@ -1,7 +1,9 @@
 # The warehouse
 
 Three tables in one BigQuery dataset, and a migration runner that puts them there.
-Written at step 6 of `docs/power-meter-rebuild-plan.md`; nothing reads them yet.
+Written at step 6 of `docs/power-meter-rebuild-plan.md`. Step 7 added the write side — the
+`ReadingWriter` port and the ingester behind it — and wired `migrate` into the delivery pipeline.
+Nothing *reads* the tables yet; that is step 8.
 
 ## What is where
 
@@ -10,9 +12,10 @@ Written at step 6 of `docs/power-meter-rebuild-plan.md`; nothing reads them yet.
 | `infra/index.ts` | The **dataset** — a Google Cloud resource, declared with the rest. |
 | `packages/infrastructure/src/warehouse/migrations.ts` | The **tables** — schema, not infrastructure. |
 | `packages/infrastructure/src/warehouse/runner.ts` | Applying them, and reading back what was applied. |
-| `packages/infrastructure/src/warehouse/repository.ts` | The two ports, backed by the tables. |
+| `packages/infrastructure/src/warehouse/repository.ts` | The two read ports, backed by the tables. |
+| `packages/infrastructure/src/warehouse/writer.ts` | The write port: raw and rollup in one batch, `latest` replaced. |
 | `packages/infrastructure/src/warehouse/loader.ts` | Replaying the step-2 fixtures, and the equivalence check. |
-| `packages/infrastructure/src/warehouse/cli.ts` | `migrate`, `load`, `verify`, `settings`. |
+| `packages/infrastructure/src/warehouse/cli.ts` | `migrate`, `load`, `verify`, `settings`, `reset`. |
 
 The dataset/table line is the same one `bootstrap.sh` draws for the Pulumi state bucket: a
 container that has to exist before anything else can run is infrastructure; what goes inside it is
@@ -97,6 +100,22 @@ a step-8 tuning question: the rollup exists to make wide windows cheap, and poin
 path at it is a change of table, not of arithmetic. History stays on raw, because running hours are
 read off the gaps between actual readings and a minute-resolution source would quietly round them.
 
+## Writing, from the ingester
+
+`WarehouseReadingWriter` implements the `ReadingWriter` port. Two things about it are rules rather
+than choices:
+
+- **Raw and rollup go in one call.** They are one flush of one buffer, and writing them separately
+  would let a crash between the two leave a minute present in `readings` and absent from
+  `readings_1m` — which no reader is built to notice, because the chart would fall back to raw and
+  agree while the rollup under-reported that minute forever.
+- **An empty `replaceLatest` writes nothing.** `WRITE_TRUNCATE` with no rows would empty the one
+  table a restarting ingester reads, so a broker outage at the moment the timer fires would cost
+  the next restart its rehydration as well.
+
+Which minutes are eligible to be rolled up at all is the ingester's rule, not this layer's — only
+closed ones, see `docs/architecture/ingester.md`.
+
 ## Loading and writing
 
 Rows go in through **load jobs**, not the streaming insert API: load jobs are free where streaming
@@ -107,6 +126,30 @@ The BigQuery SDK is reached through a four-method `WarehouseClient` interface an
 **dynamically**. Everything above that interface is tested against a fake; and because the import is
 dynamic, `@google-cloud/bigquery` and its fifty-odd transitive packages stay out of the web app's
 traced standalone output until something in `apps/web` actually constructs a client.
+
+## Emptying it, and why that command exists
+
+`reset` drops all three tables and the ledger with them. It is not a convenience: the fixture
+loader writes synthetic readings into the same tables the ingester writes real ones into, and
+**nothing in a row says which it is**. A `load` run to exercise the adapter leaves data that reads
+exactly like measurement for the fourteen days its partitions live.
+
+So the rule is that the dataset is emptied before the first real reading is written:
+
+```bash
+npm run warehouse -w @power-meter/infrastructure -- reset --yes
+npm run warehouse -w @power-meter/infrastructure -- migrate
+```
+
+It refuses without `--yes`. The ledger goes with the tables deliberately — dropping the tables
+while keeping the record that says they were created is precisely the drift the runner refuses to
+run through, so a reset leaves a dataset that looks untouched rather than half-applied. Nothing in
+the pipeline calls it, and nothing should: after go-live it destroys history that exists nowhere
+else.
+
+The alternative considered and rejected was a `source` column distinguishing fixture rows from
+real ones. It is a migration, it costs a column on ~9.7 M rows, and it makes "is this real" a
+filter every query has to remember rather than a property of the dataset.
 
 ## What has been run, and against what
 
@@ -139,14 +182,20 @@ What that run established, in order:
 
 Two things follow from that run and are worth knowing:
 
-- **The fixtures are still in the tables.** There is no `unload`, so they sit in
-  `readings` and `readings_1m` until their partitions expire 14 days on. Before
-  step 7 writes real readings, drop the three tables and re-migrate, or the
-  warehouse will hold synthetic and real data with nothing telling them apart.
+- **The fixtures are still in the tables.** They sit in `readings` and
+  `readings_1m` until their partitions expire 14 days on. Step 7 gave that its
+  command — `reset --yes` then `migrate`, see *Emptying it* above — and it has
+  to be run before the first real reading is written, or the warehouse holds
+  synthetic and real data with nothing telling them apart.
 - **`load` and `verify` must be given the same window.** Fixture load is a
   function of absolute time, so the same window is the same readings — but a
   window ending "now" ends at a different instant in each command. `load` prints
   the exact window it used as the `verify` line to paste.
+
+- **The `migrate` step in the pipeline has never executed.** Step 7 declared it
+  in `infra/index.ts` and implemented it in `ci/migrate.sh`; the first pull
+  request touching `infra/` runs its dry run, and the merge that follows runs
+  the real one.
 
 The commands:
 
@@ -157,6 +206,7 @@ npm run warehouse -w @power-meter/infrastructure -- migrate
 npm run warehouse -w @power-meter/infrastructure -- settings
 npm run warehouse -w @power-meter/infrastructure -- load --hours 2
 npm run warehouse -w @power-meter/infrastructure -- verify --from <T> --to <T>
+npm run warehouse -w @power-meter/infrastructure -- reset --yes
 ```
 
 `settings` joins `INFORMATION_SCHEMA.TABLES` to `TABLE_OPTIONS` and prints every table's expiry and
@@ -168,6 +218,10 @@ table that was never created.
 
 `verify` needs the window `load` printed, not `--hours`; see above.
 
-Nothing in the delivery pipeline runs `migrate` yet. Wiring it in is a change to a pipeline that
-`docs/architecture/delivery-pipeline.md` records the cost of getting wrong, and it belongs with
-step 7, where something first depends on the tables existing.
+**The delivery pipeline runs `migrate` now.** It is the `migrate` step, between `image` and
+`pulumi`, so migrations are applied before the revision that depends on them — CLAUDE.md's rule.
+On a pull request it runs `migrate --dry-run`, which connects, reads the ledger and prints what it
+would apply; that catches a dataset that has drifted from the code and does not ask BigQuery's
+opinion of any new DDL, because it submits none. `--skip-if-no-dataset` covers the first apply on a
+project whose dataset Pulumi has not created yet: the step exits clean with a message and the next
+build migrates.

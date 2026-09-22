@@ -48,8 +48,82 @@ Topic: PMeterStation01
 key-layout reference only — see *Scaling* below.
 
 Note `"M1PF":095` is **not valid JSON**: a leading zero on a number is illegal, and `095` would be
-rejected by a strict parser. Either the device emits it quoted (`"095"`) or the sheet is being loose
-with notation. The decoder must tolerate both, and this is worth confirming alongside the scaling.
+rejected by a strict parser. **Settled by the 2026-09-22 capture below: the device sends `50`**, so
+the sheet was being loose with notation. The decoder tolerates both either way.
+
+## The first real capture, 2026-09-22
+
+Nine messages, one per station, read from the live broker with
+`apps/ingester/tools/capture.ts` (the address and credentials arrived that day in
+`reference doc/mqtt`). The whole capture is committed at `apps/ingester/capture.jsonl`.
+`PMeterStation05`, verbatim:
+
+```json
+{"M1VL1":2240,"M1VL2":2240,"M1VL3":2240,"M1CL1":1877,"M1CL2":1877,"M1CL3":1877,"M1P":5350,"M1PF":50,"M1E":2679, ... M7 ...}
+```
+
+Three things it settles, and one it does not.
+
+**The payload is ordinary JSON, and `PF` is not zero-padded.** It arrives as `"M1PF":50`, not
+`095`. So the workbook's `095` was the sheet being loose with notation, not the device emitting
+illegal JSON. The decoder tolerates both and needs no change; the open question is closed.
+
+**Positional identity holds, and uncommissioned slots are absent rather than renumbered.** Station
+05 published `M1`–`M7`. The registry has exactly seven commissioned slots there and the eighth,
+`M8`, is the uncommissioned one — so the publisher omits the empty tail rather than shifting the
+remaining meters down into it. Had it renumbered, every meter on that station would have been
+mislabelled by one, silently. Worth re-checking on a station whose gap is in the middle.
+
+**The broker, the topics and the credentials all work.** Nine messages, nine stations.
+
+**Every station publishes exactly its commissioned slots, and the counts match the registry
+across all nine.** 5, 5, 8, 7, 7, 6, 7, 6, 4 — station for station, the same numbers
+`meters.json` carries. Whatever is publishing agrees with the workbook about which slots have a
+machine behind them, which is the assumption the whole positional-identity scheme rests on.
+
+**The nine arrived within 193 ms of subscribing, out of topic order.** That is the fingerprint of
+**retained messages**, which a broker flushes to a new subscription immediately; a publisher at 60
+messages a minute would have spread them across nine seconds. So this capture says nothing about
+the real publish rate — and it exposed a defect in the ingester, since a reading is stamped with
+the time it was received. A retained frame replayed after an outage would be stored as fifty-five
+readings taken *now*. The subscription now sets MQTT 5 retain handling to `2` (do not replay at
+subscribe time), which suppresses the replay without dropping live messages that happen to carry
+the retain flag — a publisher that sets retain on every publish is ordinary, and filtering on the
+flag would drop the whole feed. See `apps/ingester/src/broker.ts`.
+
+**It does not settle the scaling, because it is not a measurement.** All 55 slots across all nine
+stations carry the *same* values — `2240/1877/5350/50/2679`, meter for meter and topic for topic.
+It is one synthetic frame fanned out, the same signature as the workbook's filler with a different
+constant. And the numbers do not cohere with each other:
+
+| | |
+| --- | --- |
+| V = 2240 / 10 | 224.0 V |
+| PF = 50 / 100 | 0.50 |
+| I = 1877 / 10 | 187.7 A |
+| 3 x V x I x PF | **63.07 kW** |
+| P = 5350 / 100 | **53.50 kW** |
+
+Off by a factor of 1.179. No power of ten reconciles it from either side: the divisor `M<n>P`
+would need is **84.83**. Scaling `I` by 100 instead moves both sides together and leaves the same
+ratio. The workbook's filler failed the same test by a factor of 2.016, so the two fakes are not
+even the same fake.
+
+**Confirmed by the customer, 2026-09-22: those topics are a test publisher, put up as a rough
+idea. The meters are not publishing yet.** That changes what the open question is. It is no longer
+"capture a payload" — any number of captures off this broker will say the same thing, because a
+simulator cannot know what divisor the real device applies. It is **when the meters go live**, and
+until they do the scaling cannot be settled by anyone.
+
+Two consequences worth stating plainly:
+
+- **A better simulator would not help and could hurt.** Asking for physically coherent test data
+  would make `3 x V x I x PF` agree with `M<n>P` by construction, which proves the arithmetic in
+  the *publisher*, not the divisor in the meter. The one thing that settles it is a real device.
+- **What to ask for, when the meters are wired:** a capture while machines are running — the tell
+  is meters on one station differing from each other — plus one of those meters' own display
+  reading at the same moment. The first settles active power arithmetically. The second is the only
+  thing that can settle energy, which has nothing in the payload to check against.
 
 ## Scaling
 
@@ -73,7 +147,9 @@ conversion anywhere in the workbook. What can be inferred:
   kWh counter, to be confirmed by observation.
 
 **One real captured payload from a running meter, plus that meter's own display reading at the same
-moment, settles all of it.** Until then the decoder keeps every factor in one constants table with
+moment, settles all of it.** The 2026-09-22 capture was real traffic but not a running meter — see
+above: identical values across every slot, and a power figure 1.179x away from what its own V, I and
+PF imply. Until a coherent one arrives the decoder keeps every factor in one constants table with
 the unconfirmed ones marked, and each has a test asserting the assumption so changing it is loud.
 
 ## Errata in the source

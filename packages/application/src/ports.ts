@@ -17,6 +17,7 @@
  * the use cases that need them.
  */
 import type { MeterId, Reading } from "@power-meter/domain";
+import type { RollupBucket } from "./series.ts";
 
 /** A half-open instant range, `[from, to)`. Callers convert from Asia/Bangkok. */
 export interface TimeRange {
@@ -63,3 +64,37 @@ export interface Clock {
 }
 
 export const systemClock: Clock = { now: () => new Date() };
+
+/**
+ * Where decoded readings go.
+ *
+ * The ingester is the only caller and the warehouse is the only implementation,
+ * but it is a port for the same reason the others are: the write path is then
+ * testable without BigQuery, and the row mapping stays in the adapter where the
+ * column names live.
+ *
+ * `append` takes raw readings and their rollup buckets **together**, because
+ * they are one batch: two tables written from the same buffer in the same
+ * flush, so a reader never sees a minute in one and not the other. The buckets
+ * come from `rollupReadings` in this layer — never from a SQL `GROUP BY`, which
+ * would be a second definition of "a minute".
+ */
+export interface ReadingWriter {
+  /** Append a flush's worth of raw readings and the rollup rows for it. */
+  append(batch: ReadingBatch): Promise<void>;
+
+  /**
+   * Replace the durable latest-reading table with exactly these readings.
+   *
+   * Wholesale, not upserted: 55 rows are cheaper to rewrite than to merge, and
+   * the table is only ever read by an ingester rehydrating after a restart.
+   */
+  replaceLatest(readings: readonly Reading[]): Promise<void>;
+}
+
+export interface ReadingBatch {
+  readonly readings: readonly Reading[];
+  readonly rollup: readonly RollupBucket[];
+  /** When the flush happened. Stored as `ingested_at` beside the reading's own time. */
+  readonly ingestedAt: Date;
+}

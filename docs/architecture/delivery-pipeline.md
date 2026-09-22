@@ -32,9 +32,30 @@ Pipeline logic stays ordinary reviewed code; only its skeleton is a Pulumi resou
 
 | Step | Image | What it does |
 | --- | --- | --- |
-| `image` | `cloud-builders/docker` | `ci/image.sh` — builds the web image; pushes only on apply. |
+| `image` | `cloud-builders/docker` | `ci/image.sh` — builds the web *and* ingester images; pushes only on apply. |
+| `migrate` | `node:22` | `ci/migrate.sh` — applies the warehouse migrations; a dry run on a pull request. |
 | `pulumi` | `pulumi/pulumi-nodejs` | `ci/pulumi.sh` — previews or applies the stack. |
 | `report` | `cloud-sdk:slim` | `ci/report.sh` — summarises the run, then decides the build's verdict. |
+
+**Two images, one step, one commit.** The web app and the ingester are separate deployables with
+opposite shapes — one scales to zero, one is pinned to a single always-on instance — but they share
+the payload decoder verbatim, so they are built together from the same commit. Building them apart
+would let a deploy put two versions of that decoder in the same system, which is the one drift the
+architecture exists to prevent.
+
+**`migrate` runs before `pulumi`, and that order is the point.** CLAUDE.md's rule is that
+migrations are applied by an automated step before a new revision is promoted. It arrived with
+step 7, because that is where something first depends on the tables existing. Two things about it
+are worth knowing:
+
+- On a pull request it is `migrate --dry-run`: it connects, reads the ledger and prints what it
+  would apply. That catches a dataset that has drifted from the code. It does **not** ask
+  BigQuery's opinion of any new DDL, because it submits none — the same asymmetry this document
+  records everywhere else.
+- `--skip-if-no-dataset` exists for the first apply on a brand-new project, where the dataset is a
+  Pulumi resource that the *next* step creates. The step exits clean with a message rather than
+  failing a build that was about to create the thing it was waiting for, and the next build
+  migrates.
 
 Credentials come from the build's service account through the metadata server. Builds run as
 the existing `pulumi-deployer`: it already carries exactly the roles a deploy needs, and a
