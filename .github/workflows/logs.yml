@@ -272,16 +272,18 @@ jobs:
 
           count="$(jq 'length' entries.json)"
 
-          # Order matters: the API hands a reader the *tail* of this log, and the
-          # entries are newest-first, so whatever is printed last is what a
-          # question about "what just happened" actually reaches. The json goes
-          # first as the detailed copy, the one-line-per-entry rendering last.
+          # Order matters twice over, because the API hands a reader the *tail*
+          # of this log. The digest goes last, so a tail reaches it at all; and
+          # it is reversed into oldest-first, so the last line of it is the most
+          # recent event. gcloud returns newest-first, which read backwards from
+          # the tail would have shown the oldest end of a window and hidden the
+          # newest — the opposite of what is usually being asked.
           echo "----- entries (json, newest first) -----"
           cat entries.json
 
           echo
-          echo "----- entries (one line each, newest first) -----"
-          jq -r "${RENDER}" entries.json
+          echo "----- entries (one line each, oldest first) -----"
+          jq -r "reverse | ${RENDER}" entries.json
 
           echo
           echo "Entries: ${count}"
@@ -293,9 +295,9 @@ jobs:
           # The human-readable copy, capped: the step summary rejects anything
           # over 1MB, and losing the summary would also lose the header above it.
           {
-            echo "### Logs: ${SERVICE} (last ${FRESHNESS}, ${count} entries)"
+            echo "### Logs: ${SERVICE} (last ${FRESHNESS}, ${count} entries, oldest first)"
             echo
             echo '```'
-            jq -r "${RENDER}" entries.json | head -c 900000
+            jq -r "reverse | ${RENDER}" entries.json | head -c 900000
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

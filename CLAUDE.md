@@ -79,6 +79,13 @@ interpolates a comment body into a `run:` block. Issue #12 is the channel.
 /buildlog                /buildlog failed                  /buildlog sha=4f2c1ab mode=apply
 ```
 
+`/logs` excludes admin-activity audit entries unless `audit=true`: they share `resource.type` with
+the service's own output, so a plain read would return deploy records — ~100 lines of JSON each — in
+place of application logs. It prints the JSON first and a one-line-per-entry digest last, **reversed
+into oldest-first**, because a reader is handed the *tail* of a run log: one line per entry is what
+makes a whole window fit in that tail, and the reversal is what puts the most recent event on the
+last line rather than the oldest.
+
 Neither trigger works from a branch: `issue_comment` always runs the default branch's copy.
 
 **The fork guard is a trigger setting, not hand-built.**
