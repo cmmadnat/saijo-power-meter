@@ -289,15 +289,48 @@ matching the strip's total.
 
 **← At this point the customer can review the whole app and we have changed no infrastructure.**
 
-### Step 6 — Schema and migrations
-The store is decided (BigQuery, day-partitioned, 14-day partition expiry — see the storage section).
-Ships: migration tooling (versioned, ordered, idempotent, per CLAUDE.md), the raw and 1-minute-rollup
-schemas, the 55-row `latest` table, and a loader that replays step-2 fixtures into it.
+### Step 6 — Schema and migrations — **done**
+The store is BigQuery, day-partitioned, 14-day partition expiry — see the storage section. Shipped,
+with the reasoning in `docs/architecture/warehouse.md`:
 
-*Verify:* migrations run twice with no diff on the second run; fixture load succeeds; the two history
-queries (energy total, running hours) return **the same numbers the step-5 pure functions do** — that
-equivalence is the whole point of having written them as pure functions first; partition expiry is
-set, not assumed.
+- `infra/index.ts` — the **dataset**, and read-only access to it for the web service account. The
+  tables are not here: they are schema, and the dataset/table line is the same one `bootstrap.sh`
+  draws for the state bucket. The deployer gains `roles/bigquery.admin` in `bootstrap.sh`.
+- `packages/infrastructure/src/warehouse/` — the three tables as an ordered migration list, a runner
+  that records what it applied and refuses to run against a dataset that disagrees with the code,
+  the two ports backed by the tables, a fixture loader, and a four-command CLI.
+- `packages/application/src/series.ts` — `rollupReadings()`, the 1-minute rollup. The charts and the
+  rollup now share their bucket primitives rather than each defining "a minute".
+
+**The aggregation did not move into SQL, and that is the change to the plan.** This step used to
+promise two history queries checked against the step-5 pure functions. There are no history queries:
+the counter-reset walk and the three-minute gap cap have one implementation, in
+`packages/application`, and a SQL copy would be free to disagree with it in exactly the cases nobody
+checks — which CLAUDE.md already forbids in as many words. What arrived instead is the adapter, so
+that is what is checked: `verifyAgainstFixtures` runs `historyTable` twice over the same window,
+once against the fixtures in memory and once against what the warehouse gave back, and requires
+every row to agree.
+
+**Rollup buckets align to absolute time, not to a window's start.** The charts align to whatever
+`from` they were handed; a stored row cannot, because the ingester writing it has no window.
+
+**`latest` is not the real-time screen's source.** It is what a restarted ingester rehydrates from.
+Paying per write for a value obsolete a second later costs more per month than all the history.
+
+*Verified, without credentials:* 54 tests in the package, of which the load-bearing ones are — a
+second `runMigrations` applies nothing and issues only the ledger DDL and the ledger read; an edited
+migration and a dataset ahead of the code each stop the run; every shipped statement is
+`CREATE ... IF NOT EXISTS`; raw and rollup carry `partition_expiration_days = 14` and
+`require_partition_filter`, and `latest` carries neither; a reading survives the round trip to a row
+and back through JSON; every readings query carries the partition filter the table demands; and
+History over the warehouse matches History over the fixtures for all 55 rows. `npm run verify` is
+green across the workspace (108 tests), the web build is unchanged, and the BigQuery SDK stays out
+of its 58 MB standalone output because the client is imported dynamically.
+
+*Not verified, and it needs a project:* no statement has been submitted to BigQuery, so its opinion
+of the DDL is unasked; `load`, `verify` and `settings` have never run; and the existing project's
+deployer has not been granted `roles/bigquery.admin`, without which the apply fails. Nothing in the
+pipeline runs `migrate` — that belongs with step 7, where something first depends on the tables.
 
 ### Step 7 — MQTT ingester
 **Gated on open questions 1 and 2 — do not go live before they are answered**, because wrong

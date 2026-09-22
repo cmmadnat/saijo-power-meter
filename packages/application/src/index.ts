@@ -27,6 +27,7 @@ export { DEFAULT_FRESHNESS, realtimeTable, statusFor } from "./realtime.ts";
 export type {
   MeterSeries,
   MeterSeriesInput,
+  RollupBucket,
   SeriesPoint,
   SeriesView,
 } from "./series.ts";
@@ -35,4 +36,5 @@ export {
   consumptionFrom,
   meterSeries,
   MIN_BUCKET_MS,
+  rollupReadings,
 } from "./series.ts";

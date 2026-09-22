@@ -22,6 +22,7 @@ import {
   type Department,
   type MeterId,
   type MeterRegistry,
+  type Reading,
 } from "@power-meter/domain";
 
 /**
@@ -126,6 +127,126 @@ export function consumptionFrom(
   });
 }
 
+/**
+ * One bucket's running totals, and the three rules that define a bucket.
+ *
+ * These exist as primitives rather than as inline arithmetic because two things
+ * bucket readings: the charts above, over a window chosen by whoever is looking
+ * at them, and the warehouse's 1-minute rollup below, over absolute minutes.
+ * "Mean power, last counter, count the readings" has to mean the same thing in
+ * both or a chart and the table under it will disagree about the same machine.
+ *
+ * `lastAtMs` is what makes the last-counter rule independent of arrival order.
+ * The repository contract is ascending per meter, so a plain last-wins would be
+ * correct here — but the ingester batches a minute of messages from nine
+ * stations and has no such guarantee, and a rollup that silently depended on it
+ * would be wrong only occasionally, which is the worst way to be wrong.
+ */
+interface Bucket {
+  count: number;
+  powerSumKw: number;
+  lastEnergyKwh: number | null;
+  lastAtMs: number;
+}
+
+function emptyBucket(): Bucket {
+  return {
+    count: 0,
+    powerSumKw: 0,
+    lastEnergyKwh: null,
+    lastAtMs: Number.NEGATIVE_INFINITY,
+  };
+}
+
+function addToBucket(bucket: Bucket, reading: Reading): void {
+  const atMs = reading.at.getTime();
+  bucket.count += 1;
+  // Active power is a rate: it averages across the bucket.
+  bucket.powerSumKw += reading.activePowerKw;
+  // Energy is a counter: averaging it would invent a reading that never
+  // happened, so the bucket carries the latest one it saw.
+  if (atMs >= bucket.lastAtMs) {
+    bucket.lastAtMs = atMs;
+    bucket.lastEnergyKwh = reading.energyKwh;
+  }
+}
+
+/** Null rather than zero for an empty bucket: a gap in the line, not no load. */
+function meanActivePowerKw(bucket: Bucket): number | null {
+  return bucket.count === 0 ? null : bucket.powerSumKw / bucket.count;
+}
+
+/** One row of the warehouse's 1-minute rollup table. */
+export interface RollupBucket {
+  readonly meterId: MeterId;
+  /** Start of the bucket, aligned to absolute time. */
+  readonly at: Date;
+  /** How many raw readings the bucket held. Never zero — empty buckets are not rows. */
+  readonly readingCount: number;
+  /** Mean active power across the bucket, kW. */
+  readonly activePowerKw: number;
+  /** The bucket's last energy counter reading, kWh. */
+  readonly energyKwh: number;
+}
+
+/**
+ * Readings to rollup rows, by the same three rules the charts bucket by.
+ *
+ * **Buckets are aligned to absolute time, not to a window's start.** The charts
+ * align to whatever `from` they were asked for, which is right for a plot and
+ * wrong for a stored table: the rollup is written once, by an ingester that has
+ * no window, and read later by queries whose windows all differ. Flooring to
+ * the epoch is what makes two writers of the same minute agree, and what makes
+ * a row's identity `(meter, minute)` rather than `(meter, whenever this batch
+ * started)`.
+ *
+ * Empty buckets produce no row. A minute in which a meter said nothing is a
+ * minute with no evidence, and storing a zero for it would turn "we did not
+ * hear from this machine" into "this machine drew no power" — the same
+ * distinction the charts draw as a gap.
+ *
+ * Input order does not matter, so an ingester may hand over a batch as it
+ * arrived across nine stations.
+ */
+export function rollupReadings(
+  readings: Iterable<Reading>,
+  bucketMs: number = MIN_BUCKET_MS,
+): RollupBucket[] {
+  if (!Number.isFinite(bucketMs) || bucketMs <= 0) {
+    throw new RangeError("bucket width must be positive");
+  }
+
+  const buckets = new Map<string, { meterId: MeterId; atMs: number; bucket: Bucket }>();
+
+  for (const reading of readings) {
+    const atMs = Math.floor(reading.at.getTime() / bucketMs) * bucketMs;
+    const key = `${reading.meterId}\u0000${atMs}`;
+    let entry = buckets.get(key);
+    if (entry === undefined) {
+      entry = { meterId: reading.meterId, atMs, bucket: emptyBucket() };
+      buckets.set(key, entry);
+    }
+    addToBucket(entry.bucket, reading);
+  }
+
+  return [...buckets.values()]
+    .sort((a, b) =>
+      a.meterId === b.meterId
+        ? a.atMs - b.atMs
+        : a.meterId < b.meterId
+          ? -1
+          : 1,
+    )
+    .map(({ meterId, atMs, bucket }) => ({
+      meterId,
+      at: new Date(atMs),
+      readingCount: bucket.count,
+      // Non-null by construction: a bucket only exists because a reading made it.
+      activePowerKw: meanActivePowerKw(bucket) ?? 0,
+      energyKwh: bucket.lastEnergyKwh ?? 0,
+    }));
+}
+
 export async function meterSeries(
   input: MeterSeriesInput,
 ): Promise<SeriesView> {
@@ -139,18 +260,11 @@ export async function meterSeries(
   // One accumulator per meter per bucket. Built up front so a meter with no
   // readings at all still yields a full-length series of gaps, and so the
   // series come back in the order they were asked for.
-  const accumulators = new Map<
-    MeterId,
-    { sum: number; count: number; lastEnergy: number | null }[]
-  >();
+  const accumulators = new Map<MeterId, Bucket[]>();
   for (const meterId of input.meterIds) {
     accumulators.set(
       meterId,
-      Array.from({ length: bucketCount }, () => ({
-        sum: 0,
-        count: 0,
-        lastEnergy: null,
-      })),
+      Array.from({ length: bucketCount }, () => emptyBucket()),
     );
   }
 
@@ -166,10 +280,7 @@ export async function meterSeries(
     if (index < 0 || index >= bucketCount) continue;
     const bucket = buckets[index];
     if (bucket === undefined) continue;
-    bucket.sum += reading.activePowerKw;
-    bucket.count += 1;
-    // Readings arrive in ascending time per meter, so the last one wins.
-    bucket.lastEnergy = reading.energyKwh;
+    addToBucket(bucket, reading);
   }
 
   const series = input.meterIds.map((meterId): MeterSeries => {
@@ -177,7 +288,9 @@ export async function meterSeries(
     const buckets = accumulators.get(meterId) ?? [];
     const label = meter ? machineLabel(meter) : { number: null, name: null };
 
-    const consumed = consumptionFrom(buckets.map((bucket) => bucket.lastEnergy));
+    const consumed = consumptionFrom(
+      buckets.map((bucket) => bucket.lastEnergyKwh),
+    );
 
     return {
       meterId,
@@ -187,8 +300,8 @@ export async function meterSeries(
       machineName: label.name,
       points: buckets.map((bucket, index) => ({
         at: new Date(from.getTime() + index * bucketMs),
-        activePowerKw: bucket.count === 0 ? null : bucket.sum / bucket.count,
-        energyKwh: bucket.lastEnergy,
+        activePowerKw: meanActivePowerKw(bucket),
+        energyKwh: bucket.lastEnergyKwh,
         energyConsumedKwh: consumed[index] ?? null,
       })),
     };

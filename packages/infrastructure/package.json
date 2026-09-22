@@ -5,12 +5,16 @@
   "type": "module",
   "main": "src/index.ts",
   "types": "src/index.ts",
-  "exports": { ".": "./src/index.ts" },
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --test --experimental-strip-types \"src/**/*.test.ts\""
+    "test": "node --test --experimental-strip-types \"src/**/*.test.ts\"",
+    "warehouse": "node --experimental-strip-types src/warehouse/cli.ts"
   },
   "dependencies": {
+    "@google-cloud/bigquery": "^9.1.0",
     "@power-meter/application": "*",
     "@power-meter/domain": "*"
   },

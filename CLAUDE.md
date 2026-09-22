@@ -27,13 +27,14 @@ on fixture data; no meter data flows yet.
 | `ci/` | What the Cloud Build steps run: `step.sh`, `image.sh`, `pulumi.sh`, `report.sh`. |
 | `packages/domain` | Entities and rules. Imports nothing. |
 | `packages/application` | Use cases and the port interfaces they need. Imports domain only. |
-| `packages/infrastructure` | Adapters: the MQTT payload decoder, the scale-factor table, fixture data. |
+| `packages/infrastructure` | Adapters: the MQTT payload decoder, the scale-factor table, fixture data, the warehouse. |
 | `apps/web` | Next.js + shadcn/ui frontend. Deployed to Cloud Run. |
 | `scripts/check-boundaries.mjs` | Enforces the dependency rule. Runs first in CI. |
 | `.github/workflows/check.yml` | Application checks. Holds no cloud credentials. |
 | `.github/workflows/logs.yml` | Reads the Cloud Run service's logs, on dispatch or a `/logs` comment. Runs no Pulumi and holds a read-only identity. |
 | `.github/workflows/build-logs.yml` | Reads a Cloud Build run's status and log, on dispatch or a `/buildlog` comment. Same identity. |
 | `docs/architecture/delivery-pipeline.md` | Why builds run on Cloud Build, and what that cost. |
+| `docs/architecture/warehouse.md` | The three BigQuery tables, the migration rules, and what has never been run. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
 | `docs/requirements/` | The frozen spec: the MQTT protocol, the meter registry, and the four screens. |
 | `reference doc/`, root `.xlsx` | Customer specifications — the source those requirements were read from. |
@@ -159,6 +160,12 @@ npm run dev  --workspace @power-meter/web
 npm run build --workspace @power-meter/web   # also the container build's inner step
 npm test     --workspace @power-meter/domain
 
+npm run warehouse -w @power-meter/infrastructure -- sql                 # render the DDL; needs nothing
+npm run warehouse -w @power-meter/infrastructure -- migrate             # needs credentials
+npm run warehouse -w @power-meter/infrastructure -- load --hours 24     # replay fixtures
+npm run warehouse -w @power-meter/infrastructure -- verify --hours 24   # adapter vs. pure functions
+npm run warehouse -w @power-meter/infrastructure -- settings            # read back partition expiry
+
 cd infra && npm ci             # infra is deliberately NOT a workspace member
 cd infra && npm run typecheck  # tsc --noEmit — the only infra check that works without credentials
 ```
@@ -226,9 +233,11 @@ rather than as an empty shell, which was the point of leaving it out until now.
 - **It is public at the network edge for now** — there is nothing behind it but the shell. The
   passcode gate is an application concern and stays that way; `allUsers` invoker does not change
   when it lands.
-- **Database migrations** will be versioned, ordered, idempotent, and applied by an automated step
+- **Database migrations** are versioned, ordered, idempotent, and applied by an automated step
   *before* a new revision is promoted — never by hand against a deployed database, and
-  forward-compatible so rolling back the app never requires rolling back the schema.
+  forward-compatible so rolling back the app never requires rolling back the schema. They live in
+  `packages/infrastructure/src/warehouse/migrations.ts`, and nothing in the pipeline runs them yet;
+  that wiring belongs with step 7, where something first depends on the tables existing.
 - **Cloud Storage** for blobs, buckets IaC-declared with explicit access policies. Nothing is
   world-readable by default.
 
@@ -271,10 +280,11 @@ Working in `apps/web` has two traps, both hit once already:
   traced in at all. There is no hoisted `node_modules` beside it — tracing puts everything under
   `apps/web`. The Dockerfile flattens this; changing either setting means re-checking it.
 
-Steps 0–5 are done: the spec is frozen into `docs/requirements/` (including all four screens, in
+Steps 0–6 are done: the spec is frozen into `docs/requirements/` (including all four screens, in
 `power-meter-ui.md`), the shell is deployed, the domain model, decoder and fixtures are in place with
 tests, the Real time route carries screens 1–3 — the 55-meter table and the kW and kWh charts — and
-History carries screen 4, all on those fixtures. Remaining, in order: the store, the MQTT ingester,
+History carries screen 4, all on those fixtures. Step 6 added the warehouse behind those same ports —
+schema, migrations and a fixture loader — and nothing reads it yet. Remaining, in order: the MQTT ingester,
 wiring the screens to real data, and the passcode gate.
 
 **The screens read their data through three files, `apps/web/lib/realtime-source.ts`,
@@ -334,6 +344,32 @@ holds every divisor with its confidence and the evidence behind it; the two mark
 power and energy — each have a test asserting the current guess, so changing one is loud rather than
 silent. `unconfirmedScales()` is what step 7's startup check uses to refuse a live broker while they
 remain. Do not quietly settle one from inference; it takes a captured payload.
+
+**The warehouse dataset is a Pulumi resource and its tables are not.** `infra/index.ts` declares the
+`power_meter` dataset; the three tables arrive through the migration runner in
+`packages/infrastructure/src/warehouse`. That line is the same one `bootstrap.sh` draws for the state
+bucket — a container that must exist before anything can run is infrastructure, what goes inside it
+is the application's own shape. Retention is a table setting (a 14-day partition expiry), so it lives
+with the DDL and there is no cleanup job. `docs/architecture/warehouse.md` has the rest, including
+the four things that have never been run: the deployer still needs `roles/bigquery.admin`, which
+`bootstrap.sh` now lists and this project was never granted.
+
+**The History aggregation did not move into SQL, and must not.** `consumptionFrom()`'s reset rule and
+the three-minute running-hours cap have one implementation, in `packages/application`. The warehouse
+adapter implements `ReadingRepository` and hands readings up; what gets checked is the *adapter*, by
+running `historyTable` over the fixtures and over the warehouse and comparing every row
+(`verifyAgainstFixtures`). A SQL copy of either rule would be free to disagree in the cases nobody
+looks at.
+
+**The 1-minute rollup is written by `rollupReadings()` in the application layer, not by a SQL
+`GROUP BY`.** It shares its bucket primitives with `meterSeries`, so "a minute" means mean power,
+last counter and a reading count in both, and a test asserts a rollup at the chart's bucket width
+reproduces what the chart plots. One difference is deliberate: **rollup buckets floor to absolute
+time**, where the charts align to the window's `from` — a stored row cannot align to a window,
+because the ingester writing it has none.
+
+**`latest` is not the real-time screen's data source.** The ingester serves that from memory; the
+table exists so a restart does not begin blind, and is replaced wholesale rather than upserted.
 
 **The ingester is blocked on the customer.** The scaling divisors for active power and energy are
 not documented anywhere in the workbook, and its sample payload is filler that does not reconcile —
