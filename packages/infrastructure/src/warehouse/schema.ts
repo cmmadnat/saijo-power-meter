@@ -102,7 +102,15 @@ export function informationSchemaRef(
 /** A row of `readings`, as BigQuery stores it. Column names are snake_case. */
 export interface ReadingRow {
   readonly meter_id: string;
-  readonly at: string;
+  /**
+   * When the reading was received.
+   *
+   * Not `at`: `AT` is a reserved keyword in GoogleSQL, so a column of that name
+   * has to be backtick-quoted in every statement that touches it — the DDL, the
+   * partition expression, every select list and every predicate. One of those
+   * gets forgotten eventually. The name carries the awkwardness instead.
+   */
+  readonly reading_at: string;
   readonly voltage_l1: number;
   readonly voltage_l2: number;
   readonly voltage_l3: number;
@@ -170,7 +178,7 @@ function number(value: unknown, column: string): number {
 /** The `readings` columns a query must select to rebuild a `Reading`, in order. */
 export const READING_COLUMNS = [
   "meter_id",
-  "at",
+  "reading_at",
   "voltage_l1",
   "voltage_l2",
   "voltage_l3",
@@ -185,7 +193,7 @@ export const READING_COLUMNS = [
 export function readingToRow(reading: Reading, ingestedAt: Date): ReadingRow {
   return {
     meter_id: reading.meterId,
-    at: toTimestamp(reading.at),
+    reading_at: toTimestamp(reading.at),
     voltage_l1: reading.voltage.l1,
     voltage_l2: reading.voltage.l2,
     voltage_l3: reading.voltage.l3,
@@ -205,7 +213,7 @@ export function rowToReading(row: Record<string, unknown>): Reading {
   }
   return {
     meterId: row["meter_id"] as MeterId,
-    at: toDate(row["at"]),
+    at: toDate(row["reading_at"]),
     voltage: {
       l1: number(row["voltage_l1"], "voltage_l1"),
       l2: number(row["voltage_l2"], "voltage_l2"),

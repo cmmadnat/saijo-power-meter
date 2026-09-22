@@ -47,7 +47,7 @@ export interface WarehouseRepositoryOptions {
  * raw, because running hours are read off the gaps between actual readings and
  * a minute-resolution source would quietly round them.
  *
- * Every query carries an explicit `DATE(at)` bound as well as the instant
+ * Every query carries an explicit `DATE(reading_at)` bound as well as the instant
  * bound. The table is `require_partition_filter`, so a query without it is
  * rejected — which is the setting doing its job, but only if the caller never
  * has to remember.
@@ -70,9 +70,9 @@ export class WarehouseReadingRepository implements ReadingRepository {
     const sql = `SELECT ${READING_COLUMNS.join(", ")}
 FROM ${tableRef(this.#target, TABLES.readings)}
 WHERE meter_id = @meterId
-  AND at >= @from AND at < @to
-  AND DATE(at) BETWEEN DATE(@from) AND DATE(@to)
-ORDER BY at`;
+  AND reading_at >= @from AND reading_at < @to
+  AND DATE(reading_at) BETWEEN DATE(@from) AND DATE(@to)
+ORDER BY reading_at`;
 
     for (const meterId of [...meterIds].sort()) {
       for await (const row of this.#client.stream<Record<string, unknown>>(sql, {
