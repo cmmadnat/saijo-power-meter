@@ -66,6 +66,20 @@ build log in GitHub has to come and fetch it.
 **That fetching is `.github/workflows/build-logs.yml`'s job.** What the pipeline owes it is two
 things: a log worth pulling, and a way to find the right one.
 
+### The webhook URL carries the trigger's location
+
+```
+https://cloudbuild.googleapis.com/v1/projects/<project>/locations/global/triggers/<name>:webhook?key=…&secret=…
+```
+
+`/locations/global/` is not optional. Omitting it — the shorter
+`/projects/../triggers/..:webhook` form — is answered with **403**, which reads like a bad
+API key or a bad secret and is neither. Both webhooks failed their GitHub ping that way
+once, and the misleading status is the whole reason this is written down.
+
+`scripts/print-webhooks.sh` builds the path from a `LOCATION` that matches the triggers'
+`location` in `infra/index.ts`. Changing one means changing the other.
+
 ### Finding the build
 
 Every build is tagged with the commit it built and with its mode, so a commit SHA is

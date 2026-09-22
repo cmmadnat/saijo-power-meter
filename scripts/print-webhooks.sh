@@ -15,6 +15,9 @@ set -euo pipefail
 
 PROJECT_ID="${PROJECT_ID:-}"
 KEY_DISPLAY_NAME="${KEY_DISPLAY_NAME:-Cloud Build webhook triggers}"
+# Matches the triggers' `location` in infra/index.ts. Changing it there means
+# changing it here, and the symptom of a mismatch is a 403.
+LOCATION="${LOCATION:-global}"
 
 die() { printf '\n\033[0;31mERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
@@ -31,9 +34,13 @@ KEY_NAME="$(gcloud services api-keys list \
 KEY_STRING="$(gcloud services api-keys get-key-string "$KEY_NAME" --format 'value(keyString)')"
 SECRET="$(gcloud secrets versions access latest --secret github-webhook-secret --project "$PROJECT_ID")"
 
+# The path carries the trigger's location, which for these is `global`. The
+# shorter /projects/../triggers/.. form omits it and is answered with 403, not
+# 404 — which reads like a credential problem and is not one. Both webhooks
+# failed their GitHub ping that way once.
 url() {
-  printf 'https://cloudbuild.googleapis.com/v1/projects/%s/triggers/%s:webhook?key=%s&secret=%s\n' \
-    "$PROJECT_ID" "$1" "$KEY_STRING" "$SECRET"
+  printf 'https://cloudbuild.googleapis.com/v1/projects/%s/locations/%s/triggers/%s:webhook?key=%s&secret=%s\n' \
+    "$PROJECT_ID" "$LOCATION" "$1" "$KEY_STRING" "$SECRET"
 }
 
 cat <<OUT

@@ -133,6 +133,13 @@ log's *tail* in its summary. A step that never ran is reported as "did not run",
 The one failure that cannot summarise itself is a failed clone, since `report.sh` lives in the
 repository it would have cloned.
 
+**A webhook trigger's URL carries the trigger's location**, as
+`/v1/projects/<p>/locations/global/triggers/<name>:webhook`. The shorter form without
+`/locations/` is answered with **403**, which looks like a rejected API key or secret and is
+neither — both webhooks failed their GitHub ping that way once. `scripts/print-webhooks.sh`
+takes `LOCATION` from the triggers' `location` in `infra/index.ts`; the symptom of a mismatch is
+that 403.
+
 **A webhook trigger's `filter` sees its substitutions, not the payload.** `body` is undeclared
 in that CEL environment, and a filter naming it is rejected at create time with `undeclared
 reference to 'body'` — payload bindings are a substitution feature. So each trigger lifts what
