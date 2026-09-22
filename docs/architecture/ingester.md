@@ -20,6 +20,7 @@ this page and it is not a technical one.
 | `apps/ingester/src/file-store.ts` | The ports backed by files. The replay harness only. |
 | `apps/ingester/tools/replay.ts` | A broker on loopback replaying the fixtures at 60 msg/min. |
 | `apps/ingester/tools/reconcile.ts` | Checks a run's rollup against the raw readings behind it. |
+| `apps/ingester/tools/capture.ts` | Reads the real broker, prints raw payloads, writes nothing. |
 | `packages/infrastructure/src/warehouse/writer.ts` | The `ReadingWriter` port, backed by load jobs. |
 
 The decoder is **not** in this app. `StationDecoder` is imported from
@@ -106,6 +107,37 @@ is refused, because what is being protected is the warehouse, not the broker.
 
 This is not caution about a number being slightly off. A wrong divisor writes engineering units
 that look like measurements, the raw integers are never stored, and no backfill recovers them.
+
+## Capturing a real payload
+
+`tools/capture.ts` is the one thing here that may point at the customer's broker, and it is not
+the ingester: it subscribes, prints the raw integers verbatim, optionally appends them to a file,
+and writes nothing anywhere else. There is no warehouse behind it for a wrong divisor to corrupt,
+which is why it is not an exemption to the gate — it never goes through it.
+
+```bash
+MQTT_URL='mqtts://<cluster>.s1.eu.hivemq.cloud:8883' \
+MQTT_USERNAME='...' MQTT_PASSWORD='...' \
+npm run capture -w @power-meter/ingester -- --messages 9 --out capture.jsonl
+```
+
+Two properties are deliberate. It connects with a **random client id**, never
+`power-meter-ingester`: a diagnostic that evicted the running ingester would be worse than no
+diagnostic. And it uses a **clean session at QoS 0**, so nothing queues for it on the broker while
+it is not listening.
+
+For every meter it prints the raw values, the three-phase `V x I x PF` those imply, and what
+`M<n>P` would read at each candidate divisor with the matching one marked. On a *running* meter
+that settles active power arithmetically, because V, I and PF are pinned independently. Energy is
+not settled that way — a counter has nothing in the payload to cross-check against, so it still
+takes one meter's own display reading at a known moment.
+
+**Two things stop this being run from a Claude cloud session.** There is no egress on 1883 or 8883
+— only HTTPS through an agent proxy, and a `CONNECT` to either port fails — so it has to run from a
+laptop, Cloud Shell or the factory network. And **the customer's workbook has no broker address**:
+its `MQTT Server` tab carries a HiveMQ username and password and a Gmail login for the HiveMQ
+console, and no cluster hostname anywhere. HiveMQ Cloud hostnames are per-cluster and random, so
+that has to be asked for.
 
 ## Running it locally
 

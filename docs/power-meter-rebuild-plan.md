@@ -405,7 +405,15 @@ the takeover path driven through a fake broker — 33 tests in the app, 144 acro
 
 *Not verified, and each for a reason:*
 
-- **No real broker, and no real payload.** The gate; open questions 1 and 2.
+- **No real broker, and no real payload.** Two things block it beyond the gate, and both were
+  checked rather than assumed: the customer's workbook has **no broker hostname** — its
+  `MQTT Server` tab carries a HiveMQ username, a password and a Gmail console login, and no
+  cluster address, which for HiveMQ Cloud is random per cluster — and a Claude cloud session has
+  **no egress on 1883 or 8883**, only HTTPS through an agent proxy. `apps/ingester/tools/capture.ts`
+  is what to run once the address arrives, from a laptop or Cloud Shell: it subscribes, prints the
+  raw integers and writes nothing. Its output settles active power on a running meter, because V,
+  I and PF are pinned independently and `3 x V x I x PF` is what `M<n>P` has to agree with; energy
+  still needs that meter's own display reading.
 - **The takeover has never run against MQTT 5.** aedes speaks 3.1.1 only, where there is no reason
   code. Running two ingesters against it shows exactly the flap the guard removes — each evicting
   the other every ~5 s — which is the evidence that the guard is needed, not that it works.

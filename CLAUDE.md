@@ -426,6 +426,15 @@ same change that confirms the divisors and adds a version to each secret.
 anything else is refused. Both halves are checked, because what is being protected is the
 warehouse and not the broker. Do not add a third exemption.
 
+**`apps/ingester/tools/capture.ts` is how a real payload gets read, and it is not an exemption.**
+It is not the ingester: it subscribes, prints the raw integers and writes nothing, so there is
+nothing behind it to corrupt. It connects with a random client id — never the ingester's fixed one,
+which would evict a running ingester — and with a clean session at QoS 0. It cannot run from a
+cloud session: there is no egress on 1883 or 8883 here, and **the workbook has no broker hostname**
+(its `MQTT Server` tab has the HiveMQ username, password and console login, and no cluster
+address). Ask the customer for the address, run it where TCP is allowed, and the output settles
+active power on a running meter; energy still needs that meter's display reading.
+
 **Exactly one ingester, and it is three things rather than a setting.** `min-instances=1,
 max-instances=1`; a fixed MQTT client id, so a broker evicts the older session when a new revision
 attaches; and — the part that is easy to leave out — **an evicted instance exits instead of
