@@ -16,10 +16,33 @@
 set -euo pipefail
 
 : "${MODE:?MODE must be preview or apply}"
-: "${WEB_IMAGE:?WEB_IMAGE must be the commit-pinned web image reference}"
-: "${WEB_CACHE_IMAGE:?WEB_CACHE_IMAGE must be the floating web cache tag}"
+
+# A pipeline script must run under the trigger that is ALREADY deployed, not the
+# one in the same commit. The trigger's step definitions live in infra/index.ts
+# and only change when Pulumi applies them — which is a step in this very
+# pipeline. So a script that demands an environment variable the running trigger
+# does not set cannot ever be applied: the apply that would update the trigger is
+# the run that fails. That is exactly what happened on the step 7 merge.
+#
+# Hence these fallbacks. The trigger before step 7 passed one image as IMAGE and
+# CACHE_IMAGE; the one from step 7 onward passes four names. Reading the old
+# names when the new ones are absent is what lets the first run under the old
+# trigger succeed and apply the new one. They stay after that: they cost two
+# lines and they are what makes the next pipeline change survivable.
+WEB_IMAGE="${WEB_IMAGE:-${IMAGE:-}}"
+WEB_CACHE_IMAGE="${WEB_CACHE_IMAGE:-${CACHE_IMAGE:-}}"
+# Derived by swapping the repository in the reference, so the ingester image is
+# pinned to the same commit as the web one whichever trigger supplied it.
+INGESTER_IMAGE="${INGESTER_IMAGE:-${WEB_IMAGE/\/web:/\/ingester:}}"
+INGESTER_CACHE_IMAGE="${INGESTER_CACHE_IMAGE:-${WEB_CACHE_IMAGE/\/web:/\/ingester:}}"
+
+: "${WEB_IMAGE:?WEB_IMAGE (or legacy IMAGE) must be the commit-pinned web image reference}"
+: "${WEB_CACHE_IMAGE:?WEB_CACHE_IMAGE (or legacy CACHE_IMAGE) must be the floating web cache tag}"
 : "${INGESTER_IMAGE:?INGESTER_IMAGE must be the commit-pinned ingester image reference}"
 : "${INGESTER_CACHE_IMAGE:?INGESTER_CACHE_IMAGE must be the floating ingester cache tag}"
+
+echo "web       $WEB_IMAGE"
+echo "ingester  $INGESTER_IMAGE"
 
 # BuildKit inline cache replaces GitHub Actions' type=gha cache. The cache tags
 # float deliberately — they are never deployed, only read from and written to.

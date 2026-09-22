@@ -14,7 +14,13 @@ set -euo pipefail
 : "${PULUMI_BACKEND_URL:?PULUMI_BACKEND_URL must be the gs:// state bucket}"
 : "${GOOGLE_PROJECT:?GOOGLE_PROJECT must be set}"
 : "${WEB_IMAGE:?WEB_IMAGE must be the commit-pinned web image reference}"
-: "${INGESTER_IMAGE:?INGESTER_IMAGE must be the commit-pinned ingester image reference}"
+
+# Derived rather than required, for the reason ci/image.sh sets out at length: a
+# trigger applied before step 7 does not pass this, and the apply that teaches it
+# to is this very run. The program only insists on the value when
+# deployIngester is true, so a wrong guess here cannot deploy anything.
+INGESTER_IMAGE="${INGESTER_IMAGE:-${WEB_IMAGE/\/web:/\/ingester:}}"
+export INGESTER_IMAGE
 : "${KMS_KEY:?KMS_KEY must be the secrets-provider key, for first-run stack init}"
 
 STACK=dev
