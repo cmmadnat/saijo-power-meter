@@ -23,8 +23,7 @@ on fixture data; no meter data flows yet.
 | --- | --- |
 | `infra/` | Pulumi program (TypeScript) — every Google Cloud resource except the bootstrap ones. |
 | `bootstrap.sh` | One-time, run in Cloud Shell. Creates only what Pulumi cannot create for itself. |
-| `scripts/setup-cloud-build.sh` | One-time, after `bootstrap.sh`. The pipeline's secrets and its two extra roles. |
-| `scripts/print-webhooks.sh` | Prints the two webhook URLs to paste into GitHub. |
+| `scripts/setup-cloud-build.sh` | One-time, after `bootstrap.sh`. APIs and the deployer's three pipeline roles. |
 | `ci/` | What the Cloud Build steps run: `step.sh`, `image.sh`, `pulumi.sh`, `report.sh`. |
 | `packages/domain` | Entities and rules. Imports nothing. |
 | `packages/application` | Use cases and the port interfaces they need. Imports domain only. |
@@ -54,120 +53,66 @@ So `pulumi up` is never the right command to reach for here, and a failed `pulum
 is expected — it fails on missing credentials, not on a broken program. To see a real preview, open
 a PR.
 
-**Builds and deploys run on Cloud Build, not GitHub Actions**, so that GitHub is a git remote and
-nothing more: it holds a read-only deploy key and two webhooks, and no identity that can change this
-project. The reasoning, the three things this is worse at than the workflow was, and the cutover
-that is still pending are all in `docs/architecture/delivery-pipeline.md`; read it before touching
-the pipeline. The shape in one line: the trigger holds a thin inline build, step one clones the repo,
-and every later step runs a script from `ci/` in that clone — so pipeline logic is ordinary reviewed
-code and only its skeleton is a Pulumi resource.
+**Builds and deploys run on Cloud Build, connected to GitHub through the Cloud Build GitHub
+App.** The App is installed on this repository alone, with write access to commit statuses.
+`docs/architecture/delivery-pipeline.md` has the reasoning, what it is worse at than the Actions
+workflow was, and — in its last section — the webhook design this replaced and the four defects
+that killed it. Read it before touching the pipeline. The shape in one line: the trigger holds a
+thin inline build, Cloud Build fetches the source, and every step runs a script from `ci/` in that
+checkout, so pipeline logic is ordinary reviewed code and only its skeleton is a Pulumi resource.
 
-**Reading any log works the same way round: a workflow does it, and the output is read back through
-the GitHub API.** The session cannot query Google Cloud, so two workflows do, both authenticating as
-`power-meter-log-reader` — one account holding `roles/logging.viewer` and
-`roles/cloudbuild.builds.viewer` and nothing else, so neither job can deploy.
+**The App connection is a console handshake and must exist before the triggers can be applied.** A
+trigger naming an unconnected repository is rejected, so connecting the repo at
+`console.cloud.google.com/cloud-build/repositories` precedes the apply. `scripts/setup-cloud-build.sh`
+does everything either side of it and prints the step it cannot do.
 
-- `.github/workflows/logs.yml` — the running app. "What is the deployed service doing."
-- `.github/workflows/build-logs.yml` — a Cloud Build run, its status and full log. "Why did the
-  deploy fail."
-
-**A session cannot start either by dispatching it.** `workflow_dispatch` needs `actions: write`, and
-a session's GitHub token answers `403 Resource not accessible by integration` — measured, both
-before and after the workflow reached `main`, so it is the token and not the registration. What a
-session can do is comment, so both also trigger on `issue_comment`:
+**Cloud Build posts build status back to the pull request as a check**, which the webhook design
+could not. For an apply on `main`, or from a session with no Google Cloud credentials,
+`.github/workflows/build-logs.yml` fetches a log on a `/buildlog` comment — `workflow_dispatch`
+needs `actions: write`, which a session token does not carry. `.github/workflows/logs.yml` is its
+sibling for the running app's Cloud Run logs, on `/logs`. Both authenticate as
+`power-meter-log-reader`, holding `roles/logging.viewer` and `roles/cloudbuild.builds.viewer` and
+nothing else, so neither can deploy; both are guarded by `author_association`, and neither
+interpolates a comment body into a `run:` block. Issue #12 is the channel.
 
 ```
 /logs                    /logs 6h ERROR                    /logs freshness=2d -- textPayload:"ECONNREFUSED"
 /buildlog                /buildlog failed                  /buildlog sha=4f2c1ab mode=apply
 ```
 
-Issue #12 is the channel for those; any issue or PR works. Builds are tagged with the commit they
-built, so a SHA is `/buildlog`'s handle; bare gives the most recent, and `failed` the last red one.
-Six things about this are deliberate:
+Neither trigger works from a branch: `issue_comment` always runs the default branch's copy.
 
-- **The guard is `author_association`** in `OWNER`/`MEMBER`/`COLLABORATOR`. Without it, anyone able
-  to comment could start runs against the project. It cannot tell a session from its owner — a
-  session's comments are authored by the account that authorized it — and that is the intent.
-- **The comment body is never interpolated into a `run:` block.** It reaches the parser through the
-  environment, because `${{ github.event.comment.body }}` in a script is the standard way a comment
-  becomes shell.
-- **It is a second service account, not a role on the deployer.** The deployer holds eleven admin
-  roles; the value is that a log read cannot deploy a revision, push an image or touch state.
-- **Their concurrency groups are not `infra`**, or a log read would queue behind a deploy and a
-  deploy behind a log read — least of all the read that explains why the deploy failed.
-- **`logs.yml` excludes admin-activity audit entries unless `audit=true`.** They share
-  `resource.type` with the service's own output, so a plain read returns Pulumi's deploy calls —
-  ~100 lines of JSON each — in place of application logs. (`roles/logging.viewer` excludes
-  *data-access* logs, not these.) `build-logs.yml` needs no equivalent: it reads one named build
-  through `gcloud builds log`, not a `resource.type` window.
-- **What matters is printed last.** A reader is handed the tail of the run log, so `logs.yml` puts
-  its one-line-per-entry rendering after the JSON — entries are newest-first, so the last thing
-  printed is what a question about what just happened reaches. `build-logs.yml` gets this for free
-  in the other direction: a build log is oldest-first and `ci/report.sh` writes the verdict at the
-  very end, which is why its step summary shows the log's tail.
+**The fork guard is a trigger setting, not hand-built.**
+`commentControl: COMMENTS_ENABLED_FOR_EXTERNAL_CONTRIBUTORS_ONLY` means a pull request from
+outside this repository does not build until someone with write access comments `/gcbrun`. That
+matters because a build runs `ci/*.sh` from the commit it checks out, with the deployer's
+credentials.
 
-Neither trigger works from a branch: `issue_comment` always runs the default branch's copy, so a
-change to either workflow does nothing until it is merged. Every read also copies log lines into the
-Actions run log, which has its own retention and audience — worth revisiting when real meter data
-and the passcode gate land.
+**Substitutions do not resolve in a build's `tags`.** They resolve in `steps` and `images`; a
+`$COMMIT_SHA` tag is stored verbatim, a tag must match `[\w][\w.-]*`, and the build creation is
+then rejected with a bare `INVALID_ARGUMENT` — while the trigger itself creates cleanly, because a
+tag is only a string until a build is made from it. `build-logs.yml` finds a build by
+`--filter "substitutions.COMMIT_SHA=<sha>"`; the mode stays a tag because it is a literal.
 
-**Nothing reports a Cloud Build result back to *GitHub*, and that is the standing gap.** A webhook
-trigger posts no check, no status and no comment, so a pull request whose deploy failed looks
-entirely clean on GitHub. The absence of a red mark is not evidence the deploy worked — comment
-`/buildlog failed` and look. Do not widen the reader account to close this; a reporting path into
-GitHub would be a separate decision with a separate credential.
+**Cloud Build validates very little at trigger-create time and a great deal at invocation.** "The
+trigger was created" is not evidence that it works, and a `pulumi preview` is weaker still: it
+plans rather than creates, so it passes over missing roles and missing secrets alike. That
+asymmetry is what made the webhook design cost what it did.
 
-**A failed build does announce itself by email, through Cloud Monitoring.** Cloud Build has no
-built-in setting for it; the alternative was Pub/Sub plus a notifier service holding SMTP
-credentials. `infra/index.ts` declares a log-based alert policy instead, matching three things —
+**A failed build announces itself by email, through Cloud Monitoring.** Cloud Build has no
+built-in setting for it. `infra/index.ts` declares a log-based alert policy matching three things —
 `PIPELINE_VERDICT=FAILED` (`ci/report.sh`'s own marker, which is a marker and not prose, so do not
-reword it), `ERROR: build step` (a failed clone, which `report.sh` cannot report), and a timeout.
-The address is `saijo-power-meter:alertEmail` in `Pulumi.dev.yaml`, and the channel delivers nothing
-until the confirmation email Cloud Monitoring sends has been clicked.
+reword it), `ERROR: build step`, and a timeout. It takes `roles/logging.configWriter` alongside
+`roles/monitoring.editor`, because a log-based policy also creates a Logging notification rule —
+the channel succeeds on the monitoring role alone, so the failure reads oddly. The address is
+`saijo-power-meter:alertEmail` in `Pulumi.dev.yaml`, and the channel delivers nothing until the
+confirmation email has been clicked.
 
 **`ci/step.sh` and `ci/report.sh` exist because Cloud Build has no `if: always()`.** Every real step
 runs under the wrapper, which captures its output and swallows its exit code; the report step then
 always runs, ends the log with a step-by-step verdict and the last 80 lines of whatever failed, and
-exits non-zero itself so a red build reads as red. That ordering is why `build-logs.yml` shows the
-log's *tail* in its summary. A step that never ran is reported as "did not run", never as a pass.
-The one failure that cannot summarise itself is a failed clone, since `report.sh` lives in the
-repository it would have cloned.
-
-**A webhook trigger's URL carries the trigger's location**, as
-`/v1/projects/<p>/locations/global/triggers/<name>:webhook`. The shorter form without
-`/locations/` is answered with **403**, which looks like a rejected API key or secret and is
-neither — both webhooks failed their GitHub ping that way once. `scripts/print-webhooks.sh`
-takes `LOCATION` from the triggers' `location` in `infra/index.ts`; the symptom of a mismatch is
-that 403.
-
-**Substitutions do not resolve in a build's `tags`.** They resolve in `steps` and `images`;
-a `${_SHA}` tag is stored verbatim, and a tag must match `[\w][\w.-]*`, which `$`, `{` and `}`
-do not. The trigger creates cleanly — a tag is only a string until a build is made from it —
-and then **every** webhook invocation fails with a bare `INVALID_ARGUMENT`, after the API key,
-the secret and the trigger lookup have all succeeded, with nothing in any log. The build was
-invalid, not the trigger. `build-logs.yml` finds a build by
-`--filter "substitutions._SHA=<sha>"` for that reason; the mode stays a tag because it is a
-literal.
-
-**A webhook trigger's `filter` sees its substitutions, not the payload.** `body` is undeclared
-in that CEL environment, and a filter naming it is rejected at create time with `undeclared
-reference to 'body'` — payload bindings are a substitution feature. So each trigger lifts what
-its filter tests (`_ACTION`, `_BASE_REPO`, `_HEAD_REPO`, `_REF`) into a substitution no build step
-consumes, which is why `substitutionOption: ALLOW_LOOSE` is required rather than tidy. Do not
-"simplify" a filter back to `body.*`; it cost a failed apply to learn.
-
-**The build-failure alert takes two roles, not one.** A log-based alert policy also creates a
-Logging notification rule, so it needs `roles/logging.configWriter` alongside
-`roles/monitoring.editor`. The notification channel succeeds on the monitoring role alone, so the
-failure reads oddly: the channel appears, the policy does not, and the error names
-`logging.notificationRules.create`.
-
-**`scripts/setup-cloud-build.sh` has to run before the Cloud Build branch is merged, not after.**
-Merging is what applies the stack, and the apply fails without it: the deployer lacks
-`cloudbuild.builds.editor`, `serviceusage.apiKeysAdmin` and `monitoring.editor`, and each trigger's
-`webhookConfig` names a `github-webhook-secret` version that does not exist yet. A `pulumi preview`
-passes in both cases, because it plans rather than creates — so a green preview is not evidence the
-apply will succeed.
+exits non-zero itself so a red build reads as red. A step that never ran is reported as "did not
+run", never as a pass.
 
 **`.github/workflows/infra.yml` is still there and still applies on main.** That is temporary and
 deliberate: the triggers are Pulumi resources, so something has to apply the stack that creates
