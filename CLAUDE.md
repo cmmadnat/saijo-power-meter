@@ -293,6 +293,18 @@ that know the numbers are fixtures: everything above them goes through a use cas
 `packages/application` and a port. Step 8 replaces those three files, not the screens — keep it that
 way, and do not reach for `generateFixtures` from a component.
 
+**The Real time route draws the strip and the two charts above the table, which inverts the
+mock-up.** The customer asked for it; `docs/requirements/power-meter-ui.md` records it as a
+deviation so a reviewer holding the PDF does not read it as a mistake. The 55-row table put both
+charts below the fold on every screen it was checked on.
+
+**There will be two data modes, `live` and `demo`, and step 8 must not delete the fixture path.**
+Step 8b in the plan is the decided shape: one `DATA_MODE` environment variable, read in one
+composition module in `apps/web/lib`, defaulting to `demo`; the three source files ask that module
+for a port and nothing above them learns which mode it is in; demo mode carries a permanent badge;
+live mode refuses to boot while `unconfirmedScales()` is non-empty. No per-source override — a
+half-live app is a bug generator.
+
 **The fleet strip and the department bands are additions to the specification, and both are
 flagged to the customer.** Their numbers — `totalActivePowerKw` and `byDepartment` — are summed in
 `realtimeTable`, not in the components, so the strip and the bands cannot disagree. Two rules ride

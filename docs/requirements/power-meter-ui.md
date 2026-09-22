@@ -20,6 +20,14 @@ So there are two routes, not four. **Real time** carries screens 1–3 — page 
 the kW panel beginning below it, and page 2 is that same panel full-page — and **History** carries
 screen 4. That is how `apps/web` is laid out: `/` and `/history`.
 
+**Deviation from the mock-up's order, agreed with the customer:** on the Real time route the
+fleet strip and the two charts are drawn *above* the table, where the mock-up puts the table first
+and the kW panel below it. Nothing about the screens themselves changes — same columns, same
+series, same controls — only the vertical order on the one route that carries three of them. The
+reason is that a 55-row, 15-column table is taller than any screen it was checked on, which put the
+charts below the fold; the strip and the charts are what a glance is for, and the table is the
+detail underneath. Recorded here so a reviewer holding the PDF does not read it as a mistake.
+
 Labels on the mock-up are Thai, and they are reproduced verbatim in the UI. Page 1's first column
 prints as `หมายเลขมิเตอร` when the PDF is extracted; that is the font's private-use encoding
 of the mark on หมายเลขมิเตอร์, not a different word.

@@ -289,6 +289,20 @@ matching the strip's total.
 
 **← At this point the customer can review the whole app and we have changed no infrastructure.**
 
+### Step 5c — Real time page order — **done**
+Decided with the customer: on the Real time route the fleet strip and the two charts are drawn above
+the 55-row table, inverting the mock-up, which puts the table first with the kW panel beginning
+below it. No screen changed — same columns, same series, same controls — only the order of the three
+on the one route that carries them all, because the table is taller than any screen it was checked
+on and put both charts below the fold. Flagged as a deviation in `docs/requirements/power-meter-ui.md`
+so a reviewer holding the PDF does not read it as an error.
+
+*Verified:* `npm run verify` clean; screenshotted at 1920×1080 and 1440×800. At 1920 the strip, the
+series key and the whole power chart are above the fold with the energy chart beginning below it; at
+1440 the strip and the key are above the fold and the power chart begins. That is the honest result —
+*both* charts never fit on one screen, and the claim is that the first one does, where before the
+reorder neither did.
+
 ### Step 6 — Schema and migrations — **done**
 The store is BigQuery, day-partitioned, 14-day partition expiry — see the storage section. Shipped,
 with the reasoning in `docs/architecture/warehouse.md`:
@@ -374,7 +388,9 @@ soak with flat memory; rollup totals reconcile against raw; cost per day measure
 
 ### Step 8 — Wire the UI to real data
 Replace fixture calls with API routes / server components. The step-5 aggregation functions move
-server-side unchanged. Fixtures stay as the test fixtures.
+server-side unchanged. Fixtures stay — as the test fixtures, and as the demo mode step 8b makes a
+shipped feature, so this step *adds* the live adapters beside them rather than deleting the
+fixture path.
 
 **Finish the fleet strip here.** Step 5b left two tiles out — energy since the start of the shift,
 and a sparkline of total load across the last hour — because both need a baseline or a window, and
@@ -385,6 +401,44 @@ is answerable then and not now. The design they complete is on the canvas the bu
 *Verify:* every screen matches its step 3–5b behaviour against real stored data; p95 page load
 measured; the four screens are the only thing that changed; the strip's two deferred tiles read the
 warehouse, with the cost of that refresh measured rather than assumed.
+
+### Step 8b — Two data modes: live and demo
+Decided with the customer, and it changes what step 8 is allowed to do: replacing the three source
+files must not delete the fixture path. The application runs in one of two modes, chosen by
+configuration, and both are first-class:
+
+- **`live`** — the real path. Real-time reads the ingester's in-memory hot state over HTTP; the
+  charts and History read the warehouse. This is what a production deployment runs.
+- **`demo`** — the fixture path, which is what every screen runs on today. The generator in
+  `packages/infrastructure` stays a shipped adapter rather than becoming test-only, so the app can
+  be shown, reviewed and demonstrated with no broker, no BigQuery and no credentials — which is
+  also what makes a preview deploy and a local `npm run dev` work unchanged.
+
+**The mode is one switch and it is read in exactly one place.** A `DATA_MODE` environment variable
+(`live` | `demo`, defaulting to `demo` so a misconfigured deployment degrades to obviously-fake
+numbers rather than to a blank screen) is read by a single composition module in `apps/web/lib`,
+which picks the adapter set. `realtime-source.ts`, `series-source.ts` and `history-source.ts` keep
+their current shape and ask that module for a port; nothing above them — no use case, no
+component — learns which mode it is in. Per-source overrides are explicitly not offered: a half-live
+app whose table is real and whose History is synthetic is a bug generator, and one switch makes
+that state unrepresentable.
+
+**Demo mode is visible, always.** A persistent badge in the shell header reads *Demo data* and the
+Real time header's "Fixture data · no meter is connected yet" line becomes its mode-aware form. A
+screenshot of demo mode must be unmistakable as demo in isolation, out of context, months later —
+the failure this guards against is a synthetic number being read as a measurement, and it costs one
+badge to make impossible.
+
+**Live mode refuses to start while the scaling divisors are unconfirmed.** `unconfirmedScales()`
+already exists for exactly this; here it gains its second caller. `DATA_MODE=live` with an
+`assumed` divisor is a startup failure with a message naming the fields, not a warning in a log.
+Demo mode is unaffected, because nothing it produces is a measurement.
+
+*Verify:* the same four screens render in both modes with no component change, proved by running
+the existing screen tests against each adapter set; `DATA_MODE` unset behaves as `demo`; the demo
+badge is present on every route in demo mode and absent in live; `DATA_MODE=live` with the two
+`assumed` scales fails to boot, with both field names in the message; no fixture module is reachable
+from a live-mode render path, asserted the way `check-boundaries.mjs` asserts the dependency rule.
 
 ### Step 9 — Passcode gate
 A single shared passcode, checked server-side against Secret Manager, httpOnly + secure session
