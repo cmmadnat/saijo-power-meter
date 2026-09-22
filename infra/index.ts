@@ -338,11 +338,18 @@ function pipelineBuild(mode: "preview" | "apply"): gcp.types.input.cloudbuild.Tr
 
     return {
         steps,
-        // Tagged so a build can be found by the commit it built, which is the
-        // only handle an outside caller has: a webhook trigger's run is not
-        // announced anywhere, so `gcloud builds list --filter "tags=<sha>"` is
-        // how anything downstream locates the log to pull.
-        tags: [mode, "${_SHA}"],
+        // Only the mode, and only a literal. Substitutions resolve in `steps`
+        // and `images`; `tags` is not one of them, so `${_SHA}` here is stored
+        // verbatim — and a tag must match [\w][\w.-]*, which `$`, `{` and `}`
+        // do not. The trigger still creates cleanly, because the tag is just a
+        // string until a build is made from it; then every single invocation
+        // fails with a bare INVALID_ARGUMENT, after the API key, the secret and
+        // the trigger lookup have all succeeded. Nothing is logged, because the
+        // trigger was never the problem.
+        //
+        // Finding a build by commit moved to the substitution instead:
+        // `gcloud builds list --filter "substitutions._SHA=<sha>"`.
+        tags: [mode],
         timeout: "2400s",
         // Cloud Build has no equivalent of the workflow's repo-wide concurrency
         // group. Two runs can start at once, and the second one waits on

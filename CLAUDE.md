@@ -140,6 +140,15 @@ neither — both webhooks failed their GitHub ping that way once. `scripts/print
 takes `LOCATION` from the triggers' `location` in `infra/index.ts`; the symptom of a mismatch is
 that 403.
 
+**Substitutions do not resolve in a build's `tags`.** They resolve in `steps` and `images`;
+a `${_SHA}` tag is stored verbatim, and a tag must match `[\w][\w.-]*`, which `$`, `{` and `}`
+do not. The trigger creates cleanly — a tag is only a string until a build is made from it —
+and then **every** webhook invocation fails with a bare `INVALID_ARGUMENT`, after the API key,
+the secret and the trigger lookup have all succeeded, with nothing in any log. The build was
+invalid, not the trigger. `build-logs.yml` finds a build by
+`--filter "substitutions._SHA=<sha>"` for that reason; the mode stays a tag because it is a
+literal.
+
 **A webhook trigger's `filter` sees its substitutions, not the payload.** `body` is undeclared
 in that CEL environment, and a filter naming it is rejected at create time with `undeclared
 reference to 'body'` — payload bindings are a substitution feature. So each trigger lifts what
