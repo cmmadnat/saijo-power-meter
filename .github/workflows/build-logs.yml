@@ -214,7 +214,18 @@ jobs:
             # literal.
             filter=""
             if [ -n "${SHA}" ]; then
-              filter="substitutions.COMMIT_SHA=${SHA}"
+              # An abbreviated SHA matches nothing on equality: the substitution
+              # holds the full forty characters, and `=` is exact. A short one
+              # is the form a human has to hand — it is what `git log --oneline`
+              # and every GitHub URL show — so anything shorter is matched as a
+              # prefix instead. `~` is gcloud's regex operator and `^` anchors
+              # it, so `sha=96bb154` cannot match a commit that merely contains
+              # those characters somewhere in the middle.
+              if [ "${#SHA}" -eq 40 ]; then
+                filter="substitutions.COMMIT_SHA=${SHA}"
+              else
+                filter="substitutions.COMMIT_SHA~^${SHA}"
+              fi
             fi
             if [ "${MODE}" != "any" ]; then
               [ -n "${filter}" ] && filter="${filter} AND "
