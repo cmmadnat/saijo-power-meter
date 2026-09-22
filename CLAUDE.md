@@ -316,9 +316,17 @@ Working in `apps/web` has these traps, each hit once already:
   `apps/web`. The Dockerfile flattens this; changing either setting means re-checking it.
 - **The BigQuery SDK is bundled, not traced.** Live mode constructs a client, and Turbopack folds
   `@google-cloud/bigquery` into the server chunks rather than adding it under `node_modules`
-  (standalone 58 → 60 MB at step 8). A "not in `node_modules`" check therefore says nothing about
+  (standalone 58 → 59 MB at step 8). A "not in `node_modules`" check therefore says nothing about
   whether it shipped; a client constructed inside the production build reaching the credentials
   check does.
+- **A runtime-built filesystem path traces the whole project into the image.** Next warns
+  "Dynamic filesystem access causes tracing of the whole project" and copies `apps/web`'s source,
+  Dockerfile and README into the standalone output. The replay's file store did this at step 8;
+  its paths go through one `turbopackIgnore` helper now. Read the build warnings, not just its exit
+  code, after adding anything that touches the filesystem.
+- **The root layout calls `connection()`, and must.** It prints the data-mode badge, and without it
+  the 404 page is prerendered at build time — where `DATA_MODE` is unset — so a live deployment
+  would say *Demo data* on every not-found page.
 - **`instrumentation.ts` exits the process** when the data-mode gate refuses. That is the boot
   refusal, not a crash to debug — read the line above it.
 

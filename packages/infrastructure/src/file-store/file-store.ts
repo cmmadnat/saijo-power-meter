@@ -21,6 +21,11 @@
  * beside a loopback address, because nothing here can put a row in BigQuery.
  * The readers load the whole file per call, which is right for minutes of
  * replay and wrong for anything else.
+ *
+ * Every path is built by `under`, which carries `turbopackIgnore`. The
+ * directory is a runtime setting, and without the comment Next's tracer cannot
+ * tell what it will be and copies the web app's whole project into the image
+ * to be safe.
  */
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -34,6 +39,11 @@ import type {
   TimeRange,
 } from "@power-meter/application";
 import type { MeterId, Reading } from "@power-meter/domain";
+
+/** A file in the store's directory. The comment keeps Next's tracer off it. */
+function under(dir: string, file: string): string {
+  return join(/* turbopackIgnore: true */ dir, file);
+}
 
 export const FILES = {
   readings: "readings.jsonl",
@@ -65,7 +75,7 @@ export class FileReadingWriter implements ReadingWriter {
   async append(batch: ReadingBatch): Promise<void> {
     if (batch.readings.length > 0) {
       await appendFile(
-        join(this.#dir, FILES.readings),
+        under(this.#dir, FILES.readings),
         `${batch.readings
           .map((reading) =>
             JSON.stringify({
@@ -78,7 +88,7 @@ export class FileReadingWriter implements ReadingWriter {
     }
     if (batch.rollup.length > 0) {
       await appendFile(
-        join(this.#dir, FILES.rollup),
+        under(this.#dir, FILES.rollup),
         `${batch.rollup
           .map((bucket) =>
             JSON.stringify({
@@ -97,7 +107,7 @@ export class FileReadingWriter implements ReadingWriter {
   async replaceLatest(readings: readonly Reading[]): Promise<void> {
     if (readings.length === 0) return;
     await writeFile(
-      join(this.#dir, FILES.latest),
+      under(this.#dir, FILES.latest),
       `${JSON.stringify(readings.map(store), null, 2)}\n`,
     );
   }
@@ -113,7 +123,7 @@ export class FileLatestReadingStore implements LatestReadingStore {
   async latest(): Promise<ReadonlyMap<MeterId, Reading>> {
     let text: string;
     try {
-      text = await readFile(join(this.#dir, FILES.latest), "utf8");
+      text = await readFile(under(this.#dir, FILES.latest), "utf8");
     } catch {
       // Nothing written yet: the same case as an empty `latest` table on a
       // project that has never ingested, and handled the same way.
@@ -203,7 +213,7 @@ export class FileReadingRepository implements ReadingRepository {
     meterIds: readonly MeterId[],
     range: TimeRange,
   ): AsyncIterable<Reading> {
-    const rows = await lines<StoredReading>(join(this.#dir, FILES.readings));
+    const rows = await lines<StoredReading>(under(this.#dir, FILES.readings));
     for (const row of inContract(rows, meterIds, range, (r) => r.meterId, (r) => Date.parse(r.at))) {
       yield restore(row);
     }
@@ -222,7 +232,7 @@ export class FileRollupRepository implements RollupRepository {
     meterIds: readonly MeterId[],
     range: TimeRange,
   ): AsyncIterable<RollupBucket> {
-    const rows = await lines<StoredRollup>(join(this.#dir, FILES.rollup));
+    const rows = await lines<StoredRollup>(under(this.#dir, FILES.rollup));
     for (const row of inContract(rows, meterIds, range, (r) => r.meterId, (r) => Date.parse(r.minute))) {
       yield {
         meterId: row.meterId as MeterId,

@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { connection } from "next/server";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AppShell } from "@/components/app-shell";
@@ -27,7 +28,13 @@ export const metadata: Metadata = {
     "Real-time and historical power consumption across the factory's metered machines.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  // The badge is read from DATA_MODE, which belongs to the running process,
+  // not to the build. Without this the 404 page is prerendered at build time —
+  // where DATA_MODE is unset, so demo — and a live deployment would print
+  // "Demo data" on every not-found page. Every other route is dynamic already.
+  await connection();
+
   // Read on the server so the registry never reaches the client bundle.
   const registry = MeterRegistry.fromWorkbook();
   const commissioned = registry.commissioned();

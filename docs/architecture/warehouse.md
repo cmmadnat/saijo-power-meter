@@ -141,7 +141,7 @@ The BigQuery SDK is reached through a four-method `WarehouseClient` interface an
 dynamic, `@google-cloud/bigquery` stayed out of the web app's build until something in `apps/web`
 constructed a client. Step 8's live mode is that something. Turbopack bundles the SDK into the
 server chunks rather than tracing its packages in, and the standalone output went from 58 MB to
-60 MB; a client constructed inside the production build reaches the credentials check.
+59 MB; a client constructed inside the production build reaches the credentials check.
 
 ## Emptying it, and why that command exists
 

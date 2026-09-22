@@ -50,7 +50,7 @@ export interface BigQueryClientOptions {
  * package's entry point does — does not drag `@google-cloud/bigquery` into a
  * bundle that never constructs a client. The web app's live mode does, since
  * step 8, and pays for it there: Turbopack bundles the SDK into the server
- * chunks, about 2 MB of standalone output.
+ * chunks, about 1 MB of standalone output.
  */
 export async function bigQueryClient(
   options: BigQueryClientOptions,

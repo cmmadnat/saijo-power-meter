@@ -466,6 +466,8 @@ cost table and what is unproven are in `docs/architecture/data-modes.md`. Shippe
   `warehouse cost`.
 - `apps/web/lib/live-adapters.ts`, and the three source files rewritten to ask for a port.
 - `apps/web/components/fleet-strip.tsx` and `sparkline.tsx` — the two deferred tiles.
+- `apps/web/app/error.tsx` — live mode can fail where demo cannot, and the real-time route is a
+  wall display, so a failed read shows a retrying error screen rather than Next's default page.
 - `infra/index.ts` — `DATA_MODE` and, once the ingester exists, `INGESTER_URL` on the web
   service, which now sits below the ingester so it can read its URL.
 
@@ -499,8 +501,11 @@ both adapter sets (`apps/web/lib/sources.test.ts`) — the demo set, and the liv
 readings themselves, row for row. End to end: the replay broker, a real ingester process writing
 `WAREHOUSE=file`, and the production web build in `DATA_MODE=live` reading both; screenshots of all
 four screens in each mode. Page load, sequential, production build, p50 / p95: demo `/` 81 / 102 ms,
-History today 116 / 145 ms; live-over-replay in `docs/architecture/data-modes.md`. The image: the
-BigQuery SDK is bundled into the server chunks, standalone 58 → 60 MB, and a client constructed inside
+History today 116 / 145 ms; live over twenty minutes of replay `/` 36 / 50 ms, History 62 / 74 ms.
+On the same replay the energy tile read 475 kWh against History's default footer of 485.7 — the
+difference is the not-yet-rolled-up tail, which the tile labels, plus each meter's first minute,
+since the replay began mid-day with no pre-midnight baseline. The image: the
+BigQuery SDK is bundled into the server chunks, standalone 58 → 59 MB, and a client constructed inside
 the production build reaches the credentials check.
 
 *Not verified, and why:*
@@ -510,8 +515,8 @@ the production build reaches the credentials check.
   `at` at step 6. `npm run warehouse -w @power-meter/infrastructure -- cost --runs 20` is the first
   parse and the latency measurement at once; p95 "against real stored data" in BigQuery is that run.
 - **The ID token has not been minted on Cloud Run**, because the ingester service does not exist.
-- **The two strip tiles have not been checked against History on the same data in BigQuery.** They
-  agree in the replay by construction; the warehouse still holds step 6's fixtures.
+- **The two strip tiles have not been checked against History in BigQuery.** In the replay they
+  differ by the rollup's lagging tail, as designed; the warehouse still holds step 6's fixtures.
 
 *As specified:*
 
@@ -549,7 +554,10 @@ Three decisions beyond the text below:
 
 *Verified:* `DATA_MODE` unset, empty and `demo` are demo (unit tests, and the production server's
 boot line). The badge renders on `/`, `/history` and a 404 in demo and in the harness; live renders
-none (`provenanceOf`, unit-tested — a rendered live page needs confirmed divisors). `DATA_MODE=live`
+none on any of the three, checked in a browser against a throwaway build with the divisors marked
+confirmed — which is also what found the 404 page prerendered with the demo badge baked in, now
+fixed by making the layout request-time. With the ingester stopped, live mode shows a retrying
+error screen and recovers by itself when it returns. `DATA_MODE=live`
 with the two assumed scales exits 1 on the production build, naming `activePower, energy`; so does a
 loopback ingester in front of BigQuery, and so does `DATA_MODE=prod`. A planted import of the demo
 set from the fleet strip fails `npm run boundaries` with the chain printed.

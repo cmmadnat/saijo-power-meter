@@ -11,7 +11,8 @@ stopped being fixture-only.
 | `apps/web/lib/demo-adapters.ts` | Demo: the fixture generator. Loaded only in demo mode. |
 | `apps/web/lib/live-adapters.ts` | Live: the ingester's `/latest`, the warehouse's rollup and raw readings. |
 | `apps/web/lib/{realtime,series,history}-source.ts` | Parse the URL, ask for a port, call a use case. Mode-blind. |
-| `apps/web/instrumentation.ts` | Runs the gate at boot and exits non-zero if it refuses. |
+| `apps/web/instrumentation.ts`, `lib/boot-check.ts` | Runs the gate at boot and exits non-zero if it refuses. |
+| `apps/web/app/error.tsx` | What a screen shows when its source did not answer; retries every 10 s. |
 | `packages/infrastructure/src/hot-state/` | The `/latest` wire shape (shared with the ingester) and its HTTP client. |
 | `packages/infrastructure/src/warehouse/cache.ts` | A rollup read remembered until the minute turns. |
 | `packages/infrastructure/src/fixtures/index.ts` | `@power-meter/infrastructure/fixtures`, the only way in to anything synthetic. |
@@ -69,7 +70,22 @@ the bottom of the table still has it. It is inverted ink on a hatched edge rathe
 because every hue on these screens already means something — lime is the brand fill, the status
 colours are freshness, the series colours are meters — and a badge borrowing one would be read as
 one of those. Live carries none. Checked against the running server on `/`, `/history` and a 404,
-in both modes.
+in both modes, and in a real browser against a throwaway build with the two divisors marked
+confirmed — the only way to render true live mode today: no badge on any of the three.
+
+**The layout reads the mode per request, and has to.** The 404 page was prerendered at build time,
+where `DATA_MODE` is unset, so that throwaway live build printed *Demo data* on every not-found
+page. `await connection()` in the root layout makes every route request-time; there is nothing
+static here worth prerendering.
+
+## When the data source does not answer
+
+Demo cannot fail; live can — the ingester unreachable, a warehouse query refused. `app/error.tsx`
+replaces the screen, inside the shell, with a line saying nothing on it would be current, and
+retries every ten seconds, the table's own rhythm, because the real-time route is a wall display
+and nobody is standing at it to press reload. Observed on the harness: the ingester stopped, the
+error screen up at the next refresh; the ingester restarted, the screen back ten seconds later
+with no reload.
 
 ## Which table each screen reads
 
@@ -113,7 +129,12 @@ the charts' own, so the strip cannot disagree with a chart of the same meters.
 
 - **"The shift" is the day, from 00:00 Bangkok.** The specification defines no shifts, and 00:00 is
   where History's default window opens, so the tile answers the same question as History's default
-  footer.
+  footer. **It does not give the same number, and should not:** the tile reads the rollup, which
+  ends at the last closed minute, and History reads raw readings up to now. Over the replay the tile
+  read 475 kWh against History's 485.7 — the 2% is about 25 seconds of the fleet's ~1 545 kW, made
+  of the tail not yet rolled up and, because the replay began mid-day with no minute before
+  midnight to take a baseline from, the first minute each meter reported in. On a real day the
+  second part vanishes; the first is why the tile says "to the last closed minute".
 - **Energy is read from the minute before midnight.** The walk measures from the first bucket's last
   counter; starting at 00:00 would take the baseline at 00:00:59 and drop a minute.
 - **The load line is a point a minute**, the sum of the meters that reported in it, with a silent
@@ -162,11 +183,19 @@ fails the build with the chain printed.
 
 Live mode is the first thing in `apps/web` to construct a BigQuery client. Turbopack **bundles** the
 SDK into the server chunks rather than tracing it in as `node_modules`: the standalone output went
-from 58 MB to 60 MB and gained no package directories. A throwaway route constructing a client and
+from 58 MB to 59 MB and gained no package directories. A throwaway route constructing a client and
 running `SELECT 1` inside the production build got as far as `Could not load the default
 credentials` — the SDK loads and runs; only the credentials are missing, which is this session's
 design. `apps/web/Dockerfile` now copies `packages/infrastructure/package.json` into the install
 layer so the SDK is installed on purpose rather than by luck of hoisting.
+
+**The first measurement was wrong, and the reason is a trap.** It read 60 MB, and the extra
+megabyte was not the SDK: the replay's file store, now reachable from the web app, builds its paths
+at runtime, and Next's tracer answered "Dynamic filesystem access causes tracing of the whole
+project" by copying the web app's source, Dockerfile and README into the image. Every path in
+`file-store.ts` now goes through one helper carrying `turbopackIgnore`, the build is warning-free,
+and the standalone tree is `server.js`, `package.json` and `node_modules` again. Read the build's
+warnings after adding anything that touches the filesystem.
 
 ## Page load
 
@@ -175,14 +204,16 @@ then sixty timed, on this session's container:
 
 | Route | demo p50 / p95 | live (replay) p50 / p95 |
 | --- | --- | --- |
-| `/` (strip, charts 6 h, table) | 81 / 102 ms | LIVE_ROOT |
-| `/?window=24h` | 81 / 106 ms | LIVE_24H |
-| `/history` (today) | 116 / 145 ms | LIVE_HISTORY |
-| `/history`, 27 h window | 237 / 298 ms | LIVE_HISTORY_WIDE |
+| `/` (strip, charts 6 h, table) | 81 / 102 ms | 36 / 50 ms |
+| `/?window=24h` | 81 / 106 ms | 34 / 42 ms |
+| `/history` (today) | 116 / 145 ms | 62 / 74 ms |
+| `/history`, 27 h window | 237 / 298 ms | 63 / 71 ms |
 
-The live column is the replay harness: `/latest` from a real ingester process over loopback, the
-charts, strip and History read from the files that ingester wrote. It proves the live code path end
-to end and says nothing about BigQuery's latency, which `warehouse cost` is for.
+The live column is the replay harness after twenty minutes of replay: `/latest` from a real ingester
+process over loopback, the charts, strip and History read from the files that ingester wrote. It is
+faster than demo because twenty minutes of stored readings are less work than generating a day, and
+the rollup read is cached. It proves the live code path end to end and says nothing about
+BigQuery's latency, which `warehouse cost` is for.
 
 ## What is still unproven
 
