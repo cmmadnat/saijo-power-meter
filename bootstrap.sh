@@ -23,6 +23,12 @@
 
 set -euo pipefail
 
+# Non-interactive, for the reason scripts/setup-cloud-build.sh records: this
+# script redirects gcloud's output in places, and a gcloud that stops to ask a
+# question then waits on stdin with the question sent to /dev/null. What the
+# operator sees is a script that halted for no reason.
+export CLOUDSDK_CORE_DISABLE_PROMPTS=1
+
 PROJECT_ID="${PROJECT_ID:-}"
 REGION="${REGION:-asia-southeast1}"
 GITHUB_REPO="${GITHUB_REPO:-cmmadnat/saijo-power-meter}"
@@ -116,6 +122,7 @@ ROLES=(
   roles/cloudbuild.builds.editor         # declare the pipeline's own triggers
   roles/serviceusage.apiKeysAdmin        # the webhook triggers' API key
   roles/monitoring.editor                # the alert that emails on a failed build
+  roles/logging.configWriter             # ...and its Logging notification rule
 )
 log "Granting project roles"
 for role in "${ROLES[@]}"; do

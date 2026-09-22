@@ -241,8 +241,9 @@ const secretVersion = (name: string) =>
 // that does not mention logging at all.
 const buildOptions = {
     logging: "CLOUD_LOGGING_ONLY",
-    // The apply trigger passes no _PR. Without this, an unreferenced
-    // substitution fails the build rather than being ignored.
+    // The filters below read the webhook payload into substitutions that no
+    // build step consumes. Without this, an unreferenced substitution fails the
+    // build rather than being ignored.
     substitutionOption: "ALLOW_LOOSE",
 };
 
@@ -388,6 +389,13 @@ const previewTrigger = new gcp.cloudbuild.Trigger(
         description: "Pull request: build the image, preview the stack, comment.",
         serviceAccount: triggerServiceAccount,
         webhookConfig: { secret: secretVersion("github-webhook-secret") },
+        // A webhook trigger's filter sees its SUBSTITUTIONS, not the payload:
+        // `body` is undeclared there and a filter naming it is rejected at
+        // create time with "undeclared reference to 'body'". Payload bindings
+        // are a substitution feature, so anything the filter tests has to be
+        // lifted into one first — which is why three of the four below are read
+        // and then never used by a build step.
+        //
         // Three clauses, and only the first is about noise. GitHub sends every
         // pull_request action, and these three are the ones that change what
         // would be deployed — without that, labelling a pull request would run
@@ -398,15 +406,17 @@ const previewTrigger = new gcp.cloudbuild.Trigger(
         // credentials, so it must never check out a commit an outsider chose:
         // the head has to live in this repository, not a fork. GitHub Actions
         // got the equivalent for free by withholding secrets from fork runs.
-        filter: [
-            'body.action in ["opened", "synchronize", "reopened"]',
-            `body.repository.full_name == "${repoSlug}"`,
-            "body.pull_request.head.repo.full_name == body.repository.full_name",
-        ].join(" && "),
         substitutions: {
             _SHA: "$(body.pull_request.head.sha)",
-            _PR: "$(body.pull_request.number)",
+            _ACTION: "$(body.action)",
+            _BASE_REPO: "$(body.repository.full_name)",
+            _HEAD_REPO: "$(body.pull_request.head.repo.full_name)",
         },
+        filter: [
+            '_ACTION in ["opened", "synchronize", "reopened"]',
+            `_BASE_REPO == "${repoSlug}"`,
+            "_HEAD_REPO == _BASE_REPO",
+        ].join(" && "),
         build: pipelineBuild("preview"),
     },
     { dependsOn: services },
@@ -421,13 +431,17 @@ const applyTrigger = new gcp.cloudbuild.Trigger(
         description: "Push to main: build and push the image, then apply the stack.",
         serviceAccount: triggerServiceAccount,
         webhookConfig: { secret: secretVersion("github-webhook-secret") },
-        filter: [
-            'body.ref == "refs/heads/main"',
-            `body.repository.full_name == "${repoSlug}"`,
-        ].join(" && "),
+        // Same rule as the preview trigger: the filter tests substitutions,
+        // never `body`.
         substitutions: {
             _SHA: "$(body.after)",
+            _REF: "$(body.ref)",
+            _BASE_REPO: "$(body.repository.full_name)",
         },
+        filter: [
+            '_REF == "refs/heads/main"',
+            `_BASE_REPO == "${repoSlug}"`,
+        ].join(" && "),
         build: pipelineBuild("apply"),
     },
     { dependsOn: services },
@@ -500,6 +514,12 @@ if (!alertEmail) {
                     },
                 },
             ],
+            // Creating this needs roles/logging.configWriter as well as the
+            // monitoring roles, because a log-based policy also creates a
+            // Logging notification rule behind the scenes. The channel above
+            // succeeds on monitoring.editor alone, so a missing configWriter
+            // fails here and only here.
+            //
             // Required for a log-based policy, and wanted anyway: a build that
             // fails in three steps logs more than one matching line, and three
             // emails about one build teaches people to filter the alert.
