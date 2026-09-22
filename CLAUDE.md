@@ -123,6 +123,13 @@ log's *tail* in its summary. A step that never ran is reported as "did not run",
 The one failure that cannot summarise itself is a failed clone, since `report.sh` lives in the
 repository it would have cloned.
 
+**`scripts/setup-cloud-build.sh` has to run before the Cloud Build branch is merged, not after.**
+Merging is what applies the stack, and the apply fails without it: the deployer lacks
+`cloudbuild.builds.editor`, `serviceusage.apiKeysAdmin` and `monitoring.editor`, and each trigger's
+`webhookConfig` names a `github-webhook-secret` version that does not exist yet. A `pulumi preview`
+passes in both cases, because it plans rather than creates — so a green preview is not evidence the
+apply will succeed.
+
 **`.github/workflows/infra.yml` is still there and still applies on main.** That is temporary and
 deliberate: the triggers are Pulumi resources, so something has to apply the stack that creates
 them. It goes once a Cloud Build preview and apply have both gone green. The WIF section of

@@ -282,13 +282,33 @@ If GitHub goes away entirely, this is the piece to port, and it is the easy piec
 
 ## Standing up the pipeline
 
-`scripts/setup-cloud-build.sh`, once per project, in Cloud Shell. It creates only what
-Pulumi cannot: the APIs, the deployer's two extra roles, and three Secret Manager secrets
-— because a secret *value* cannot live in code, and because the deploy key has to exist
-before the first build can clone anything at all. Same boundary `bootstrap.sh` draws.
+**`scripts/setup-cloud-build.sh` runs before this branch is merged, not after.** That
+ordering is not a preference — merging is what applies the stack, and the apply fails
+without the script having run first, in two separate ways:
 
-Then: apply the stack, add the deploy key and the two webhooks to GitHub, and open a pull
-request to watch a preview run. `scripts/print-webhooks.sh` prints the URLs.
+- The deployer does not yet hold `cloudbuild.builds.editor`, `serviceusage.apiKeysAdmin`
+  or `monitoring.editor`, so it cannot create the trigger, the API key or the alert.
+- Each trigger's `webhookConfig` names a version of `github-webhook-secret`, and a
+  trigger cannot be created against a secret that does not exist.
+
+A `pulumi preview` passes in both cases — it plans, it does not create — so a green
+preview on the pull request is **not** evidence the apply will succeed. That is exactly
+what the preview on this change looked like.
+
+The script, once per project, in Cloud Shell. It creates only what Pulumi cannot: the
+APIs, the deployer's three extra roles, and two Secret Manager secrets — because a secret
+*value* cannot live in code, and because the deploy key has to exist before the first
+build can clone anything at all. Same boundary `bootstrap.sh` draws.
+
+Then, in order:
+
+1. `PROJECT_ID=saijo-power-meter ./scripts/setup-cloud-build.sh` — **before merging.**
+2. Merge. `infra.yml` applies, creating the triggers, the API key and the alert.
+3. Add the deploy key to GitHub, with write access **unchecked**, and the two webhooks
+   that `scripts/print-webhooks.sh` prints.
+4. Click the Cloud Monitoring confirmation email. The channel is created happily and
+   delivers nothing until it is verified, and looks healthy either way.
+5. Open a pull request touching `infra/` and watch a Cloud Build preview run.
 
 ## The cutover
 
@@ -301,5 +321,5 @@ Once a Cloud Build preview and a Cloud Build apply have both succeeded, delete
 `.github/workflows/infra.yml` and the five `GCP_*` repository variables.
 
 The Workload Identity Federation section of `bootstrap.sh` **stays**, which is a change of
-plan: it is what a log-pulling workflow authenticates through, now pointed at the
-read-only `build-log-reader` account rather than the deployer.
+plan: it is what both log workflows authenticate through, pointed at the read-only
+`power-meter-log-reader` account rather than the deployer.
