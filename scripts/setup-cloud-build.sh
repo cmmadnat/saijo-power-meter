@@ -53,12 +53,14 @@ gcloud services enable \
   monitoring.googleapis.com \
   --project "$PROJECT_ID"
 
-# The deployer already holds everything a deploy needs. These three are about
+# The deployer already holds everything a deploy needs. These four are about
 # declaring the pipeline itself: creating triggers, creating the API key without
 # which a webhook trigger's URL is not callable, and creating the alert that
-# emails when a build fails.
-log "Granting the deployer the three pipeline roles"
-for role in roles/cloudbuild.builds.editor roles/serviceusage.apiKeysAdmin roles/monitoring.editor; do
+# emails when a build fails — which takes two roles, not one, because a
+# log-based alert policy also creates a Logging notification rule, and
+# monitoring.editor does not cover that.
+log "Granting the deployer the four pipeline roles"
+for role in roles/cloudbuild.builds.editor roles/serviceusage.apiKeysAdmin roles/monitoring.editor roles/logging.configWriter; do
   gcloud projects add-iam-policy-binding "$PROJECT_ID" \
     --member "serviceAccount:${SA_EMAIL}" \
     --role "$role" \

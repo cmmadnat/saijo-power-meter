@@ -194,6 +194,16 @@ No single clause covers every way a run ends badly:
 `PIPELINE_VERDICT=FAILED` is a marker, not prose. Rewording it to read more nicely silently
 disables the first clause, which is why `ci/report.sh` says so at the line that prints it.
 
+### The two roles it takes, not one
+
+A log-based alert policy also creates a **Logging notification rule** behind the scenes, so
+creating one needs `roles/logging.configWriter` on top of the monitoring roles. The
+notification channel succeeds on `monitoring.editor` alone, which makes this a confusing
+failure to read: the channel appears, the policy does not, and the error names
+`logging.notificationRules.create` rather than anything about alerting.
+
+`scripts/setup-cloud-build.sh` grants both.
+
 ### Turning it on
 
 The address lives in `infra/Pulumi.dev.yaml` as `saijo-power-meter:alertEmail`, and is
@@ -223,8 +233,15 @@ a webhook is a webhook.
 Two rules replace it, both in the trigger filters in `infra/index.ts`:
 
 - The pull request head must live in this repository, not a fork
-  (`body.pull_request.head.repo.full_name == body.repository.full_name`).
-- The payload must name this repository (`body.repository.full_name == "<slug>"`).
+  (`_HEAD_REPO == _BASE_REPO`).
+- The payload must name this repository (`_BASE_REPO == "<slug>"`).
+
+Those read as substitutions rather than payload paths because **a webhook trigger's filter
+sees its substitutions, not the payload.** `body` is undeclared in that CEL environment,
+and a filter naming it is rejected at create time with `undeclared reference to 'body'` —
+payload bindings are a substitution feature. So anything the filter tests is lifted into a
+substitution first, which is why the triggers declare several that no build step consumes.
+That, in turn, is why `substitutionOption: ALLOW_LOOSE` is not optional here.
 
 And the clone step uses the *configured* repository slug, never a name read out of the
 payload — a payload is attacker-controlled the moment a webhook URL leaks, and that is the

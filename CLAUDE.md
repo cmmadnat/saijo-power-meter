@@ -133,6 +133,19 @@ log's *tail* in its summary. A step that never ran is reported as "did not run",
 The one failure that cannot summarise itself is a failed clone, since `report.sh` lives in the
 repository it would have cloned.
 
+**A webhook trigger's `filter` sees its substitutions, not the payload.** `body` is undeclared
+in that CEL environment, and a filter naming it is rejected at create time with `undeclared
+reference to 'body'` — payload bindings are a substitution feature. So each trigger lifts what
+its filter tests (`_ACTION`, `_BASE_REPO`, `_HEAD_REPO`, `_REF`) into a substitution no build step
+consumes, which is why `substitutionOption: ALLOW_LOOSE` is required rather than tidy. Do not
+"simplify" a filter back to `body.*`; it cost a failed apply to learn.
+
+**The build-failure alert takes two roles, not one.** A log-based alert policy also creates a
+Logging notification rule, so it needs `roles/logging.configWriter` alongside
+`roles/monitoring.editor`. The notification channel succeeds on the monitoring role alone, so the
+failure reads oddly: the channel appears, the policy does not, and the error names
+`logging.notificationRules.create`.
+
 **`scripts/setup-cloud-build.sh` has to run before the Cloud Build branch is merged, not after.**
 Merging is what applies the stack, and the apply fails without it: the deployer lacks
 `cloudbuild.builds.editor`, `serviceusage.apiKeysAdmin` and `monitoring.editor`, and each trigger's
