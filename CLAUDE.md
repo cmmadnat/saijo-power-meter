@@ -37,7 +37,7 @@ against a local broker replaying those fixtures.
 | `.github/workflows/logs.yml` | Reads the Cloud Run service's logs, on dispatch or a `/logs` comment. Runs no Pulumi and holds a read-only identity. |
 | `.github/workflows/build-logs.yml` | Reads a Cloud Build run's status and log, on dispatch or a `/buildlog` comment. Same identity. |
 | `docs/architecture/delivery-pipeline.md` | Why builds run on Cloud Build, and what that cost. |
-| `docs/architecture/warehouse.md` | The three BigQuery tables, the migration rules, and what has never been run. |
+| `docs/architecture/warehouse.md` | The three BigQuery tables, the migration rules, and what has been run against the project. |
 | `docs/architecture/ingester.md` | The ingester: why it is a singleton, what a failure costs, and what is still unproven. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
 | `docs/requirements/` | The frozen spec: the MQTT protocol, the meter registry, and the four screens. |
@@ -382,9 +382,19 @@ remain. Do not quietly settle one from inference; it takes a captured payload.
 `packages/infrastructure/src/warehouse`. That line is the same one `bootstrap.sh` draws for the state
 bucket — a container that must exist before anything can run is infrastructure, what goes inside it
 is the application's own shape. Retention is a table setting (a 14-day partition expiry), so it lives
-with the DDL and there is no cleanup job. `docs/architecture/warehouse.md` has the rest. The tables
-now exist in `saijo-power-meter` and the pipeline's `migrate` step applies the migrations, so the
-hand-run `migrate` is a development command rather than the deployment path.
+with the DDL and there is no cleanup job. **Dataset and tables both exist**, applied and migrated on
+2026-09-22 — `migrate` twice (the second applied nothing), `settings` reading the 14-day expiry back
+off both readings tables, a two-hour fixture load, and `verify` matching all 55 History rows between
+the fixtures and the warehouse. The pipeline's `migrate` step now applies them, so the hand-run
+command is for development rather than for deployment. `docs/architecture/warehouse.md` has the
+evidence and the two things that follow from it — chiefly that **the fixtures are still in those
+tables** and want dropping before real readings land beside them.
+
+**BigQuery's parser is the one reviewer the fake client cannot stand in for.** `at` was a column name
+here until BigQuery rejected it as a reserved keyword on the first real `migrate` — after review, a
+full suite against the fake, and a green preview. A test now checks every migration's column names
+against GoogleSQL's reserved list. Treat any DDL change the same way: the credential-free tests say
+the code is consistent, never that the SQL is legal.
 
 **`warehouse reset` exists because a fixture row and a real row are indistinguishable.** `load`
 writes synthetic readings into the same three tables the ingester writes real ones into, and no
@@ -429,11 +439,21 @@ warehouse and not the broker. Do not add a third exemption.
 **`apps/ingester/tools/capture.ts` is how a real payload gets read, and it is not an exemption.**
 It is not the ingester: it subscribes, prints the raw integers and writes nothing, so there is
 nothing behind it to corrupt. It connects with a random client id — never the ingester's fixed one,
-which would evict a running ingester — and with a clean session at QoS 0. It cannot run from a
-cloud session: there is no egress on 1883 or 8883 here, and **the workbook has no broker hostname**
-(its `MQTT Server` tab has the HiveMQ username, password and console login, and no cluster
-address). Ask the customer for the address, run it where TCP is allowed, and the output settles
-active power on a running meter; energy still needs that meter's display reading.
+which would evict a running ingester — and with a clean session at QoS 0. It reads the address and
+credentials from **`reference doc/mqtt`**, which the customer supplied on 2026-09-22 (the workbook
+itself never carried a hostname). Run it where TCP is allowed and its output settles active power on
+a running meter; energy still needs that meter's display reading.
+
+**A cloud session cannot reach that broker, and it is a blocked host rather than a blocked port.**
+The egress proxy establishes a `CONNECT` tunnel to 8883, 8884 and 443 and then resets during the TLS
+handshake, while the same tunnel completes one to `api.github.com`. Its README says to report a
+policy denial rather than route around it, so do not go looking for a way through — run the capture
+from a laptop or Cloud Shell instead.
+
+**Those credentials are committed in plaintext and are in git history.** Rotate them before go-live
+and put the new values in the `mqtt-broker-*` Secret Manager secrets, not back in a tracked file:
+rotation is then a secret version plus a restart rather than a commit. Deleting the file does not
+undo the exposure.
 
 **Exactly one ingester, and it is three things rather than a setting.** `min-instances=1,
 max-instances=1`; a fixed MQTT client id, so a broker evicts the older session when a new revision

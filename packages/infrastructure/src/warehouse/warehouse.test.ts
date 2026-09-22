@@ -29,8 +29,8 @@ import {
   WarehouseLatestReadingStore,
   WarehouseReadingRepository,
 } from "./repository.ts";
+import { partitionSettings, resetWarehouse, runMigrations } from "./runner.ts";
 import { WarehouseReadingWriter } from "./writer.ts";
-import { resetWarehouse, runMigrations } from "./runner.ts";
 import {
   readingToRow,
   rowToReading,
@@ -76,13 +76,13 @@ class FakeWarehouse implements WarehouseClient {
     const matching = this.rows(TABLES.readings)
       .filter((row) => row["meter_id"] === params?.["meterId"])
       .filter((row) => {
-        const at = new Date(row["at"] as string).getTime();
+        const at = new Date(row["reading_at"] as string).getTime();
         return at >= from && at < to;
       })
       .sort(
         (a, b) =>
-          new Date(a["at"] as string).getTime() -
-          new Date(b["at"] as string).getTime(),
+          new Date(a["reading_at"] as string).getTime() -
+          new Date(b["reading_at"] as string).getTime(),
       );
     for (const row of matching) yield wrap(row) as Row;
   }
@@ -117,7 +117,7 @@ function wrap(row: Record<string, unknown>): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(row)) {
     out[key] =
-      (key === "at" || key.endsWith("_at") || key === "minute") &&
+      (key.endsWith("_at") || key === "minute") &&
       typeof value === "string"
         ? { value }
         : value;
@@ -163,6 +163,64 @@ test("raw and rollup carry the retention policy and the partition filter", () =>
   const latest = ddl.find((sql) => sql.includes(`{{dataset}}.${TABLES.latest}`));
   assert.ok(latest);
   assert.doesNotMatch(latest, /partition_expiration_days|PARTITION BY/);
+});
+
+/**
+ * GoogleSQL's reserved keywords. A column named for one of these is a syntax
+ * error unless it is backtick-quoted everywhere it appears — which is a rule
+ * nobody remembers on the fourth query. This test is here because `at` got
+ * through review, through a full unit-test suite against a fake client, and
+ * through a green `pulumi preview`, and was caught only by BigQuery itself on
+ * the first real `migrate`.
+ */
+const RESERVED = new Set(
+  `ALL AND ANY ARRAY AS ASC ASSERT_ROWS_MODIFIED AT BETWEEN BY CASE CAST
+   COLLATE CONTAINS CREATE CROSS CUBE CURRENT DEFAULT DEFINE DESC DISTINCT
+   ELSE END ENUM ESCAPE EXCEPT EXCLUDE EXISTS EXTRACT FALSE FETCH FOLLOWING
+   FOR FROM FULL GROUP GROUPING GROUPS HASH HAVING IF IGNORE IN INNER
+   INTERSECT INTERVAL INTO IS JOIN LATERAL LEFT LIKE LIMIT LOOKUP MERGE
+   NATURAL NEW NO NOT NULL NULLS OF ON OR ORDER OUTER OVER PARTITION
+   PRECEDING PROTO RANGE RECURSIVE RESPECT RIGHT ROLLUP ROWS SELECT SET SOME
+   STRUCT TABLESAMPLE THEN TO TREAT TRUE UNBOUNDED UNION UNNEST USING WHEN
+   WHERE WINDOW WITH WITHIN`
+    .split(/\s+/)
+    .filter(Boolean),
+);
+
+/** `  <name> <TYPE>` at the start of a column definition line. */
+const COLUMN = /^\s+([A-Za-z_][A-Za-z0-9_]*)\s+(STRING|TIMESTAMP|DATE|DATETIME|TIME|FLOAT64|INT64|NUMERIC|BIGNUMERIC|BOOL|BYTES|JSON)\b/gm;
+
+test("no column is named for a reserved keyword", () => {
+  const columns = new Set<string>();
+  for (const migration of MIGRATIONS) {
+    for (const statement of migration.statements) {
+      for (const match of statement.matchAll(COLUMN)) {
+        if (match[1] !== undefined) columns.add(match[1]);
+      }
+    }
+  }
+
+  assert.ok(columns.size > 0, "found no column definitions to check");
+  const offenders = [...columns].filter((name) =>
+    RESERVED.has(name.toUpperCase()),
+  );
+  assert.deepEqual(
+    offenders,
+    [],
+    `reserved in GoogleSQL, so unusable unquoted: ${offenders.join(", ")}`,
+  );
+});
+
+test("the readings table is partitioned on the column it actually has", () => {
+  // The partition expression names a column, and a rename that misses it makes
+  // a table that cannot be created — the same failure class as the reserved
+  // word, one line further down.
+  const ddl = MIGRATIONS.flatMap((m) => m.statements).find((sql) =>
+    sql.includes(`{{dataset}}.${TABLES.readings}`),
+  );
+  assert.ok(ddl);
+  assert.match(ddl, /PARTITION BY DATE\(reading_at\)/);
+  assert.match(ddl, /^\s+reading_at TIMESTAMP NOT NULL/m);
 });
 
 test("a checksum covers the statements, not the dataset it is rendered against", () => {
@@ -252,6 +310,28 @@ test("a dry run records nothing", async () => {
   assert.equal((await runMigrations(client, TARGET)).applied.length, MIGRATIONS.length);
 });
 
+test("settings reports a table that carries neither option", async () => {
+  // The join returns a row with both option columns null for `latest`. It has
+  // to come back as a table with no expiry, not vanish from the report.
+  const client: WarehouseClient = {
+    async query<Row>() {
+      return [
+        { table_name: "readings", option_name: "partition_expiration_days", option_value: "14" },
+        { table_name: "readings", option_name: "require_partition_filter", option_value: "true" },
+        { table_name: "latest", option_name: null, option_value: null },
+      ] as Row[];
+    },
+    async *stream<Row>(): AsyncIterable<Row> {},
+    async load() { return 0; },
+    async replace() { return 0; },
+  };
+
+  assert.deepEqual(await partitionSettings(client, TARGET), [
+    { table: "latest", expirationDays: null, requirePartitionFilter: false },
+    { table: "readings", expirationDays: 14, requirePartitionFilter: true },
+  ]);
+});
+
 // --- rows --------------------------------------------------------------------
 
 test("a reading survives the round trip to a row and back", () => {
@@ -299,8 +379,8 @@ test("every readings query carries the partition filter the table demands", asyn
 
   assert.equal(client.statements.length, 2, "one query per meter");
   for (const sql of client.statements) {
-    assert.match(sql, /DATE\(at\) BETWEEN DATE\(@from\) AND DATE\(@to\)/);
-    assert.match(sql, /ORDER BY at/);
+    assert.match(sql, /DATE\(reading_at\) BETWEEN DATE\(@from\) AND DATE\(@to\)/);
+    assert.match(sql, /ORDER BY reading_at/);
   }
 });
 
@@ -374,11 +454,13 @@ test("the ingester's writer puts raw and rollup in one batch, and rewrites lates
     client.rows(TABLES.rollup).length,
     rollupReadings(readings).length,
   );
-  // `ingested_at` is the flush, `at` is the reading: the gap between them is
-  // how a replayed or late batch is told from a live one after the fact.
+  // `ingested_at` is the flush, `reading_at` is the reading: the gap between
+  // them is how a replayed or late batch is told from a live one after the
+  // fact. (`reading_at`, not `at` — AT is reserved in GoogleSQL.)
   const [row] = client.rows(TABLES.readings);
   assert.equal(row?.["ingested_at"], ingestedAt.toISOString());
-  assert.notEqual(row?.["at"], row?.["ingested_at"]);
+  assert.equal(row?.["reading_at"], readings[0]?.at.toISOString());
+  assert.notEqual(row?.["reading_at"], row?.["ingested_at"]);
 
   await writer.replaceLatest(readings.slice(0, 3));
   assert.equal(client.rows(TABLES.latest).length, 3);

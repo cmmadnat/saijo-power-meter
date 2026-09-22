@@ -151,22 +151,51 @@ The alternative considered and rejected was a `source` column distinguishing fix
 real ones. It is a migration, it costs a column on ~9.7 M rows, and it makes "is this real" a
 filter every query has to remember rather than a property of the dataset.
 
-## What has been run, and what has not
+## What has been run, and against what
 
-This session holds no Google Cloud credentials, by design (CLAUDE.md), so nothing below was done
-from here. What has been done against `saijo-power-meter`, by hand: the dataset and all three
-tables exist and are migrated, two hours of fixtures were loaded, and `verify` matched all 55
-History rows. That answers what step 6 left open about BigQuery's opinion of the DDL and about
-`load` and `verify`.
+**All of it, once, against `saijo-power-meter` on 2026-09-22.** The dataset came
+from the step 6 apply — which is also what proved the deployer's
+`roles/bigquery.admin`, since a `pulumi preview` plans rather than creates and
+passes over a missing role. The tables came from `migrate`, run by hand: nothing
+in the delivery pipeline runs it, and that stays true until step 7 needs it.
 
-Still unrun:
+What that run established, in order:
 
-- **`settings`** — the partition expiry and the required partition filter have not been read back
-  from `INFORMATION_SCHEMA`, so they are what the DDL asked for rather than what the database says.
-- **The `migrate` step in the pipeline** has never executed. It is declared in `infra/index.ts` and
-  implemented in `ci/migrate.sh`; the first pull request touching `infra/` runs its dry run.
-- **The fixture rows are still there.** Two hours of synthetic readings, expiring fourteen days
-  from the load. `reset` before the first real ingest — see above.
+- **The DDL parses.** It did not at first. `at` is a reserved keyword in
+  GoogleSQL, and BigQuery rejected migration `0001` on its first statement —
+  after the column had passed review, a full suite against the fake client, and
+  a green preview. It is `reading_at` now, and a test asserts no column in any
+  migration is named for a reserved word. Nothing that runs without credentials
+  knows what BigQuery's parser will refuse; that test is the closest substitute.
+- **The migrations are idempotent.** A second `migrate` applied nothing.
+- **Retention is real.** `settings` read `partition_expiration_days = 14` and
+  `require_partition_filter` back off `readings` and `readings_1m`, and neither
+  off `latest`.
+- **The load path works.** A two-hour window loaded 41 730 readings, 6 314
+  rollup rows and 55 `latest` rows. Those reconcile: 6.61 readings per rollup
+  bucket against 60/9 = 6.67 at the real publish rate, the shortfall being the
+  offline-profile meters that stop partway through the window.
+- **The adapter is faithful.** `verify` ran `historyTable` over the same window
+  twice, once against the fixtures in memory and once against what BigQuery
+  returned, and all 55 rows agreed on total energy, running time and reading
+  count.
+
+Two things follow from that run and are worth knowing:
+
+- **The fixtures are still in the tables.** They sit in `readings` and
+  `readings_1m` until their partitions expire 14 days on. Step 7 gave that its
+  command — `reset --yes` then `migrate`, see *Emptying it* above — and it has
+  to be run before the first real reading is written, or the warehouse holds
+  synthetic and real data with nothing telling them apart.
+- **`load` and `verify` must be given the same window.** Fixture load is a
+  function of absolute time, so the same window is the same readings — but a
+  window ending "now" ends at a different instant in each command. `load` prints
+  the exact window it used as the `verify` line to paste.
+
+- **The `migrate` step in the pipeline has never executed.** Step 7 declared it
+  in `infra/index.ts` and implemented it in `ci/migrate.sh`; the first pull
+  request touching `infra/` runs its dry run, and the merge that follows runs
+  the real one.
 
 The commands:
 
@@ -174,15 +203,20 @@ The commands:
 npm run warehouse -w @power-meter/infrastructure -- sql
 npm run warehouse -w @power-meter/infrastructure -- migrate --dry-run
 npm run warehouse -w @power-meter/infrastructure -- migrate
-npm run warehouse -w @power-meter/infrastructure -- load --hours 24
-npm run warehouse -w @power-meter/infrastructure -- verify --hours 24
 npm run warehouse -w @power-meter/infrastructure -- settings
+npm run warehouse -w @power-meter/infrastructure -- load --hours 2
+npm run warehouse -w @power-meter/infrastructure -- verify --from <T> --to <T>
 npm run warehouse -w @power-meter/infrastructure -- reset --yes
 ```
 
-`settings` reads `INFORMATION_SCHEMA.TABLE_OPTIONS` and prints each table's expiry and partition
-filter, because "partition expiry is set, not assumed" can only be answered by asking the database:
-a table created without the option looks identical to the DDL that was meant to carry it.
+`settings` joins `INFORMATION_SCHEMA.TABLES` to `TABLE_OPTIONS` and prints every table's expiry and
+partition filter, because "partition expiry is set, not assumed" can only be answered by asking the
+database: a table created without the option looks identical to the DDL that was meant to carry it.
+It reads from `TABLES` rather than from the options alone so that a table with neither option — 
+`latest` — is reported as having neither, rather than being absent and indistinguishable from a
+table that was never created.
+
+`verify` needs the window `load` printed, not `--hours`; see above.
 
 **The delivery pipeline runs `migrate` now.** It is the `migrate` step, between `image` and
 `pulumi`, so migrations are applied before the revision that depends on them — CLAUDE.md's rule.

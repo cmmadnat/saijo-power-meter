@@ -116,10 +116,14 @@ and writes nothing anywhere else. There is no warehouse behind it for a wrong di
 which is why it is not an exemption to the gate — it never goes through it.
 
 ```bash
-MQTT_URL='mqtts://<cluster>.s1.eu.hivemq.cloud:8883' \
-MQTT_USERNAME='...' MQTT_PASSWORD='...' \
 npm run capture -w @power-meter/ingester -- --messages 9 --out capture.jsonl
 ```
+
+It reads the address and the credentials from `reference doc/mqtt`, which the customer supplied on
+2026-09-22 — so there is nothing to export and no password on a command line, where it would land
+in a shell history. `MQTT_URL`, `MQTT_USERNAME` and `MQTT_PASSWORD` override the file, and
+`--creds <path>` points at a different one. The file gives the host without a scheme; the tool
+reads that as `mqtts://host:8883`, because a HiveMQ Cloud cluster has no plain 1883 to mean.
 
 Two properties are deliberate. It connects with a **random client id**, never
 `power-meter-ingester`: a diagnostic that evicted the running ingester would be worse than no
@@ -132,12 +136,18 @@ that settles active power arithmetically, because V, I and PF are pinned indepen
 not settled that way — a counter has nothing in the payload to cross-check against, so it still
 takes one meter's own display reading at a known moment.
 
-**Two things stop this being run from a Claude cloud session.** There is no egress on 1883 or 8883
-— only HTTPS through an agent proxy, and a `CONNECT` to either port fails — so it has to run from a
-laptop, Cloud Shell or the factory network. And **the customer's workbook has no broker address**:
-its `MQTT Server` tab carries a HiveMQ username and password and a Gmail login for the HiveMQ
-console, and no cluster hostname anywhere. HiveMQ Cloud hostnames are per-cluster and random, so
-that has to be asked for.
+**It cannot run from a Claude cloud session, and the reason is now precise.** The egress policy does
+not allow that host on any port. A `CONNECT` tunnel is established to 8883, 8884 and 443 alike and
+then reset during the TLS handshake, where the same tunnel completes a handshake to `api.github.com`
+without trouble; the proxy's own log records `ws_closed_mid_exchange` against the cluster after 39
+bytes come back. So this is not an MQTT-port restriction to work around — it is a blocked host, and
+the proxy's README is explicit that a policy denial is reported rather than routed around. Run the
+capture from a laptop, Cloud Shell or the factory network.
+
+**The credentials are in the repository, in plaintext, and that is now in git history.** They should
+be rotated before go-live, and the new values belong in the `mqtt-broker-*` secrets rather than back
+in a tracked file — rotation is then a secret version and a restart, not a commit. Deleting the file
+does not undo the exposure; only rotating does.
 
 ## Running it locally
 

@@ -8,9 +8,12 @@
  * and saves them. That is why it is allowed to point at the real broker while
  * `apps/ingester` is not: there is nothing here for a wrong divisor to corrupt.
  *
- *     MQTT_URL='mqtts://<cluster>.s1.eu.hivemq.cloud:8883' \
- *     MQTT_USERNAME='...' MQTT_PASSWORD='...' \
  *     npm run capture -w @power-meter/ingester -- --messages 9 --out capture.jsonl
+ *
+ * It reads the address and the credentials from `reference doc/mqtt`, which the
+ * customer supplied, so there is nothing to export and no password on a command
+ * line. `MQTT_URL`, `MQTT_USERNAME` and `MQTT_PASSWORD` override it, and
+ * `--creds <path>` points at a different file.
  *
  * **Run it from somewhere with plain outbound TCP.** A Claude cloud session has
  * no egress on 1883 or 8883 — only HTTPS through an agent proxy — so this will
@@ -42,7 +45,8 @@
  * Energy still needs one meter's own display reading at a known moment, because
  * a counter cannot be cross-checked against anything else in the payload.
  */
-import { appendFile } from "node:fs/promises";
+import { appendFile, readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import process from "node:process";
 import mqtt from "mqtt";
 import { MeterRegistry } from "@power-meter/domain";
@@ -53,13 +57,70 @@ function arg(name: string, fallback: string): string {
   return index === -1 ? fallback : (process.argv[index + 1] ?? fallback);
 }
 
-const url = process.env["MQTT_URL"];
-if (url === undefined || url === "") {
+/**
+ * Credentials, from the file the customer supplied or from the environment.
+ *
+ * `reference doc/mqtt` holds `USERNAME`, `PASSWORD` and three forms of the
+ * cluster address. Reading it here means nobody has to copy a password onto a
+ * command line, where it lands in a shell history — and the environment still
+ * wins, so a rotated credential that is not in the file is one export away.
+ */
+async function credentials(path: string): Promise<Record<string, string>> {
+  try {
+    const text = await readFile(path, "utf8");
+    return Object.fromEntries(
+      text
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line !== "" && !line.startsWith("#") && line.includes("="))
+        .map((line) => {
+          const at = line.indexOf("=");
+          return [line.slice(0, at).trim(), line.slice(at + 1).trim()];
+        }),
+    );
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Resolved against the repository root, not the working directory: `npm run
+ * capture -w @power-meter/ingester` runs with the workspace as its cwd, and a
+ * path that only works from one of the two places is a path that will be wrong
+ * half the time.
+ */
+const DEFAULT_CREDS = fileURLToPath(
+  new URL("../../../reference doc/mqtt", import.meta.url),
+);
+
+const file = await credentials(arg("creds", DEFAULT_CREDS));
+
+/**
+ * The address, as a URL with a scheme.
+ *
+ * The supplied file gives `host`, `host:8883` and `host:8884/mqtt` without one,
+ * because HiveMQ's console prints them that way. TLS on 8883 is the default
+ * here: plain 1883 is not open on a HiveMQ Cloud cluster at all, so a bare host
+ * can only mean `mqtts://`.
+ */
+function brokerUrl(): string | undefined {
+  const explicit = process.env["MQTT_URL"];
+  const raw = explicit ?? file["TLS_MQTT_URL"] ?? file["MQTT_URL"];
+  if (raw === undefined || raw === "") return undefined;
+  if (/^[a-z]+:\/\//.test(raw)) return raw;
+  return `mqtts://${raw.includes(":") ? raw : `${raw}:8883`}`;
+}
+
+const url = brokerUrl();
+if (url === undefined) {
   throw new Error(
-    "MQTT_URL is required — the HiveMQ cluster address, which the customer's " +
-      "workbook does not contain. Ask for it alongside the credentials.",
+    "No broker address. Put one in MQTT_URL, or point --creds at a file with " +
+      "MQTT_URL / TLS_MQTT_URL in it (the default is `reference doc/mqtt`).",
   );
 }
+
+const username = process.env["MQTT_USERNAME"] ?? file["USERNAME"];
+const password = process.env["MQTT_PASSWORD"] ?? file["PASSWORD"];
 
 const wanted = Number(arg("messages", "9"));
 const out = arg("out", "");
@@ -81,15 +142,13 @@ const client = mqtt.connect(url, {
   protocolVersion: process.env["MQTT_PROTOCOL_VERSION"] === "4" ? 4 : 5,
   connectTimeout: 20_000,
   reconnectPeriod: 0,
-  ...(process.env["MQTT_USERNAME"] === undefined
-    ? {}
-    : { username: process.env["MQTT_USERNAME"] }),
-  ...(process.env["MQTT_PASSWORD"] === undefined
-    ? {}
-    : { password: process.env["MQTT_PASSWORD"] }),
+  ...(username === undefined ? {} : { username }),
+  ...(password === undefined ? {} : { password }),
 });
 
 let seen = 0;
+
+log(`connecting to ${url} as ${username ?? "(no username)"}`);
 
 client.on("connect", () => {
   log(`connected; subscribing to ${topics.length} topic(s), waiting for ${wanted} message(s)`);

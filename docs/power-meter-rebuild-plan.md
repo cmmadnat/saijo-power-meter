@@ -343,10 +343,23 @@ History over the warehouse matches History over the fixtures for all 55 rows. `n
 green across the workspace (108 tests), the web build is unchanged, and the BigQuery SDK stays out
 of its 58 MB standalone output because the client is imported dynamically.
 
-*Not verified, and it needs a project:* no statement has been submitted to BigQuery, so its opinion
-of the DDL is unasked; `load`, `verify` and `settings` have never run; and the existing project's
-deployer has not been granted `roles/bigquery.admin`, without which the apply fails. Nothing in the
-pipeline runs `migrate` — that belongs with step 7, where something first depends on the tables.
+*Applied and migrated, 2026-09-22.* The dataset, the API and the two bindings went in on the apply
+after #24 — which is what proved the deployer's `roles/bigquery.admin`, a preview having planned
+rather than created. The tables followed from `migrate`, run by hand.
+
+*Verified against the project:* a second `migrate` applied nothing; `settings` read
+`partition_expiration_days = 14` and `require_partition_filter` back off both readings tables and
+neither off `latest`; a two-hour load wrote 41 730 readings, 6 314 rollup rows and 55 `latest` rows,
+which reconcile at 6.61 readings per bucket against 60/9 expected; and `verify` matched all 55
+History rows between the fixtures and the warehouse.
+
+*What that run cost, and it is the lesson of the step:* the DDL did not parse the first time. `at` is
+reserved in GoogleSQL, and it had passed review, 54 tests against the fake client and a green
+preview. A test now checks every column name against the reserved list. **Nothing that runs without
+credentials knows what BigQuery's parser will refuse.**
+
+*Left behind:* the fixtures are still in the tables and expire in 14 days. Drop and re-migrate before
+step 7 writes real readings, or the warehouse holds both with nothing telling them apart.
 
 ### Step 7 — MQTT ingester — **built, and connected to nothing**
 **Still gated on open questions 1 and 2.** The service exists, it is verified against a local
@@ -405,15 +418,15 @@ the takeover path driven through a fake broker — 33 tests in the app, 144 acro
 
 *Not verified, and each for a reason:*
 
-- **No real broker, and no real payload.** Two things block it beyond the gate, and both were
-  checked rather than assumed: the customer's workbook has **no broker hostname** — its
-  `MQTT Server` tab carries a HiveMQ username, a password and a Gmail console login, and no
-  cluster address, which for HiveMQ Cloud is random per cluster — and a Claude cloud session has
-  **no egress on 1883 or 8883**, only HTTPS through an agent proxy. `apps/ingester/tools/capture.ts`
-  is what to run once the address arrives, from a laptop or Cloud Shell: it subscribes, prints the
-  raw integers and writes nothing. Its output settles active power on a running meter, because V,
-  I and PF are pinned independently and `3 x V x I x PF` is what `M<n>P` has to agree with; energy
-  still needs that meter's own display reading.
+- **No real broker, and no real payload.** The address and credentials arrived on 2026-09-22 in
+  `reference doc/mqtt`, and `apps/ingester/tools/capture.ts` reads them — but **this session's
+  egress policy does not allow that host**. A `CONNECT` tunnel is established to 8883, 8884 and 443
+  and then reset during the TLS handshake, where the same tunnel handshakes with `api.github.com`
+  fine, so it is a blocked host and not a blocked port. Run the capture from a laptop, Cloud Shell
+  or the factory network: it subscribes, prints the raw integers and writes nothing. Its output
+  settles active power on a running meter, because V, I and PF are pinned independently and
+  `3 x V x I x PF` is what `M<n>P` has to agree with; energy still needs that meter's own display
+  reading.
 - **The takeover has never run against MQTT 5.** aedes speaks 3.1.1 only, where there is no reason
   code. Running two ingesters against it shows exactly the flap the guard removes — each evicting
   the other every ~5 s — which is the evidence that the guard is needed, not that it works.
@@ -638,7 +651,9 @@ cannot settle it:
   will tolerate both, but it is worth knowing which.
 
 **What settles all of it in one shot:** one real captured payload from a meter that is running, plus
-that meter's own display reading at the same moment.
+that meter's own display reading at the same moment. The broker's address and credentials arrived on
+2026-09-22 and `npm run capture -w @power-meter/ingester` is pointed at them; it has to be run from
+somewhere whose network allows that host, which a Claude cloud session does not.
 
 Steps 0–6 do not need it — fixtures are synthetic and the scale factors live in one constants table.
 **Step 7 is gated on it**, because wrong scaling silently corrupts every row it writes and no
