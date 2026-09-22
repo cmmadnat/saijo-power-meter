@@ -109,11 +109,21 @@ would need is **84.83**. Scaling `I` by 100 instead moves both sides together an
 ratio. The workbook's filler failed the same test by a factor of 2.016, so the two fakes are not
 even the same fake.
 
-**What is still wanted:** a capture taken while real machines are running, in which the meters on
-one station *differ from each other*, plus one of those meters' own display reading at the same
-moment. The first settles active power arithmetically; the second is the only thing that can settle
-energy, which has nothing in the payload to check against. Worth asking the customer in the same
-breath whether these topics are being fed by the meters yet or by a test publisher.
+**Confirmed by the customer, 2026-09-22: those topics are a test publisher, put up as a rough
+idea. The meters are not publishing yet.** That changes what the open question is. It is no longer
+"capture a payload" — any number of captures off this broker will say the same thing, because a
+simulator cannot know what divisor the real device applies. It is **when the meters go live**, and
+until they do the scaling cannot be settled by anyone.
+
+Two consequences worth stating plainly:
+
+- **A better simulator would not help and could hurt.** Asking for physically coherent test data
+  would make `3 x V x I x PF` agree with `M<n>P` by construction, which proves the arithmetic in
+  the *publisher*, not the divisor in the meter. The one thing that settles it is a real device.
+- **What to ask for, when the meters are wired:** a capture while machines are running — the tell
+  is meters on one station differing from each other — plus one of those meters' own display
+  reading at the same moment. The first settles active power arithmetically. The second is the only
+  thing that can settle energy, which has nothing in the payload to check against.
 
 ## Scaling
 

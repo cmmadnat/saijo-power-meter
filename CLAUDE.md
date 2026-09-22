@@ -377,8 +377,12 @@ identity is positional with the uncommissioned tail simply absent, and that the 
 topics work. It also confirmed the registry: every station publishes exactly its commissioned
 slots, 5/5/8/7/7/6/7/6/4, station for station. It did not confirm any scaling — all 55 slots across
 all nine topics carried the *same* values, and V, I and PF imply 63.07 kW where `M<n>P` reads 53.50
-kW, a factor of 1.179 that no power of ten reconciles. Treat what is on those topics today as a test
-publisher until the customer says otherwise. `apps/ingester/capture.jsonl` is the capture;
+kW, a factor of 1.179 that no power of ten reconciles. **The customer confirms those topics are a test
+publisher, put up as a rough idea; the meters are not publishing yet.** So no further capture can
+settle the divisors — a simulator cannot know what scaling the real device applies — and asking for
+*better* test data would be worse than useless, because coherent synthetic numbers prove the
+publisher's arithmetic and say nothing about the meter's. The blocker is now a date: when the meters
+go live. `apps/ingester/capture.jsonl` is the capture;
 `docs/requirements/power-meter-mqtt.md` has the arithmetic.
 
 **Retained messages are not replayed to the ingester, and that was found the hard way.** Those nine

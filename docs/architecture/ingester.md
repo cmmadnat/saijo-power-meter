@@ -21,6 +21,8 @@ this page and it is not a technical one.
 | `apps/ingester/tools/replay.ts` | A broker on loopback replaying the fixtures at 60 msg/min. |
 | `apps/ingester/tools/reconcile.ts` | Checks a run's rollup against the raw readings behind it. |
 | `apps/ingester/tools/capture.ts` | Reads the real broker, prints raw payloads, writes nothing. |
+| `apps/ingester/tools/takeover.ts` | Two connections, one id: does HiveMQ send reason code 142? |
+| `apps/ingester/tools/broker-config.ts` | Where both of those read the address and credentials. |
 | `packages/infrastructure/src/warehouse/writer.ts` | The `ReadingWriter` port, backed by load jobs. |
 
 The decoder is **not** in this app. `StationDecoder` is imported from
@@ -198,6 +200,9 @@ rotated before go-live; a rotation is a new secret version plus a restart, not a
   environment are declared and unapplied.
 - **The takeover path has never run against a real MQTT 5 broker.** It is asserted against a fake
   in `service.test.ts`, and the local harness demonstrates the eviction it responds to, at 3.1.1,
-  where the reason code does not exist.
+  where the reason code does not exist. `tools/takeover.ts` closes this the moment someone runs it
+  from a network that can reach HiveMQ: it opens two connections under one *random* id — never the
+  ingester's — and reports whether the first is told reason code 142. It subscribes to nothing and
+  writes nothing, so it is safe against the live broker in the way the capture tool is.
 - **Nothing has measured cost per day**, which the plan asks for and which needs the service
   running.

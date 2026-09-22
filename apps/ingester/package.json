@@ -9,7 +9,8 @@
     "test": "node --test --experimental-strip-types \"src/**/*.test.ts\"",
     "replay": "node --experimental-strip-types tools/replay.ts",
     "reconcile": "node --experimental-strip-types tools/reconcile.ts",
-    "capture": "node --experimental-strip-types tools/capture.ts"
+    "capture": "node --experimental-strip-types tools/capture.ts",
+    "takeover": "node --experimental-strip-types tools/takeover.ts"
   },
   "dependencies": {
     "@power-meter/application": "*",

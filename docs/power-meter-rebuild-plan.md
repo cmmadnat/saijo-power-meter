@@ -629,6 +629,12 @@ Swapping BigQuery for Cloud SQL would put this at ~$25–40.
 **The one blocker left, and it is a customer question, not a technical one:** the scaling divisors
 for current, active power, PF and energy.
 
+**As of 2026-09-22 it is also a scheduling question.** The broker is live and the nine topics carry
+traffic, but the customer confirms that is a **test publisher, put up as a rough idea** — the meters
+are not publishing yet. So no capture can settle the divisors, however many are taken: a simulator
+cannot know what scaling the real device applies. The question is now *when the meters go live*, and
+step 7 waits on that rather than on an answer somebody could write down today.
+
 **Units are settled: active power is kW** (customer-confirmed). That narrows the question without
 closing it — 4995 raw would be ~5 MW, so the value is scaled, and the divisor is still unknown.
 

@@ -45,82 +45,19 @@
  * Energy still needs one meter's own display reading at a known moment, because
  * a counter cannot be cross-checked against anything else in the payload.
  */
-import { appendFile, readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { appendFile } from "node:fs/promises";
 import process from "node:process";
 import mqtt from "mqtt";
 import { MeterRegistry } from "@power-meter/domain";
 import { numericField, parseStationPayload, SCALES } from "@power-meter/infrastructure";
+import { brokerConfig, DEFAULT_CREDS } from "./broker-config.ts";
 
 function arg(name: string, fallback: string): string {
   const index = process.argv.indexOf(`--${name}`);
   return index === -1 ? fallback : (process.argv[index + 1] ?? fallback);
 }
 
-/**
- * Credentials, from the file the customer supplied or from the environment.
- *
- * `reference doc/mqtt` holds `USERNAME`, `PASSWORD` and three forms of the
- * cluster address. Reading it here means nobody has to copy a password onto a
- * command line, where it lands in a shell history — and the environment still
- * wins, so a rotated credential that is not in the file is one export away.
- */
-async function credentials(path: string): Promise<Record<string, string>> {
-  try {
-    const text = await readFile(path, "utf8");
-    return Object.fromEntries(
-      text
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line !== "" && !line.startsWith("#") && line.includes("="))
-        .map((line) => {
-          const at = line.indexOf("=");
-          return [line.slice(0, at).trim(), line.slice(at + 1).trim()];
-        }),
-    );
-  } catch {
-    return {};
-  }
-}
-
-/**
- * Resolved against the repository root, not the working directory: `npm run
- * capture -w @power-meter/ingester` runs with the workspace as its cwd, and a
- * path that only works from one of the two places is a path that will be wrong
- * half the time.
- */
-const DEFAULT_CREDS = fileURLToPath(
-  new URL("../../../reference doc/mqtt", import.meta.url),
-);
-
-const file = await credentials(arg("creds", DEFAULT_CREDS));
-
-/**
- * The address, as a URL with a scheme.
- *
- * The supplied file gives `host`, `host:8883` and `host:8884/mqtt` without one,
- * because HiveMQ's console prints them that way. TLS on 8883 is the default
- * here: plain 1883 is not open on a HiveMQ Cloud cluster at all, so a bare host
- * can only mean `mqtts://`.
- */
-function brokerUrl(): string | undefined {
-  const explicit = process.env["MQTT_URL"];
-  const raw = explicit ?? file["TLS_MQTT_URL"] ?? file["MQTT_URL"];
-  if (raw === undefined || raw === "") return undefined;
-  if (/^[a-z]+:\/\//.test(raw)) return raw;
-  return `mqtts://${raw.includes(":") ? raw : `${raw}:8883`}`;
-}
-
-const url = brokerUrl();
-if (url === undefined) {
-  throw new Error(
-    "No broker address. Put one in MQTT_URL, or point --creds at a file with " +
-      "MQTT_URL / TLS_MQTT_URL in it (the default is `reference doc/mqtt`).",
-  );
-}
-
-const username = process.env["MQTT_USERNAME"] ?? file["USERNAME"];
-const password = process.env["MQTT_PASSWORD"] ?? file["PASSWORD"];
+const { url, username, password } = await brokerConfig(arg("creds", DEFAULT_CREDS));
 
 const wanted = Number(arg("messages", "9"));
 const out = arg("out", "");
