@@ -23,14 +23,19 @@ on fixture data; no meter data flows yet.
 | --- | --- |
 | `infra/` | Pulumi program (TypeScript) — every Google Cloud resource except the bootstrap ones. |
 | `bootstrap.sh` | One-time, run in Cloud Shell. Creates only what Pulumi cannot create for itself. |
+| `scripts/setup-cloud-build.sh` | One-time, after `bootstrap.sh`. The pipeline's secrets and its two extra roles. |
+| `scripts/print-webhooks.sh` | Prints the two webhook URLs to paste into GitHub. |
+| `ci/` | What the Cloud Build steps run: `step.sh`, `image.sh`, `pulumi.sh`, `report.sh`. |
 | `packages/domain` | Entities and rules. Imports nothing. |
 | `packages/application` | Use cases and the port interfaces they need. Imports domain only. |
 | `packages/infrastructure` | Adapters: the MQTT payload decoder, the scale-factor table, fixture data. |
 | `apps/web` | Next.js + shadcn/ui frontend. Deployed to Cloud Run. |
 | `scripts/check-boundaries.mjs` | Enforces the dependency rule. Runs first in CI. |
 | `.github/workflows/check.yml` | Application checks. Holds no cloud credentials. |
-| `.github/workflows/infra.yml` | Builds and pushes the web image, then runs Pulumi. Preview on PR, apply on `main`. |
+| `.github/workflows/infra.yml` | Being retired. Applies the stack until a Cloud Build run has gone green. |
 | `.github/workflows/logs.yml` | Reads the Cloud Run service's logs, on dispatch or a `/logs` comment. Runs no Pulumi and holds a read-only identity. |
+| `.github/workflows/build-logs.yml` | Reads a Cloud Build run's status and log, on dispatch or a `/buildlog` comment. Same identity. |
+| `docs/architecture/delivery-pipeline.md` | Why builds run on Cloud Build, and what that cost. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
 | `docs/requirements/` | The frozen spec: the MQTT protocol, the meter registry, and the four screens. |
 | `reference doc/`, root `.xlsx` | Customer specifications — the source those requirements were read from. |
@@ -43,30 +48,42 @@ follows from that:
 
 **This session never holds Google Cloud credentials, and never applies infrastructure.** Claude
 edits the Pulumi program and typechecks it; a pull request gets a `pulumi preview` posted as a
-comment; merging to `main` applies it. CI authenticates with Workload Identity Federation, so no
-service-account key exists anywhere to leak.
+comment; merging to `main` applies it.
 
 So `pulumi up` is never the right command to reach for here, and a failed `pulumi preview` in-session
 is expected — it fails on missing credentials, not on a broken program. To see a real preview, open
 a PR.
 
-**Reading the running application's logs works the same way round.** The session cannot query Cloud
-Logging, so `.github/workflows/logs.yml` does it, authenticating as `power-meter-log-reader`, which
-holds `roles/logging.viewer` and nothing else. Claude reads the output back through the GitHub API,
-so "read the log" is a request that can be made here in chat — at the cost of a CI round trip per
-read, which is why the command takes a free-form filter and why one wide read beats several narrow
-ones.
+**Builds and deploys run on Cloud Build, not GitHub Actions**, so that GitHub is a git remote and
+nothing more: it holds a read-only deploy key and two webhooks, and no identity that can change this
+project. The reasoning, the three things this is worse at than the workflow was, and the cutover
+that is still pending are all in `docs/architecture/delivery-pipeline.md`; read it before touching
+the pipeline. The shape in one line: the trigger holds a thin inline build, step one clones the repo,
+and every later step runs a script from `ci/` in that clone — so pipeline logic is ordinary reviewed
+code and only its skeleton is a Pulumi resource.
 
-**A session cannot start it by dispatching it.** `workflow_dispatch` needs `actions: write`, and a
-session's GitHub token answers `403 Resource not accessible by integration` — measured, both before
-and after the workflow reached `main`, so it is the token and not the registration. What a session
-can do is comment, so the workflow also triggers on `issue_comment`:
+**Reading any log works the same way round: a workflow does it, and the output is read back through
+the GitHub API.** The session cannot query Google Cloud, so two workflows do, both authenticating as
+`power-meter-log-reader` — one account holding `roles/logging.viewer` and
+`roles/cloudbuild.builds.viewer` and nothing else, so neither job can deploy.
+
+- `.github/workflows/logs.yml` — the running app. "What is the deployed service doing."
+- `.github/workflows/build-logs.yml` — a Cloud Build run, its status and full log. "Why did the
+  deploy fail."
+
+**A session cannot start either by dispatching it.** `workflow_dispatch` needs `actions: write`, and
+a session's GitHub token answers `403 Resource not accessible by integration` — measured, both
+before and after the workflow reached `main`, so it is the token and not the registration. What a
+session can do is comment, so both also trigger on `issue_comment`:
 
 ```
 /logs                    /logs 6h ERROR                    /logs freshness=2d -- textPayload:"ECONNREFUSED"
+/buildlog                /buildlog failed                  /buildlog sha=4f2c1ab mode=apply
 ```
 
-Issue #12 is the channel for those; any issue or PR works. Six things about this are deliberate:
+Issue #12 is the channel for those; any issue or PR works. Builds are tagged with the commit they
+built, so a SHA is `/buildlog`'s handle; bare gives the most recent, and `failed` the last red one.
+Six things about this are deliberate:
 
 - **The guard is `author_association`** in `OWNER`/`MEMBER`/`COLLABORATOR`. Without it, anyone able
   to comment could start runs against the project. It cannot tell a session from its owner — a
@@ -74,26 +91,68 @@ Issue #12 is the channel for those; any issue or PR works. Six things about this
 - **The comment body is never interpolated into a `run:` block.** It reaches the parser through the
   environment, because `${{ github.event.comment.body }}` in a script is the standard way a comment
   becomes shell.
-- **It is a second service account, not a role on the deployer.** The deployer holds nine admin
-  roles; the value is that the logs job cannot deploy a revision, push an image or touch state.
-- **Its concurrency group is not `infra`**, or a log read would queue behind a deploy and a deploy
-  behind a log read.
-- **Admin-activity audit entries are excluded unless `audit=true`.** They share `resource.type` with
-  the service's own output, so a plain read returns Pulumi's deploy calls — ~100 lines of JSON each —
-  in place of application logs. (`roles/logging.viewer` excludes *data-access* logs, not these.)
-- **The one-line-per-entry rendering is printed last, after the JSON.** A reader is handed the tail
-  of the run log and entries are newest-first, so whatever prints last is what a question about what
-  just happened actually reaches. Both renderings come from one jq expression so they cannot drift.
+- **It is a second service account, not a role on the deployer.** The deployer holds eleven admin
+  roles; the value is that a log read cannot deploy a revision, push an image or touch state.
+- **Their concurrency groups are not `infra`**, or a log read would queue behind a deploy and a
+  deploy behind a log read — least of all the read that explains why the deploy failed.
+- **`logs.yml` excludes admin-activity audit entries unless `audit=true`.** They share
+  `resource.type` with the service's own output, so a plain read returns Pulumi's deploy calls —
+  ~100 lines of JSON each — in place of application logs. (`roles/logging.viewer` excludes
+  *data-access* logs, not these.) `build-logs.yml` needs no equivalent: it reads one named build
+  through `gcloud builds log`, not a `resource.type` window.
+- **What matters is printed last.** A reader is handed the tail of the run log, so `logs.yml` puts
+  its one-line-per-entry rendering after the JSON — entries are newest-first, so the last thing
+  printed is what a question about what just happened reaches. `build-logs.yml` gets this for free
+  in the other direction: a build log is oldest-first and `ci/report.sh` writes the verdict at the
+  very end, which is why its step summary shows the log's tail.
 
-Every read also copies application log lines into the Actions run log, which has its own retention
-and audience — worth revisiting when real meter data and the passcode gate land.
+Neither trigger works from a branch: `issue_comment` always runs the default branch's copy, so a
+change to either workflow does nothing until it is merged. Every read also copies log lines into the
+Actions run log, which has its own retention and audience — worth revisiting when real meter data
+and the passcode gate land.
 
-**CI is the only thing that runs Pulumi at all.** That invariant is what makes the workflow's
-concurrency group (repo-wide, not per-ref) sufficient to keep two runs off one state object. Two
-things in `.github/workflows/infra.yml` look like they could be simplified and must not be: the
-concurrency group stays repo-wide, and stack creation stays on `pulumi stack ls` rather than
-`stack select`, because selecting a stack that does not exist takes a lock in the state bucket and
-abandons it. Both cost a failed apply to learn.
+**Nothing reports a Cloud Build result back to *GitHub*, and that is the standing gap.** A webhook
+trigger posts no check, no status and no comment, so a pull request whose deploy failed looks
+entirely clean on GitHub. The absence of a red mark is not evidence the deploy worked — comment
+`/buildlog failed` and look. Do not widen the reader account to close this; a reporting path into
+GitHub would be a separate decision with a separate credential.
+
+**A failed build does announce itself by email, through Cloud Monitoring.** Cloud Build has no
+built-in setting for it; the alternative was Pub/Sub plus a notifier service holding SMTP
+credentials. `infra/index.ts` declares a log-based alert policy instead, matching three things —
+`PIPELINE_VERDICT=FAILED` (`ci/report.sh`'s own marker, which is a marker and not prose, so do not
+reword it), `ERROR: build step` (a failed clone, which `report.sh` cannot report), and a timeout.
+The address is `saijo-power-meter:alertEmail` in `Pulumi.dev.yaml`, and the channel delivers nothing
+until the confirmation email Cloud Monitoring sends has been clicked.
+
+**`ci/step.sh` and `ci/report.sh` exist because Cloud Build has no `if: always()`.** Every real step
+runs under the wrapper, which captures its output and swallows its exit code; the report step then
+always runs, ends the log with a step-by-step verdict and the last 80 lines of whatever failed, and
+exits non-zero itself so a red build reads as red. That ordering is why `build-logs.yml` shows the
+log's *tail* in its summary. A step that never ran is reported as "did not run", never as a pass.
+The one failure that cannot summarise itself is a failed clone, since `report.sh` lives in the
+repository it would have cloned.
+
+**`scripts/setup-cloud-build.sh` has to run before the Cloud Build branch is merged, not after.**
+Merging is what applies the stack, and the apply fails without it: the deployer lacks
+`cloudbuild.builds.editor`, `serviceusage.apiKeysAdmin` and `monitoring.editor`, and each trigger's
+`webhookConfig` names a `github-webhook-secret` version that does not exist yet. A `pulumi preview`
+passes in both cases, because it plans rather than creates — so a green preview is not evidence the
+apply will succeed.
+
+**`.github/workflows/infra.yml` is still there and still applies on main.** That is temporary and
+deliberate: the triggers are Pulumi resources, so something has to apply the stack that creates
+them. It goes once a Cloud Build preview and apply have both gone green. The WIF section of
+`bootstrap.sh` stays — both log workflows authenticate through it. `check.yml` is staying too: it
+holds no cloud credentials, and moving it would blur the split that keeps a failing unit test from
+looking like a failing apply.
+
+**CI is the only thing that runs Pulumi at all.** Two things in `ci/pulumi.sh` look like they could
+be simplified and must not be: stack creation stays on `pulumi stack ls` rather than `stack select`,
+because selecting a stack that does not exist takes a lock in the state bucket and abandons it, and
+the lock retry stays, because Cloud Build has no concurrency group — it is what keeps a second run
+waiting rather than failing. The first cost a failed apply to learn; the second is what replaces the
+guarantee the workflow's repo-wide concurrency group used to give, and it is weaker.
 
 ## Commands
 

@@ -1,0 +1,290 @@
+name: build-logs
+
+# Reads a Cloud Build run — its status and its full log — and prints them into
+# this run's own log.
+#
+# Sibling of logs.yml, and the same trick for the same reason: a cloud session
+# holds no Google Cloud credentials (see CLAUDE.md), so the read happens here,
+# where Workload Identity Federation already provides a keyless identity, and
+# Claude dispatches the workflow and reads the output back through the GitHub
+# API.
+#
+# What it covers is the other half. logs.yml answers "what is the deployed app
+# doing"; this answers "why did the deploy fail" — a question nothing else can
+# answer, because a Cloud Build webhook trigger posts no check, no status and no
+# comment back to GitHub. Without this, a failed deploy leaves a pull request
+# looking entirely clean.
+#
+# Two ways in, for the reason logs.yml records: a session cannot dispatch.
+# workflow_dispatch needs `actions: write` and a session token answers 403
+# Resource not accessible by integration. Commenting it can do.
+#
+#   workflow_dispatch  — the Actions tab, for a human with the form.
+#   issue_comment      — a comment starting with /buildlog.
+#
+# Comment grammar, first line only:
+#
+#   /buildlog                       the most recent build
+#   /buildlog failed                the most recent build that did not succeed
+#   /buildlog 4f2c1ab               the build for that commit
+#   /buildlog sha=4f2c1ab mode=apply
+#   /buildlog build=abc-123-def     an exact build id
+#
+# A bare word is read as `failed`, as a mode, or as a commit SHA; anything else
+# takes key=value.
+#
+# Neither trigger works from a branch. workflow_dispatch is only offered for
+# workflows on the default branch, and issue_comment always runs the default
+# branch's copy — so a change to this file does nothing until it is merged.
+on:
+  workflow_dispatch:
+    inputs:
+      sha:
+        # The usual way in. Every build is tagged with the commit it built, so a
+        # commit is enough of a handle — nothing else about a webhook-triggered
+        # build is announced anywhere.
+        description: "Commit SHA to find the build for. Blank = most recent build."
+        type: string
+        default: ""
+      build_id:
+        description: "Exact build id. Overrides sha when given."
+        type: string
+        default: ""
+      mode:
+        description: "Which pipeline: preview (pull request) or apply (main)"
+        type: choice
+        default: any
+        options: [any, preview, apply]
+      failed_only:
+        description: "Only consider builds that did not succeed"
+        type: boolean
+        default: false
+  issue_comment:
+    types: [created]
+
+concurrency:
+  # Not the infra group, for the same reason logs.yml is not: that group is
+  # repo-wide and never cancels because every run of it touches one Pulumi state
+  # object. This job touches no shared state — and queueing a "why did the
+  # deploy fail" read behind the deploy that is failing would be exactly wrong.
+  group: build-logs
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # to mint the OIDC token for WIF
+  # No issues: write. The result goes to the run log and the step summary, not
+  # back into the thread — same as logs.yml.
+
+jobs:
+  read:
+    # The dispatch form, or a /buildlog comment from someone who can already
+    # change this repository. Same guard as logs.yml, and the same note applies:
+    # a session's comments are authored by the account that authorized it, so
+    # this permits the human and their sessions on equal terms, by design.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (startsWith(github.event.comment.body, '/buildlog') &&
+       contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+    steps:
+      # No checkout: nothing here reads a repository file.
+
+      # One place decides the four parameters, so the two triggers cannot drift
+      # into meaning different things. Everything arrives through the
+      # environment rather than interpolated into the script: a comment body is
+      # attacker-controlled in the general case — the guard above decides who
+      # may start the job, not what they may put in the text.
+      - name: Resolve parameters
+        id: params
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+          IN_SHA: ${{ inputs.sha }}
+          IN_BUILD_ID: ${{ inputs.build_id }}
+          IN_MODE: ${{ inputs.mode }}
+          IN_FAILED_ONLY: ${{ inputs.failed_only }}
+        run: |
+          python3 <<'PY'
+          import os, re, sys
+
+          DEFAULTS = {"sha": "", "build_id": "", "mode": "any", "failed_only": "false"}
+          MODES = {"any", "preview", "apply"}
+
+          def fail(message):
+              print(f"::error::{message}")
+              sys.exit(1)
+
+          values = dict(DEFAULTS)
+
+          if os.environ["EVENT_NAME"] == "workflow_dispatch":
+              for key in values:
+                  supplied = os.environ.get(f"IN_{key.upper()}", "").strip()
+                  if supplied:
+                      values[key] = supplied
+          else:
+              # First line only. A comment can carry prose under the command, and
+              # a /buildlog line inside a quoted reply should not silently start
+              # a different read.
+              line = os.environ.get("COMMENT_BODY", "").splitlines()[0].strip()
+              words = line.split()
+              # The job's `if` can only test a prefix, so "/buildlogs are slow"
+              # reaches here. Loud rather than silently reading the most recent
+              # build: a run that should not have started should look like one.
+              if not words or words[0] != "/buildlog":
+                  fail(f"{words[0] if words else '(empty)'!r} is not the /buildlog command.")
+              for word in words[1:]:
+                  key, sep, value = word.partition("=")
+                  if not sep:
+                      # Three positional forms, none mistakable for another: a
+                      # mode names itself, `failed` names itself, and a commit is
+                      # the only thing that is bare hex.
+                      if word.lower() == "failed":
+                          values["failed_only"] = "true"
+                      elif word.lower() in MODES:
+                          values["mode"] = word.lower()
+                      elif re.fullmatch(r"[0-9a-fA-F]{7,40}", word):
+                          values["sha"] = word
+                      else:
+                          fail(f"Cannot place {word!r}. Use a commit SHA, `failed`, "
+                               f"a mode (preview/apply), or sha=, build=, mode=.")
+                      continue
+                  if key == "build":
+                      key = "build_id"
+                  if key not in DEFAULTS:
+                      fail(f"Unknown parameter {key!r}. Allowed: sha, build, mode, failed_only.")
+                  values[key] = value
+
+          # Validated because these reach a command line as arguments, and
+          # because a typo should say so rather than read the wrong build and
+          # look like an answer.
+          if values["sha"] and not re.fullmatch(r"[0-9a-fA-F]{7,40}", values["sha"]):
+              fail(f"sha {values['sha']!r} is not a commit SHA.")
+          if values["build_id"] and not re.fullmatch(r"[0-9a-zA-Z-]{1,64}", values["build_id"]):
+              fail(f"build {values['build_id']!r} is not a build id.")
+          if values["mode"] not in MODES:
+              fail(f"mode {values['mode']!r} is not one of: {', '.join(sorted(MODES))}")
+          if values["failed_only"] not in {"true", "false"}:
+              fail(f"failed_only {values['failed_only']!r} is not true or false.")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              for key, value in values.items():
+                  out.write(f"{key}={value}\n")
+          for key, value in values.items():
+              print(f"{key}={value!r}")
+          PY
+
+      - uses: google-github-actions/auth@v2
+        id: auth
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          # The same read-only account logs.yml uses. It holds
+          # roles/logging.viewer and roles/cloudbuild.builds.viewer — enough to
+          # read a build and nothing else. Its address is deterministic rather
+          # than a sixth repository variable; infra/index.ts fixes the
+          # accountId, so changing it there means changing it here.
+          service_account: power-meter-log-reader@${{ vars.GCP_PROJECT_ID }}.iam.gserviceaccount.com
+
+      # The runner image ships gcloud, but the auth step only exports
+      # GOOGLE_APPLICATION_CREDENTIALS, which client libraries read and the CLI
+      # does not. This is what points the CLI at it.
+      - name: Activate the credential for gcloud
+        run: gcloud auth login --cred-file="${{ steps.auth.outputs.credentials_file_path }}" --quiet
+
+      - name: Read the build
+        env:
+          SHA: ${{ steps.params.outputs.sha }}
+          BUILD_ID: ${{ steps.params.outputs.build_id }}
+          MODE: ${{ steps.params.outputs.mode }}
+          FAILED_ONLY: ${{ steps.params.outputs.failed_only }}
+        run: |
+          set -euo pipefail
+
+          id="${BUILD_ID}"
+
+          if [ -z "${id}" ]; then
+            filter=""
+            if [ -n "${SHA}" ]; then
+              filter="tags=${SHA}"
+            fi
+            if [ "${MODE}" != "any" ]; then
+              [ -n "${filter}" ] && filter="${filter} AND "
+              filter="${filter}tags=${MODE}"
+            fi
+            if [ "${FAILED_ONLY}" = "true" ]; then
+              [ -n "${filter}" ] && filter="${filter} AND "
+              filter="${filter}status!=SUCCESS"
+            fi
+
+            echo "Looking for builds: ${filter:-(most recent)}"
+            id="$(gcloud builds list \
+              --project "${PROJECT_ID}" \
+              ${filter:+--filter "${filter}"} \
+              --limit 1 \
+              --sort-by '~createTime' \
+              --format 'value(id)')"
+          fi
+
+          if [ -z "${id}" ]; then
+            echo "No build matched."
+            echo "A webhook trigger only fires on a pull_request or a push to main, so a"
+            echo "commit that was never pushed as one has no build. Widen the filter, or"
+            echo "check that the webhooks are actually configured on the repository."
+            {
+              echo "### No build matched"
+              echo
+              echo "Nothing to read for \`${SHA:-latest}\` (mode: ${MODE})."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "Build: ${id}"
+          echo
+
+          # The record first: status, timing, and which commit it built. A log
+          # read that turns out to be of the wrong build is worse than no log.
+          gcloud builds describe "${id}" \
+            --project "${PROJECT_ID}" \
+            --format json > build.json
+
+          status="$(jq -r '.status' build.json)"
+          started="$(jq -r '.startTime // "?"' build.json)"
+          finished="$(jq -r '.finishTime // "(still running)"' build.json)"
+          tags="$(jq -r '(.tags // []) | join(", ")' build.json)"
+
+          echo "----- build (json) -----"
+          cat build.json
+          echo
+
+          echo "----- log -----"
+          # Cloud Build logs to Cloud Logging, not a bucket, so this reads
+          # through the Logging API and needs logging.viewer as well as
+          # cloudbuild.builds.viewer. A build still running has a partial log,
+          # which is fine and is worth saying rather than looking truncated.
+          gcloud builds log "${id}" --project "${PROJECT_ID}" > build.log 2>&1 || {
+            echo "Could not read the log for ${id}." | tee -a build.log
+          }
+          cat build.log
+
+          {
+            echo "### Build ${id} — ${status}"
+            echo
+            echo "- commit/tags: ${tags:-none}"
+            echo "- started: ${started}"
+            echo "- finished: ${finished}"
+            echo
+            echo '```'
+            # The tail, not the head. ci/report.sh puts the step verdict and the
+            # failing step's last lines at the very end of the log, so the last
+            # page is the page that says what went wrong.
+            tail -c 900000 build.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${status}" != "SUCCESS" ]; then
+            echo
+            echo "Build ${id} ended as ${status}."
+          fi
