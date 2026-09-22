@@ -3,6 +3,7 @@ import { Inter, JetBrains_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AppShell } from "@/components/app-shell";
 import { MeterRegistry } from "@power-meter/domain";
+import { provenance } from "@/lib/data-mode";
 import "./globals.css";
 
 // The Light Green theme names Inter (sans) and JetBrains Mono (mono) without
@@ -47,7 +48,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
         <ThemeProvider>
-          <AppShell fleet={fleet}>{children}</AppShell>
+          <AppShell fleet={fleet} badge={provenance().badge}>
+            {children}
+          </AppShell>
         </ThemeProvider>
       </body>
     </html>

@@ -69,8 +69,12 @@ Nothing else is on the page: no chart per row, no status column, no actions, no 
   answer "is the factory alright". Two additions were made, and both are flagged to the customer
   rather than assumed:
   - a **fleet strip** above the table — meters reporting out of 55 with one square per meter,
-    total load now, running against idle and silent, and the freshness split. Every figure is
-    derived from the same snapshot the table already holds; nothing here costs a second query.
+    total load now, running against idle and silent, and the freshness split — derived from the
+    same snapshot the table already holds. Step 8 added the two figures that need a window: a
+    **line of total load across the last hour** under "total load now", and **energy since 00:00**
+    across the fleet. Both come from the 1-minute rollup through the charts' own arithmetic, read at
+    most once a minute; "since the shift started" became "since 00:00" because the specification
+    defines no shifts, and 00:00 is also where History's default window opens.
     **Offline meters are excluded from the total load.** Their last reading stays on screen, but it
     is history, and adding an hour-old 90 kW to a figure labelled "now" would overstate the load by
     exactly the meters that have stopped reporting. The offline count sits beside it so the gap is

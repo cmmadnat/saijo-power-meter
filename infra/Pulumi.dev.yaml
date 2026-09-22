@@ -44,3 +44,9 @@ config:
   # divisors in packages/infrastructure/src/mqtt/scaling.ts and adds a version
   # to each of the three secrets.
   saijo-power-meter:deployIngester: "false"
+  # The web app's data mode: "demo" (fixtures, badged on every screen) or
+  # "live" (the ingester's hot state and the warehouse). Demo until the same
+  # change that flips deployIngester above: the program refuses "live" without
+  # the ingester, and the app refuses to boot in live mode while a scale divisor
+  # is still a guess. See apps/web/lib/data-mode.ts.
+  saijo-power-meter:dataMode: "demo"

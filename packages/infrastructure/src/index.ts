@@ -2,9 +2,14 @@
  * The infrastructure layer's public entry point.
  *
  * Adapters, not rules: the MQTT payload decoder with the scale factors it
- * applies, and the fixture data the screens are built against before a store
- * exists. Reach in through here, never through a deep path - the dependency
- * check fails the build on one.
+ * applies, the warehouse, the ingester's hot state over HTTP, and the file
+ * store the local replay writes. Reach in through here, never through a deep
+ * path - the dependency check fails the build on one.
+ *
+ * **Nothing synthetic is exported from here.** The fixture generator, the
+ * ports backed by it and the loader that replays it are at
+ * `@power-meter/infrastructure/fixtures`, a second entry point, so that the web
+ * app's live path can be shown by its import graph never to reach them.
  */
 export {
   decodeStationPayload,
@@ -22,31 +27,12 @@ export {
   type ScaleFactor,
   type ScaleTable,
 } from "./mqtt/scaling.ts";
-export {
-  defaultProfiles,
-  generateFixtures,
-  toStationPayload,
-  type FixtureOptions,
-  type FixtureSet,
-  type MeterProfile,
-} from "./fixtures/generate.ts";
-export {
-  FixtureLatestReadingStore,
-  FixtureReadingRepository,
-} from "./fixtures/repository.ts";
 export { bigQueryClient } from "./warehouse/client.ts";
 export type {
   BigQueryClientOptions,
   QueryParams,
   WarehouseClient,
 } from "./warehouse/client.ts";
-export {
-  loadFixtures,
-  verifyAgainstFixtures,
-  type LoadFixturesOptions,
-  type LoadReport,
-  type Verification,
-} from "./warehouse/loader.ts";
 export {
   MIGRATIONS,
   checksum as migrationChecksum,
@@ -57,7 +43,10 @@ export {
 export {
   WarehouseLatestReadingStore,
   WarehouseReadingRepository,
+  WarehouseRollupRepository,
+  type WarehouseRepositoryOptions,
 } from "./warehouse/repository.ts";
+export { CachedRollupRepository, type CacheOptions } from "./warehouse/cache.ts";
 export { WarehouseReadingWriter } from "./warehouse/writer.ts";
 export {
   partitionSettings,
@@ -73,3 +62,23 @@ export {
   tableRef,
   type WarehouseTarget,
 } from "./warehouse/schema.ts";
+export {
+  readingsFromLatest,
+  toLatestDto,
+  type LatestReadingDto,
+  type LatestResponse,
+} from "./hot-state/dto.ts";
+export {
+  IngesterLatestReadingStore,
+  metadataIdToken,
+  type IngesterClientOptions,
+  type TokenSource,
+} from "./hot-state/client.ts";
+export {
+  FILES as FILE_STORE_FILES,
+  FileLatestReadingStore,
+  FileReadingRepository,
+  FileReadingWriter,
+  FileRollupRepository,
+} from "./file-store/file-store.ts";
+export { isLoopbackUrl } from "./net.ts";

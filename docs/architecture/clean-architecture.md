@@ -38,6 +38,12 @@ outward, any third-party import in the inner layers, and any reach into a
 package through a deep path rather than its entry point. It runs first in
 `npm run verify` and first in the `check` workflow, before the slower checks.
 
+A package may declare more than one entry point in its `exports`, and a declared
+one is not a deep path. `@power-meter/infrastructure/fixtures` is the only such
+entry today: the fixture generator lives behind it so that a second check in the
+same script can walk the web app's import graph and prove live mode never reaches
+it — see `docs/architecture/data-modes.md`.
+
 A layering claim that nothing checks stops being true within a few pull
 requests. This one is checked.
 

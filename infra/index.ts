@@ -89,48 +89,6 @@ const webIdentity = new gcp.serviceaccount.Account(
     { dependsOn: services },
 );
 
-const web = new gcp.cloudrunv2.Service(
-    "web",
-    {
-        name: "power-meter-web",
-        location: region,
-        deletionProtection: false,
-        ingress: "INGRESS_TRAFFIC_ALL",
-        template: {
-            serviceAccount: webIdentity.email,
-            // Scales to zero: the web app is only running while someone is
-            // looking at it. The MQTT ingester, when it lands, is the opposite
-            // case and has to be pinned to exactly one always-on instance.
-            scaling: { minInstanceCount: 0, maxInstanceCount: 4 },
-            containers: [
-                {
-                    image: webImage,
-                    // Matches EXPOSE in web/Dockerfile. Cloud Run passes the
-                    // same number to the container as PORT, which the Next
-                    // standalone server reads.
-                    ports: { containerPort: 8080 },
-                    resources: {
-                        limits: { cpu: "1", memory: "512Mi" },
-                        cpuIdle: true,
-                    },
-                },
-            ],
-        },
-    },
-    { dependsOn: [images, ...services] },
-);
-
-// Public for now. There is nothing behind it but the shell and placeholder
-// screens: no meter data, no secrets. Step 9 puts the whole app behind a shared
-// passcode, at which point this stays public at the network edge and the
-// application does the gating.
-new gcp.cloudrunv2.ServiceIamMember("web-public", {
-    name: web.name,
-    location: web.location,
-    role: "roles/run.invoker",
-    member: "allUsers",
-});
-
 // --- The warehouse -----------------------------------------------------------
 //
 // The dataset is a Google Cloud resource, so it is declared here with
@@ -158,11 +116,9 @@ const warehouse = new gcp.bigquery.Dataset(
     { dependsOn: services },
 );
 
-// Read-only access for the web app, granted here because this is the step that
-// creates the thing to read. It cannot write, and it cannot see any other
-// dataset. Nothing in apps/web queries it yet — step 8 is what wires the three
-// fixture adapters over to the warehouse, and this is what makes that a code
-// change rather than a code change and an IAM change.
+// Read-only access for the web app. It cannot write, and it cannot see any
+// other dataset. Live mode reads the charts, the strip and History through it
+// (apps/web/lib/live-adapters.ts); demo mode never constructs a client.
 new gcp.bigquery.DatasetIamMember("web-warehouse-reader", {
     datasetId: warehouse.datasetId,
     role: "roles/bigquery.dataViewer",
@@ -364,6 +320,84 @@ function deployTheIngester(): gcp.cloudrunv2.Service {
 }
 
 const ingesterService = deployIngester ? deployTheIngester() : undefined;
+
+// --- The web service ---------------------------------------------------------
+//
+// Declared after the ingester because live mode needs the ingester's URL, and
+// the URL is only known once that service exists.
+//
+// `dataMode` is the one switch the web app reads (DATA_MODE, apps/web/lib/
+// data-mode.ts), and it is "demo" until the same change that flips
+// `deployIngester`. Two things make "live" impossible to set early by mistake:
+// this program refuses it without the ingester, and the app itself refuses to
+// boot in live mode while a scale divisor is a guess — a revision configured
+// that way would crash-loop and fail the apply, which is the same reason the
+// ingester sits behind its own flag.
+const dataMode = new pulumi.Config().get("dataMode") ?? "demo";
+if (dataMode !== "demo" && dataMode !== "live") {
+    throw new Error(`saijo-power-meter:dataMode must be "demo" or "live", not ${dataMode}.`);
+}
+if (dataMode === "live" && ingesterService === undefined) {
+    throw new Error(
+        "saijo-power-meter:dataMode is \"live\" but deployIngester is false. Live mode " +
+            "reads the real-time table from the ingester; flip both in the same change.",
+    );
+}
+
+const webEnvs = [
+    { name: "DATA_MODE", value: dataMode },
+    // The warehouse the charts, the strip and History read in live mode. Set in
+    // either mode: they are addresses, not credentials, and demo ignores them.
+    { name: "GOOGLE_PROJECT", value: warehouse.project },
+    { name: "WAREHOUSE_DATASET", value: warehouse.datasetId },
+    { name: "WAREHOUSE_LOCATION", value: region },
+    // The ingester is private; the web service's account holds run.invoker on
+    // it and mints an ID token with this URL as the audience.
+    ...(ingesterService ? [{ name: "INGESTER_URL", value: ingesterService.uri }] : []),
+];
+
+const web = new gcp.cloudrunv2.Service(
+    "web",
+    {
+        name: "power-meter-web",
+        location: region,
+        deletionProtection: false,
+        ingress: "INGRESS_TRAFFIC_ALL",
+        template: {
+            serviceAccount: webIdentity.email,
+            // Scales to zero: the web app is only running while someone is
+            // looking at it. The MQTT ingester, when it lands, is the opposite
+            // case and has to be pinned to exactly one always-on instance.
+            scaling: { minInstanceCount: 0, maxInstanceCount: 4 },
+            containers: [
+                {
+                    image: webImage,
+                    // Matches EXPOSE in web/Dockerfile. Cloud Run passes the
+                    // same number to the container as PORT, which the Next
+                    // standalone server reads.
+                    ports: { containerPort: 8080 },
+                    resources: {
+                        limits: { cpu: "1", memory: "512Mi" },
+                        cpuIdle: true,
+                    },
+                    envs: webEnvs,
+                },
+            ],
+        },
+    },
+    { dependsOn: [images, ...services, ...(ingesterService ? [ingesterService] : [])] },
+);
+
+// Public for now. There is nothing behind it but the shell and placeholder
+// screens: no meter data, no secrets. Step 9 puts the whole app behind a shared
+// passcode, at which point this stays public at the network edge and the
+// application does the gating.
+new gcp.cloudrunv2.ServiceIamMember("web-public", {
+    name: web.name,
+    location: web.location,
+    role: "roles/run.invoker",
+    member: "allUsers",
+});
 
 export const ingesterServiceAccount = ingesterIdentity.email;
 export const ingesterDeployed = deployIngester;

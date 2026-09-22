@@ -26,7 +26,7 @@ import { createServer, type Server, type Socket } from "node:net";
 import process from "node:process";
 import { Aedes, type Client, type Subscription } from "aedes";
 import { MeterRegistry, type Reading } from "@power-meter/domain";
-import { generateFixtures, toStationPayload } from "@power-meter/infrastructure";
+import { generateFixtures, toStationPayload } from "@power-meter/infrastructure/fixtures";
 
 function flag(name: string, fallback: number): number {
   const index = process.argv.indexOf(`--${name}`);

@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { MeterRegistry, type Meter, type MeterId, type Reading } from "@power-meter/domain";
-import type { ReadingRepository, TimeRange } from "./ports.ts";
+import type { ReadingRepository, RollupRepository, TimeRange } from "./ports.ts";
 import {
   bucketWidthMs,
   consumptionFrom,
   meterSeries,
   MIN_BUCKET_MS,
   rollupReadings,
+  type RollupBucket,
 } from "./series.ts";
 
 const FROM = new Date("2025-09-21T00:00:00.000Z");
@@ -364,4 +365,78 @@ test("a rollup at the chart's bucket width matches what the chart plots", async 
       point.energyKwh,
     ]),
   );
+});
+
+/** The rollup port over stored buckets, honouring the same ordering contract. */
+function rollupRepository(buckets: readonly RollupBucket[]): RollupRepository {
+  return {
+    async *bucketsInRange(meterIds: readonly MeterId[], range: TimeRange) {
+      for (const meterId of [...meterIds].sort()) {
+        for (const b of buckets.filter((x) => x.meterId === meterId)) {
+          const at = b.at.getTime();
+          if (at >= range.from.getTime() && at < range.to.getTime()) yield b;
+        }
+      }
+    },
+  };
+}
+
+test("the chart drawn from the stored rollup is the chart drawn from raw", async () => {
+  // Uneven arrivals, an idle stretch, a gap of several minutes and a counter
+  // reset, over three hours: the cases where a second definition of a bucket
+  // would drift. The window is minute-aligned, which is what the live source
+  // guarantees.
+  const readings: Reading[] = [];
+  let counter = 500;
+  for (let s = 0; s < 3 * 60 * 60; s += 7 + (s % 5)) {
+    if (s > 3_000 && s < 3_400) continue;
+    if (s === 6_004) counter = 2;
+    const kw = s % 900 < 300 ? 0.05 : 40 + (s % 13);
+    counter += kw * (7 / 3600);
+    readings.push(reading("s01m1", s * 1000, kw, counter));
+    if (s % 3 === 0) readings.push(reading("s01m2", s * 1000 + 500, kw / 2, counter / 3));
+  }
+  const meterIds = ["s01m1", "s01m2"] as MeterId[];
+  const stored = rollupReadings(readings);
+
+  for (const minutes of [60, 180, 7]) {
+    const window = range(minutes);
+    const raw = await meterSeries({ registry, repository: repository(readings), meterIds, range: window });
+    const rolled = await meterSeries({
+      registry,
+      repository: rollupRepository(stored),
+      meterIds,
+      range: window,
+    });
+    assert.equal(rolled.bucketMs, raw.bucketMs);
+    rolled.series.forEach((series, i) => {
+      series.points.forEach((point, j) => {
+        const expected = raw.series[i]?.points[j];
+        assert.ok(expected, `point ${j} of series ${i}`);
+        const close = (a: number | null, b: number | null) =>
+          a === null || b === null ? a === b : Math.abs(a - b) < 1e-9;
+        assert.ok(close(point.activePowerKw, expected.activePowerKw), `power at ${j} over ${minutes} min`);
+        assert.equal(point.energyKwh, expected.energyKwh);
+        assert.ok(close(point.energyConsumedKwh, expected.energyConsumedKwh), `consumed at ${j}`);
+      });
+    });
+  }
+});
+
+test("a stored minute is weighted by its readings, not counted as one", async () => {
+  // Two minutes in one two-minute bucket: 3 readings at 10 kW, 1 at 50 kW. The
+  // mean of the readings is 20; the mean of the two minute means would be 30.
+  const view = await meterSeries({
+    registry,
+    repository: rollupRepository([
+      { meterId: "s01m1" as MeterId, at: FROM, readingCount: 3, activePowerKw: 10, energyKwh: 1 },
+      { meterId: "s01m1" as MeterId, at: new Date(FROM.getTime() + 60_000), readingCount: 1, activePowerKw: 50, energyKwh: 2 },
+    ]),
+    meterIds: ["s01m1" as MeterId],
+    range: range(2),
+    maxPoints: 1,
+  });
+  assert.equal(view.bucketMs, 2 * MIN_BUCKET_MS);
+  assert.equal(view.series[0]?.points[0]?.activePowerKw, 20);
+  assert.equal(view.series[0]?.points[0]?.energyKwh, 2);
 });

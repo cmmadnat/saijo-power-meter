@@ -230,6 +230,28 @@ export function rowToReading(row: Record<string, unknown>): Reading {
   };
 }
 
+/** The `readings_1m` columns a query selects to rebuild a `RollupBucket`. */
+export const ROLLUP_COLUMNS = [
+  "meter_id",
+  "minute",
+  "reading_count",
+  "active_power_kw",
+  "energy_kwh",
+] as const;
+
+export function rowToBucket(row: Record<string, unknown>): RollupBucket {
+  if (typeof row["meter_id"] !== "string") {
+    throw new TypeError(`row has no meter_id: ${JSON.stringify(row)}`);
+  }
+  return {
+    meterId: row["meter_id"] as MeterId,
+    at: toDate(row["minute"]),
+    readingCount: number(row["reading_count"], "reading_count"),
+    activePowerKw: number(row["active_power_kw"], "active_power_kw"),
+    energyKwh: number(row["energy_kwh"], "energy_kwh"),
+  };
+}
+
 export function bucketToRow(bucket: RollupBucket): RollupRow {
   return {
     meter_id: bucket.meterId,

@@ -9,7 +9,8 @@ import {
   type RealtimeTableRow,
 } from "@/components/realtime-table";
 import { formatClock, formatClockMinutes } from "@/lib/format";
-import { realtimeSnapshot } from "@/lib/realtime-source";
+import { provenance } from "@/lib/data-mode";
+import { fleetTrendSnapshot, realtimeSnapshot } from "@/lib/realtime-source";
 import {
   chartSeries,
   MAX_SERIES,
@@ -32,9 +33,10 @@ export default async function RealTimePage(props: PageProps<"/">) {
   const selection = parseSelection(first(params.meters), registry);
   const windowId = parseWindow(first(params.window));
 
-  const [table, charts] = await Promise.all([
+  const [table, charts, trend] = await Promise.all([
     realtimeSnapshot(),
     chartSeries(registry, selection, windowId),
+    fleetTrendSnapshot(),
   ]);
 
   // Flattened here rather than in the components: the client is handed plain
@@ -92,7 +94,7 @@ export default async function RealTimePage(props: PageProps<"/">) {
           <h1 className="text-2xl font-semibold tracking-wide">Power Meter</h1>
         </div>
         <p className="font-mono text-xs text-muted-foreground">
-          Fixture data · no meter is connected yet
+          {provenance().line}
         </p>
       </header>
 
@@ -103,6 +105,14 @@ export default async function RealTimePage(props: PageProps<"/">) {
         meterCount={table.rows.length}
         statuses={table.rows.map((row) => row.status)}
         asOf={formatClock(table.at)}
+        energyTodayKwh={trend.energyTodayKwh}
+        energyMeters={trend.energyMeters}
+        energySince={formatClockMinutes(trend.dayStart)}
+        spark={trend.spark.map((point) => ({
+          label: formatClockMinutes(point.at),
+          kw: point.activePowerKw,
+          meters: point.meters,
+        }))}
       />
 
       {/*

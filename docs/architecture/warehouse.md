@@ -3,7 +3,8 @@
 Three tables in one BigQuery dataset, and a migration runner that puts them there.
 Written at step 6 of `docs/power-meter-rebuild-plan.md`. Step 7 added the write side — the
 `ReadingWriter` port and the ingester behind it — and wired `migrate` into the delivery pipeline.
-Nothing *reads* the tables yet; that is step 8.
+Step 8 added the read side the screens use: the web app's live mode reads `readings_1m` for the
+charts and the fleet strip and `readings` for History — see `docs/architecture/data-modes.md`.
 
 ## What is where
 
@@ -12,10 +13,12 @@ Nothing *reads* the tables yet; that is step 8.
 | `infra/index.ts` | The **dataset** — a Google Cloud resource, declared with the rest. |
 | `packages/infrastructure/src/warehouse/migrations.ts` | The **tables** — schema, not infrastructure. |
 | `packages/infrastructure/src/warehouse/runner.ts` | Applying them, and reading back what was applied. |
-| `packages/infrastructure/src/warehouse/repository.ts` | The two read ports, backed by the tables. |
+| `packages/infrastructure/src/warehouse/repository.ts` | The three read ports, backed by the tables. |
+| `packages/infrastructure/src/warehouse/cache.ts` | A rollup read remembered until the minute turns. |
+| `packages/infrastructure/src/warehouse/cost.ts` | `warehouse cost`: what the screens' reads process, bill and take. |
 | `packages/infrastructure/src/warehouse/writer.ts` | The write port: raw and rollup in one batch, `latest` replaced. |
 | `packages/infrastructure/src/warehouse/loader.ts` | Replaying the step-2 fixtures, and the equivalence check. |
-| `packages/infrastructure/src/warehouse/cli.ts` | `migrate`, `load`, `verify`, `settings`, `reset`. |
+| `packages/infrastructure/src/warehouse/cli.ts` | `migrate`, `load`, `verify`, `settings`, `reset`, `cost`. |
 
 The dataset/table line is the same one `bootstrap.sh` draws for the Pulumi state bucket: a
 container that has to exist before anything else can run is infrastructure; what goes inside it is
@@ -92,13 +95,24 @@ back at second resolution, a float that went through a string, readings that arr
 and turned a counter rise into a reset. The unit tests run that comparison against a fake client
 that stores rows as JSON the way a load job does; `warehouse verify` runs it against a real project.
 
-**One query per meter, not one per window.** The port's contract is "ordered by meter, then
-ascending in time", and a single `ORDER BY meter_id, at` over a fortnight of 55 meters is ~9.7 M
-rows through one sort, which BigQuery refuses rather than merely takes its time over. Per meter it
-is ~176 k rows and sorts in one slot. The cost is 55 round trips on the widest window, and that is
-a step-8 tuning question: the rollup exists to make wide windows cheap, and pointing the *chart*
-path at it is a change of table, not of arithmetic. History stays on raw, because running hours are
-read off the gaps between actual readings and a minute-resolution source would quietly round them.
+**History reads in batches of meters; the charts read the rollup.** Step 6 read raw one query per
+meter, because a single `ORDER BY meter_id, reading_at` over a fortnight of 55 meters is ~9.7 M rows
+through one sort, which BigQuery refuses. Step 8 found the other side of that trade: every query
+bills at least 10 MB, and at this table's size clustering on `meter_id` need not prune anything, so
+each of the 55 could scan the whole day. `metersPerQuery` now batches meters under a 750 000-row
+budget — one query for a day, eleven for a fortnight — and each batch streams in meter order.
+
+`WarehouseRollupRepository` implements the `RollupRepository` port over `readings_1m`, one query
+for every meter asked for, and the charts and the fleet strip read it. That is a change of table,
+not of arithmetic: `meterSeries` folds a stored minute into its buckets by the same three rules it
+folds a reading by, and a test draws the same chart both ways through this adapter. History stays
+on raw, because running hours are read off the gaps between actual readings and a
+minute-resolution source would quietly round them.
+
+**`warehouse cost` is how the price of those reads is measured.** It dry-runs the exact SQL the
+adapters issue — the strip, a 24-hour chart, today's History — prints the bytes each processes and
+what that bills, and times each through the adapters and use cases the web app runs. It needs
+credentials and has not been run; it is also the first time BigQuery will parse the step-8 SQL.
 
 ## Writing, from the ingester
 
@@ -124,8 +138,10 @@ buffer that DML cannot see.
 
 The BigQuery SDK is reached through a four-method `WarehouseClient` interface and imported
 **dynamically**. Everything above that interface is tested against a fake; and because the import is
-dynamic, `@google-cloud/bigquery` and its fifty-odd transitive packages stay out of the web app's
-traced standalone output until something in `apps/web` actually constructs a client.
+dynamic, `@google-cloud/bigquery` stayed out of the web app's build until something in `apps/web`
+constructed a client. Step 8's live mode is that something. Turbopack bundles the SDK into the
+server chunks rather than tracing its packages in, and the standalone output went from 58 MB to
+60 MB; a client constructed inside the production build reaches the credentials check.
 
 ## Emptying it, and why that command exists
 

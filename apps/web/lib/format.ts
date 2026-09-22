@@ -49,3 +49,20 @@ export function formatAge(ageMs: number | null): string {
   const hours = Math.floor(minutes / 60);
   return `${hours}h ${minutes % 60}m`;
 }
+
+const LOCAL_DAY = new Intl.DateTimeFormat("en-CA", {
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  timeZone: TIME_ZONE,
+});
+
+/**
+ * 00:00 Asia/Bangkok on the day containing `at`, as an instant.
+ *
+ * Bangkok is UTC+07:00 with no daylight saving, so appending the offset is
+ * exact — the same conversion History's pickers use.
+ */
+export function startOfDay(at: Date): Date {
+  return new Date(`${LOCAL_DAY.format(at)}T00:00:00+07:00`);
+}

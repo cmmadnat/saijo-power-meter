@@ -17,9 +17,10 @@ Built so far: the Google Cloud footprint as Pulumi code, the pipeline that build
 the frontend shell — scaffolded, themed, and deployed to Cloud Run so there is a live URL from the
 start — the domain model, the MQTT payload decoder and the fixture generator, all four specified
 screens (the 55-meter table, the kW and kWh charts, and History), the BigQuery warehouse behind the
-same ports, and the MQTT ingester. Every screen still runs on fixture data, and **the ingester has
-never connected to the customer's broker** — it is gated on the scaling question and verified
-against a local broker replaying those fixtures.
+same ports, the MQTT ingester, and the two data modes that put the screens on either. **Every
+deployment still runs `DATA_MODE=demo`**: live mode refuses to boot while the scaling divisors are
+guesses, and **the ingester has never connected to the customer's broker** — both are gated on the
+scaling question, and live mode is verified end to end against a local broker replaying fixtures.
 
 | Path | What it is |
 | --- | --- |
@@ -29,7 +30,7 @@ against a local broker replaying those fixtures.
 | `ci/` | What the Cloud Build steps run: `step.sh`, `image.sh`, `migrate.sh`, `pulumi.sh`, `report.sh`. |
 | `packages/domain` | Entities and rules. Imports nothing. |
 | `packages/application` | Use cases and the port interfaces they need. Imports domain only. |
-| `packages/infrastructure` | Adapters: the MQTT payload decoder, the scale-factor table, fixture data, the warehouse. |
+| `packages/infrastructure` | Adapters: the MQTT payload decoder, the scale-factor table, the warehouse, the ingester's `/latest` client, the replay's file store. Fixtures only via its second entry, `@power-meter/infrastructure/fixtures`. |
 | `apps/web` | Next.js + shadcn/ui frontend. Deployed to Cloud Run. |
 | `apps/ingester` | The MQTT ingester. Always-on, singleton, serves the hot state over HTTP. Declared but not deployed. |
 | `scripts/check-boundaries.mjs` | Enforces the dependency rule. Runs first in CI. |
@@ -39,6 +40,7 @@ against a local broker replaying those fixtures.
 | `docs/architecture/delivery-pipeline.md` | Why builds run on Cloud Build, and what that cost. |
 | `docs/architecture/warehouse.md` | The three BigQuery tables, the migration rules, and what has been run against the project. |
 | `docs/architecture/ingester.md` | The ingester: why it is a singleton, what a failure costs, and what is still unproven. |
+| `docs/architecture/data-modes.md` | `DATA_MODE`: the switch, the gate, the badge, which table each screen reads, and what the strip costs. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
 | `docs/requirements/` | The frozen spec: the MQTT protocol, the meter registry, and the four screens. |
 | `reference doc/`, root `.xlsx` | Customer specifications — the source those requirements were read from. |
@@ -193,6 +195,11 @@ npm run warehouse -w @power-meter/infrastructure -- reset --yes         # drop e
 npm run replay    -w @power-meter/ingester -- --minutes 7 --drop-at 120 --drop-for 40
 npm start         -w @power-meter/ingester      # needs MQTT_URL; docs/architecture/ingester.md
 npm run reconcile -w @power-meter/ingester -- --dir .ingester
+npm run warehouse -w @power-meter/infrastructure -- cost --runs 20      # what live mode's reads bill and take
+
+npm test -w @power-meter/web                    # the screens' sources against both adapter sets
+DATA_MODE=live INGESTER_URL=http://127.0.0.1:8099 WAREHOUSE=file WAREHOUSE_DIR=.ingester \
+  npm start -w @power-meter/web                 # live code path over the replay; badged "Local replay"
 
 cd infra && npm ci             # infra is deliberately NOT a workspace member
 cd infra && npm run typecheck  # tsc --noEmit — the only infra check that works without credentials
@@ -296,7 +303,7 @@ every chart on it read flat. Light Green grounds the page at `#fbfcf8` with whit
 `--status-live`, `--status-stale` and `--status-offline`, a reserved role that is never a
 categorical slot and never shared with chrome, checked against the card in both modes.
 
-Working in `apps/web` has two traps, both hit once already:
+Working in `apps/web` has these traps, each hit once already:
 
 - **`tsc --noEmit` alone fails on a clean checkout.** Next 16 generates the `LayoutProps` route
   types during a build, so `npm run typecheck` runs `next typegen` first. Use the script.
@@ -307,50 +314,77 @@ Working in `apps/web` has two traps, both hit once already:
   because `outputFileTracingRoot` points at the repository root so the workspace packages get
   traced in at all. There is no hoisted `node_modules` beside it — tracing puts everything under
   `apps/web`. The Dockerfile flattens this; changing either setting means re-checking it.
+- **The BigQuery SDK is bundled, not traced.** Live mode constructs a client, and Turbopack folds
+  `@google-cloud/bigquery` into the server chunks rather than adding it under `node_modules`
+  (standalone 58 → 60 MB at step 8). A "not in `node_modules`" check therefore says nothing about
+  whether it shipped; a client constructed inside the production build reaching the credentials
+  check does.
+- **`instrumentation.ts` exits the process** when the data-mode gate refuses. That is the boot
+  refusal, not a crash to debug — read the line above it.
 
-Steps 0–7 are done: the spec is frozen into `docs/requirements/` (including all four screens, in
+Steps 0–8 are done: the spec is frozen into `docs/requirements/` (including all four screens, in
 `power-meter-ui.md`), the shell is deployed, the domain model, decoder and fixtures are in place with
 tests, the Real time route carries screens 1–3 — the 55-meter table and the kW and kWh charts — and
 History carries screen 4, all on those fixtures. Step 6 added the warehouse behind those same ports —
 schema, migrations and a fixture loader. Step 7 added the ingester — `apps/ingester`, the
 `ReadingWriter` port behind it, the `migrate` step in the pipeline — built and verified against a
-local broker, gated on the customer, and deployed nowhere. Remaining, in order: wiring the screens
-to real data (which is also what first *reads* the warehouse), and the passcode gate.
+local broker, gated on the customer, and deployed nowhere. Step 8 put the screens on either data
+mode — the live adapters beside the fixture ones, one switch between them — and verified live mode
+against the replay; nothing in it has read BigQuery yet. Remaining: the passcode gate.
 
 **The screens read their data through three files, `apps/web/lib/realtime-source.ts`,
-`apps/web/lib/series-source.ts` and `apps/web/lib/history-source.ts`.** They are the only places
-that know the numbers are fixtures: everything above them goes through a use case in
-`packages/application` and a port. Step 8 replaces those three files, not the screens — keep it that
-way, and do not reach for `generateFixtures` from a component.
+`apps/web/lib/series-source.ts` and `apps/web/lib/history-source.ts`, and none of them knows the
+mode.** Each asks `apps/web/lib/data-mode.ts` for a `DataSource` and hands its ports to a use case in
+`packages/application`. Only `demo-adapters.ts` imports `@power-meter/infrastructure/fixtures`, and
+only `data-mode.ts` loads it, by dynamic import in the demo branch; `npm run boundaries` walks the web
+app's import graph and fails on any other route to a fixture. Do not reach for `generateFixtures`
+from a component, a page or a source file — the check will say so, with the chain.
 
 **The Real time route draws the strip and the two charts above the table, which inverts the
 mock-up.** The customer asked for it; `docs/requirements/power-meter-ui.md` records it as a
 deviation so a reviewer holding the PDF does not read it as a mistake. The 55-row table put both
 charts below the fold on every screen it was checked on.
 
-**There will be two data modes, `live` and `demo`, and step 8 must not delete the fixture path.**
-Step 8b in the plan is the decided shape: one `DATA_MODE` environment variable, read in one
-composition module in `apps/web/lib`, defaulting to `demo`; the three source files ask that module
-for a port and nothing above them learns which mode it is in; demo mode carries a permanent badge;
-live mode refuses to boot while `unconfirmedScales()` is non-empty. No per-source override — a
-half-live app is a bug generator.
+**There are two data modes, `live` and `demo`, and the fixture path is a shipped feature.** One
+`DATA_MODE`, read only in `apps/web/lib/data-mode.ts`: unset or empty is `demo`, anything but `live`
+or `demo` refuses to boot. Demo carries a badge in the header *and* pinned to the viewport on every
+route; live carries none. `DATA_MODE=live` refuses to boot while `unconfirmedScales()` is non-empty,
+naming the fields — `instrumentation.ts` exits — and its only exemption is the ingester's own,
+applied to the web side: an ingester on loopback *and* `WAREHOUSE=file`, which is the replay
+harness and is badged *Local replay*. Do not add another. No per-source override — a half-live app
+is a bug generator. `saijo-power-meter:dataMode` in `Pulumi.dev.yaml` is `"demo"`, the program
+refuses `"live"` without the ingester, and it flips in the same change as `deployIngester`.
+`docs/architecture/data-modes.md` has the reasoning.
+
+**In live mode the charts and the strip read `readings_1m`, History reads `readings`.** The rollup
+path is a change of table, not of arithmetic — `meterSeries` folds a stored minute by the same
+rules as a reading — *provided the window starts on a whole minute*, which the live adapters
+guarantee; do not hand it an unaligned window. History stays on raw because running hours are read
+off the gaps, and reads meters in batches under a row budget rather than one query per meter:
+every BigQuery query bills at least 10 MB, so the number of queries is the cost.
 
 **The fleet strip and the department bands are additions to the specification, and both are
 flagged to the customer.** Their numbers — `totalActivePowerKw` and `byDepartment` — are summed in
 `realtimeTable`, not in the components, so the strip and the bands cannot disagree. Two rules ride
 with them: an offline meter's last reading is history and is excluded from "total load now", and
 there is no energy subtotal on a band, because summing cumulative counters yields only how long a
-department's meters have been installed. The strip deliberately carries nothing that needs history
-— no energy-today tile, no sparkline — because that would put a warehouse query behind a screen
-that refreshes every ten seconds.
+department's meters have been installed. Since step 8 the strip also carries **energy since 00:00**
+and **the last hour of total load** — `fleetTrend`, built from `meterSeries` and a sum, never a
+second implementation of the walk. They are the one warehouse read behind a screen that refreshes
+every ten seconds, so two rules keep that affordable and must stay: rollup reads are cached until
+the minute turns, and the strip's two windows share one read. That is two queries a minute per
+instance however many screens are open, asserted in `apps/web/lib/sources.test.ts`; uncached it is
+eighteen a minute *per screen*.
 
 **History's two quantities come from `packages/application/src/history.ts`, and its running-hours
 rule is a judgement worth keeping.** Total energy is the last value of the same `consumptionFrom()`
 walk the energy chart plots, reset rule included — do not write a second one. Running time sums the
 gaps between readings, each credited to the state at its start, and a gap longer than three minutes
-counts for nothing: a silence says nothing was observed, not that the machine kept running. The
-fixture adapter raises that cap to twice its own sampling interval, because a long window is
-sampled coarsely and every gap would otherwise exceed it; at step 8 it goes back to the default.
+counts for nothing: a silence says nothing was observed, not that the machine kept running. Demo
+mode raises that cap to twice its own sampling interval, because it samples a long window coarsely
+and every gap would otherwise exceed it; live mode passes no cap and gets the three-minute default,
+because its readings are real ones on the real schedule. The cap belongs to the adapter set, which
+is why `DataSource.history()` returns it beside the repository.
 
 **Chart colours are the eight `--series-N` tokens in `globals.css`, not the theme's `--chart-1..5`.**
 They were re-validated as a categorical set against Light Green's own surfaces — lightness band,

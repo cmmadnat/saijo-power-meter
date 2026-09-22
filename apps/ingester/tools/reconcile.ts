@@ -18,7 +18,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import process from "node:process";
-import { FILES } from "../src/file-store.ts";
+import { FILE_STORE_FILES as FILES } from "@power-meter/infrastructure";
 
 const index = process.argv.indexOf("--dir");
 const dir = index === -1 ? ".ingester" : (process.argv[index + 1] ?? ".ingester");

@@ -8,6 +8,7 @@
  *     npm run warehouse --workspace @power-meter/infrastructure -- verify --hours 24
  *     npm run warehouse --workspace @power-meter/infrastructure -- settings
  *     npm run warehouse --workspace @power-meter/infrastructure -- reset --yes
+ *     npm run warehouse --workspace @power-meter/infrastructure -- cost --runs 20
  *
  * `sql` renders the migrations and prints them, touching nothing — it is the
  * one command that runs without credentials, and this session has none by
@@ -17,7 +18,8 @@
  * connects, reads the ledger and prints what it *would* apply.
  */
 import process from "node:process";
-import { bigQueryClient } from "./client.ts";
+import { bigQueryClient, dryRunBytes } from "./client.ts";
+import { measureCost } from "./cost.ts";
 import { loadFixtures, verifyAgainstFixtures } from "./loader.ts";
 import { MIGRATIONS, render } from "./migrations.ts";
 import { partitionSettings, resetWarehouse, runMigrations } from "./runner.ts";
@@ -201,15 +203,30 @@ switch (command) {
     break;
   }
 
+  case "cost": {
+    // Step 8's measurement: what the live screens' queries read, what they
+    // bill, and how long each takes end to end through the same adapters and
+    // use cases the web app runs. Reads only; writes nothing.
+    await measureCost({
+      client: await connect(),
+      target,
+      dryRun: (sql, params) => dryRunBytes({ ...target, location }, sql, params),
+      runs: Number(flag("runs") ?? "10"),
+      log,
+    });
+    break;
+  }
+
   default:
     log(
-      "usage: warehouse <sql|migrate|load|verify|settings|reset>\n" +
+      "usage: warehouse <sql|migrate|load|verify|settings|reset|cost>\n" +
         "  --project P  --dataset D  --location L\n" +
         "  --hours N          window ending now; load prints the exact one it used\n" +
         "  --from T --to T    an exact window; verify needs the one load printed\n" +
         "  --dry-run          migrate only: connect, read the ledger, apply nothing\n" +
         "  --skip-if-no-dataset  migrate only: exit clean when the dataset is absent\n" +
-        "  --yes              reset only: confirm dropping every table",
+        "  --yes              reset only: confirm dropping every table\n" +
+        "  --runs N           cost only: timed runs per query (default 10)",
     );
     process.exitCode = 1;
 }
