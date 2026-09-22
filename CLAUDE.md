@@ -111,8 +111,17 @@ built-in setting for it. `infra/index.ts` declares a log-based alert policy matc
 reword it), `ERROR: build step`, and a timeout. It takes `roles/logging.configWriter` alongside
 `roles/monitoring.editor`, because a log-based policy also creates a Logging notification rule —
 the channel succeeds on the monitoring role alone, so the failure reads oddly. The address is
-`saijo-power-meter:alertEmail` in `Pulumi.dev.yaml`, and the channel delivers nothing until the
-confirmation email has been clicked.
+`saijo-power-meter:alertEmail` in `Pulumi.dev.yaml`.
+
+**Whether that alert actually delivers has never been observed, and is the one unproven part of
+this pipeline.** Two links in it are untested: whether a log-based policy matches `resource.type=
+"build"` entries at all, and whether the channel sends. `gcloud alpha monitoring channels list`
+reports the channel `enabled` with an **empty** `verificationStatus` — not `UNVERIFIED` — so the
+"click the confirmation email" step this file used to assert appears not to exist for a channel
+created through the API. No such email was ever found. Do not repeat that claim without checking.
+The way to settle it is to make a build fail on a pull request, which runs on the preview trigger
+and never touches `main`, and see whether mail arrives; that also exercises `ci/step.sh` capturing
+a non-zero exit and `ci/report.sh`'s failure branch, neither of which has run.
 
 **`ci/step.sh` and `ci/report.sh` exist because Cloud Build has no `if: always()`.** Every real step
 runs under the wrapper, which captures its output and swallows its exit code; the report step then
@@ -160,8 +169,8 @@ request to see a real one.
 ## Setup (done — repeat only for a new project)
 
 Project `saijo-power-meter` is bootstrapped and applied: the state bucket, KMS key, deployer service
-account and WIF provider exist, the five repository variables are set, and the stack has been
-applied from CI. Nothing below needs doing again unless a second project is being stood up.
+account and WIF provider exist, the two remaining repository variables are set, the repository is
+connected to Cloud Build through the GitHub App, and both triggers have run green. Nothing below needs doing again unless a second project is being stood up.
 
 1. Create a GCP project and link billing.
 2. In **Google Cloud Shell** (browser-based, already authenticated — no local machine needed):
