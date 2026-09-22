@@ -17,6 +17,14 @@
 
 set -euo pipefail
 
+# Every gcloud call here is non-interactive, and that is load-bearing rather
+# than tidy. This script redirects output in places, and a gcloud that decides
+# to ask a question — to install a missing component, most often — then waits on
+# stdin with its prompt sent to /dev/null. What the operator sees is a script
+# that stopped for no reason. Disabling prompts is the fix at the source; the
+# `</dev/null` below is the belt to its braces.
+export CLOUDSDK_CORE_DISABLE_PROMPTS=1
+
 PROJECT_ID="${PROJECT_ID:-}"
 GITHUB_REPO="${GITHUB_REPO:-cmmadnat/saijo-power-meter}"
 SA_NAME="${SA_NAME:-pulumi-deployer}"
@@ -105,14 +113,36 @@ done
 PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
 CLOUDBUILD_AGENT="service-${PROJECT_NUMBER}@gcp-sa-cloudbuild.iam.gserviceaccount.com"
 # The agent is created lazily, and "lazily" can mean "after the first build",
-# which is too late to grant it anything.
-gcloud beta services identity create \
-  --service cloudbuild.googleapis.com --project "$PROJECT_ID" >/dev/null 2>&1 || true
-gcloud secrets add-iam-policy-binding github-webhook-secret \
-  --project "$PROJECT_ID" \
-  --member "serviceAccount:${CLOUDBUILD_AGENT}" \
-  --role roles/secretmanager.secretAccessor \
-  --quiet >/dev/null
+# which is too late to grant it anything. Enabling the API above usually creates
+# it already; this is the explicit belt.
+#
+# GA first, `beta` only as a fallback: the beta form prompts to install a
+# component that many installs do not have, and asking a question from inside a
+# redirect is how this step used to hang with nothing on screen. stdin is closed
+# so that a prompt fails instantly instead of waiting forever.
+if gcloud services identity create --service cloudbuild.googleapis.com \
+     --project "$PROJECT_ID" </dev/null >/dev/null 2>&1; then
+  skip "Cloud Build service agent present"
+elif gcloud beta services identity create --service cloudbuild.googleapis.com \
+       --project "$PROJECT_ID" </dev/null >/dev/null 2>&1; then
+  skip "Cloud Build service agent present (via beta)"
+else
+  skip "could not pre-create the service agent — relying on API enablement"
+fi
+
+# Not tolerant of failure, unlike the step above: without this binding every
+# webhook call is rejected, and the message blames the secret for being invalid
+# rather than unreadable. Better to fail here, loudly, than there.
+if ! gcloud secrets add-iam-policy-binding github-webhook-secret \
+       --project "$PROJECT_ID" \
+       --member "serviceAccount:${CLOUDBUILD_AGENT}" \
+       --role roles/secretmanager.secretAccessor \
+       --quiet </dev/null >/dev/null 2>&1; then
+  die "Could not grant ${CLOUDBUILD_AGENT} access to github-webhook-secret.
+    If the account does not exist yet, the Cloud Build service agent has not
+    been created. Enabling the API creates it, which this script has just done,
+    so give it a minute and re-run — re-running is safe."
+fi
 skip "github-webhook-secret -> Cloud Build service agent"
 
 cat <<OUT
