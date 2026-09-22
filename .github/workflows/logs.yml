@@ -22,9 +22,14 @@ name: logs
 #   /logs 6h ERROR
 #   /logs freshness=6h severity=ERROR limit=500
 #   /logs freshness=2d -- textPayload:"ECONNREFUSED"
+#   /logs 1d audit=true
 #
 # A bare word is read as a duration if it has a unit suffix and as a severity if
 # it names one; everything else takes key=value.
+#
+# Admin-activity audit entries are excluded unless audit=true, because they share
+# resource.type with the service's own output: a plain read would return Pulumi's
+# deploy calls, ~100 lines of JSON each, in place of the application's logs.
 #
 # Everything after `--` is the Cloud Logging filter, unparsed: it is the one
 # field that legitimately contains spaces, quotes and colons, so it gets the rest
@@ -57,6 +62,10 @@ on:
         description: "Cloud Run service name"
         type: string
         default: "power-meter-web"
+      audit:
+        description: "Include admin-activity audit entries (deploys, IAM changes)"
+        type: boolean
+        default: false
   issue_comment:
     types: [created]
 
@@ -111,6 +120,7 @@ jobs:
           IN_SEVERITY: ${{ inputs.severity }}
           IN_FILTER: ${{ inputs.filter }}
           IN_SERVICE: ${{ inputs.service }}
+          IN_AUDIT: ${{ inputs.audit }}
         run: |
           python3 <<'PY'
           import os, re, sys
@@ -121,6 +131,12 @@ jobs:
               "severity": "ANY",
               "filter": "",
               "service": "power-meter-web",
+              # Admin-activity audit entries share resource.type with the
+              # service's own output, so a plain read returns Pulumi's deploy
+              # calls alongside the application's logs. One of them is ~100 lines
+              # of JSON, which crowds real output out of the entry budget. Off by
+              # default, and `audit=true` when the question is who changed what.
+              "audit": "false",
           }
           SEVERITIES = {"ANY", "DEFAULT", "INFO", "NOTICE", "WARNING", "ERROR", "CRITICAL", "ALERT", "EMERGENCY"}
 
@@ -183,6 +199,9 @@ jobs:
               fail(f"service {values['service']!r} is not a Cloud Run service name.")
           if len(values["filter"]) > 500 or "\n" in values["filter"]:
               fail("filter is too long to be one clause; narrow it.")
+          if values["audit"].lower() not in {"true", "false"}:
+              fail(f"audit {values['audit']!r} is not true or false.")
+          values["audit"] = values["audit"].lower()
 
           with open(os.environ["GITHUB_OUTPUT"], "a") as out:
               for key, value in values.items():
@@ -218,12 +237,19 @@ jobs:
           LIMIT: ${{ steps.params.outputs.limit }}
           SEVERITY: ${{ steps.params.outputs.severity }}
           EXTRA: ${{ steps.params.outputs.filter }}
+          AUDIT: ${{ steps.params.outputs.audit }}
         run: |
           set -euo pipefail
+
+          # Shared by the job log and the step summary so the two cannot drift.
+          RENDER='.[] | "\(.timestamp) \(.severity // "DEFAULT") \(.resource.labels.revision_name // "-") \(.textPayload // (.jsonPayload | if . then tostring else "" end))"'
 
           filter="resource.type=\"cloud_run_revision\" resource.labels.service_name=\"${SERVICE}\""
           if [ "${SEVERITY}" != "ANY" ]; then
             filter="${filter} severity>=${SEVERITY}"
+          fi
+          if [ "${AUDIT}" != "true" ]; then
+            filter="${filter} NOT logName:\"cloudaudit.googleapis.com\""
           fi
           if [ -n "${EXTRA}" ]; then
             filter="${filter} ${EXTRA}"
@@ -245,16 +271,24 @@ jobs:
             --format json > entries.json
 
           count="$(jq 'length' entries.json)"
-          echo "Entries: ${count}"
-          echo
 
+          # Order matters: the API hands a reader the *tail* of this log, and the
+          # entries are newest-first, so whatever is printed last is what a
+          # question about "what just happened" actually reaches. The json goes
+          # first as the detailed copy, the one-line-per-entry rendering last.
+          echo "----- entries (json, newest first) -----"
+          cat entries.json
+
+          echo
+          echo "----- entries (one line each, newest first) -----"
+          jq -r "${RENDER}" entries.json
+
+          echo
+          echo "Entries: ${count}"
           if [ "${count}" = "0" ]; then
             echo "No entries matched. The service scales to zero, so a quiet window is"
             echo "normal — widen freshness before concluding anything is wrong."
           fi
-
-          echo "----- entries (json) -----"
-          cat entries.json
 
           # The human-readable copy, capped: the step summary rejects anything
           # over 1MB, and losing the summary would also lose the header above it.
@@ -262,7 +296,6 @@ jobs:
             echo "### Logs: ${SERVICE} (last ${FRESHNESS}, ${count} entries)"
             echo
             echo '```'
-            jq -r '.[] | "\(.timestamp) \(.severity // "DEFAULT") \(.textPayload // (.jsonPayload | if . then tostring else "" end))"' \
-              entries.json | head -c 900000
+            jq -r "${RENDER}" entries.json | head -c 900000
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

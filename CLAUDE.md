@@ -83,7 +83,7 @@ session can do is comment, so both also trigger on `issue_comment`:
 
 Issue #12 is the channel for those; any issue or PR works. Builds are tagged with the commit they
 built, so a SHA is `/buildlog`'s handle; bare gives the most recent, and `failed` the last red one.
-Four things about this are deliberate:
+Six things about this are deliberate:
 
 - **The guard is `author_association`** in `OWNER`/`MEMBER`/`COLLABORATOR`. Without it, anyone able
   to comment could start runs against the project. It cannot tell a session from its owner — a
@@ -95,6 +95,16 @@ Four things about this are deliberate:
   roles; the value is that a log read cannot deploy a revision, push an image or touch state.
 - **Their concurrency groups are not `infra`**, or a log read would queue behind a deploy and a
   deploy behind a log read — least of all the read that explains why the deploy failed.
+- **`logs.yml` excludes admin-activity audit entries unless `audit=true`.** They share
+  `resource.type` with the service's own output, so a plain read returns Pulumi's deploy calls —
+  ~100 lines of JSON each — in place of application logs. (`roles/logging.viewer` excludes
+  *data-access* logs, not these.) `build-logs.yml` needs no equivalent: it reads one named build
+  through `gcloud builds log`, not a `resource.type` window.
+- **What matters is printed last.** A reader is handed the tail of the run log, so `logs.yml` puts
+  its one-line-per-entry rendering after the JSON — entries are newest-first, so the last thing
+  printed is what a question about what just happened reaches. `build-logs.yml` gets this for free
+  in the other direction: a build log is oldest-first and `ci/report.sh` writes the verdict at the
+  very end, which is why its step summary shows the log's tail.
 
 Neither trigger works from a branch: `issue_comment` always runs the default branch's copy, so a
 change to either workflow does nothing until it is merged. Every read also copies log lines into the
