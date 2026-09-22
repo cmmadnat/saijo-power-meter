@@ -327,10 +327,15 @@ History over the warehouse matches History over the fixtures for all 55 rows. `n
 green across the workspace (108 tests), the web build is unchanged, and the BigQuery SDK stays out
 of its 58 MB standalone output because the client is imported dynamically.
 
-*Not verified, and it needs a project:* no statement has been submitted to BigQuery, so its opinion
-of the DDL is unasked; `load`, `verify` and `settings` have never run; and the existing project's
-deployer has not been granted `roles/bigquery.admin`, without which the apply fails. Nothing in the
-pipeline runs `migrate` — that belongs with step 7, where something first depends on the tables.
+*Applied:* the dataset, the API and the two bindings went in on 2026-09-22. The preview on the PR
+was green and the apply on `main` after it, which is the part that matters — a preview plans rather
+than creates, so the deployer's new `roles/bigquery.admin` was only ever proven by the apply.
+
+*Still not verified, and it needs someone at a terminal:* **the tables do not exist.** Nothing in
+the pipeline runs `migrate`, so no statement has reached BigQuery and its opinion of the DDL is
+unasked; `load`, `verify` and `settings` have never run. Wiring `migrate` into the pipeline belongs
+with step 7, where something first depends on the tables — but running it once by hand, and then
+`load` and `verify`, is what would turn this step's fake-client tests into evidence.
 
 ### Step 7 — MQTT ingester
 **Gated on open questions 1 and 2 — do not go live before they are answered**, because wrong

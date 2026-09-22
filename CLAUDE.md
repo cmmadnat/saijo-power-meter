@@ -34,7 +34,7 @@ on fixture data; no meter data flows yet.
 | `.github/workflows/logs.yml` | Reads the Cloud Run service's logs, on dispatch or a `/logs` comment. Runs no Pulumi and holds a read-only identity. |
 | `.github/workflows/build-logs.yml` | Reads a Cloud Build run's status and log, on dispatch or a `/buildlog` comment. Same identity. |
 | `docs/architecture/delivery-pipeline.md` | Why builds run on Cloud Build, and what that cost. |
-| `docs/architecture/warehouse.md` | The three BigQuery tables, the migration rules, and what has never been run. |
+| `docs/architecture/warehouse.md` | The three BigQuery tables, the migration rules, and what has never been run against a project. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
 | `docs/requirements/` | The frozen spec: the MQTT protocol, the meter registry, and the four screens. |
 | `reference doc/`, root `.xlsx` | Customer specifications — the source those requirements were read from. |
@@ -350,9 +350,12 @@ remain. Do not quietly settle one from inference; it takes a captured payload.
 `packages/infrastructure/src/warehouse`. That line is the same one `bootstrap.sh` draws for the state
 bucket — a container that must exist before anything can run is infrastructure, what goes inside it
 is the application's own shape. Retention is a table setting (a 14-day partition expiry), so it lives
-with the DDL and there is no cleanup job. `docs/architecture/warehouse.md` has the rest, including
-the four things that have never been run: the deployer still needs `roles/bigquery.admin`, which
-`bootstrap.sh` now lists and this project was never granted.
+with the DDL and there is no cleanup job. **The dataset exists** — applied 2026-09-22, which is also
+what proved the deployer's `roles/bigquery.admin`, since a preview plans rather than creates. **The
+tables do not:** nothing in the pipeline runs `migrate`, so `readings`, `readings_1m` and `latest`
+have never been created and no statement has ever reached BigQuery. Everything in the warehouse
+module is tested against a fake client and nothing else. `docs/architecture/warehouse.md` has the
+rest, and says what running `migrate` once would settle.
 
 **The History aggregation did not move into SQL, and must not.** `consumptionFrom()`'s reset rule and
 the three-minute running-hours cap have one implementation, in `packages/application`. The warehouse

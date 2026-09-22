@@ -108,15 +108,25 @@ The BigQuery SDK is reached through a four-method `WarehouseClient` interface an
 dynamic, `@google-cloud/bigquery` and its fifty-odd transitive packages stay out of the web app's
 traced standalone output until something in `apps/web` actually constructs a client.
 
-## What has not been run
+## What exists, and what has not been run
 
-This session holds no Google Cloud credentials, by design (CLAUDE.md). So:
+**The dataset exists.** `power_meter` was applied to `saijo-power-meter` on 2026-09-22 from the step
+6 merge, along with `bigquery.googleapis.com` and the web service account's two read-only bindings.
+The deployer holds `roles/bigquery.admin`; the apply creating a dataset is what proved that, since a
+`pulumi preview` plans rather than creates and passes over a missing role.
+
+**The tables do not.** Nothing in the delivery pipeline runs `migrate`, so `readings`,
+`readings_1m` and `latest` have never been created anywhere. Until someone runs it against the
+project, the whole of this file below the schema section describes code that has been tested only
+against a fake client:
 
 - The migration SQL has never been submitted to BigQuery. `sql` renders it without credentials and
   that output has been read; whether it *parses* is BigQuery's opinion, and has not been asked.
 - `load`, `verify` and `settings` have never run against a project.
-- The deployer service account needs `roles/bigquery.admin`, which `bootstrap.sh` now lists and the
-  existing project has not been granted. The apply fails without it.
+
+Running `migrate` once is what closes that gap, and it needs credentials — so it happens in Cloud
+Shell or from a machine with `gcloud auth application-default login`, not from a session here. Node
+22 or newer: the CLI runs TypeScript through `--experimental-strip-types`.
 
 The commands:
 
