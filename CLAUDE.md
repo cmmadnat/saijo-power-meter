@@ -66,7 +66,7 @@ can do is comment, so the workflow also triggers on `issue_comment`:
 /logs                    /logs 6h ERROR                    /logs freshness=2d -- textPayload:"ECONNREFUSED"
 ```
 
-Issue #12 is the channel for those; any issue or PR works. Four things about this are deliberate:
+Issue #12 is the channel for those; any issue or PR works. Six things about this are deliberate:
 
 - **The guard is `author_association`** in `OWNER`/`MEMBER`/`COLLABORATOR`. Without it, anyone able
   to comment could start runs against the project. It cannot tell a session from its owner — a
@@ -78,6 +78,12 @@ Issue #12 is the channel for those; any issue or PR works. Four things about thi
   roles; the value is that the logs job cannot deploy a revision, push an image or touch state.
 - **Its concurrency group is not `infra`**, or a log read would queue behind a deploy and a deploy
   behind a log read.
+- **Admin-activity audit entries are excluded unless `audit=true`.** They share `resource.type` with
+  the service's own output, so a plain read returns Pulumi's deploy calls — ~100 lines of JSON each —
+  in place of application logs. (`roles/logging.viewer` excludes *data-access* logs, not these.)
+- **The one-line-per-entry rendering is printed last, after the JSON.** A reader is handed the tail
+  of the run log and entries are newest-first, so whatever prints last is what a question about what
+  just happened actually reaches. Both renderings come from one jq expression so they cannot drift.
 
 Every read also copies application log lines into the Actions run log, which has its own retention
 and audience — worth revisiting when real meter data and the passcode gate land.
