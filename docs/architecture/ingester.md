@@ -48,9 +48,16 @@ make it impossible rather than unlikely:
    client was disconnected (reason code `0x8E`, session taken over); the adapter reports that as a
    takeover and the service shuts down for good.
 
-The third one needs MQTT 5. HiveMQ Cloud speaks it. The local replay broker (aedes) speaks 3.1.1
-only, so `MQTT_PROTOCOL_VERSION=4` is how the harness runs — and running two ingesters against it
-shows exactly the flap described above, which is the failure mode this guard removes.
+The third one needs MQTT 5. **HiveMQ Cloud sends it — observed, 2026-09-22:** two connections under
+one client id, and the first was handed `DISCONNECT, reason code 142`. That is `tools/takeover.ts`,
+and it is the half of the guarantee the local harness cannot show. The local replay broker (aedes)
+speaks 3.1.1 only, so `MQTT_PROTOCOL_VERSION=4` is how the harness runs — and running two ingesters
+against *it* shows exactly the flap described above, which is the failure mode this guard removes.
+
+So the chain is now: the broker sends 142 (seen on the real broker), the adapter reads 142 as a
+takeover rather than a drop (`broker.ts`), and the service shuts down instead of reconnecting
+(asserted in `service.test.ts`). The only link never exercised end to end is the ingester process
+itself against HiveMQ, because it has never been allowed to connect.
 
 ## The batch, and the one rule about minutes
 
@@ -198,11 +205,10 @@ rotated before go-live; a rotation is a new secret version plus a restart, not a
   is built for the first time by the pipeline's `image` step.
 - **The Cloud Run service has never existed**, so `min/max-instances`, the probes and the secret
   environment are declared and unapplied.
-- **The takeover path has never run against a real MQTT 5 broker.** It is asserted against a fake
-  in `service.test.ts`, and the local harness demonstrates the eviction it responds to, at 3.1.1,
-  where the reason code does not exist. `tools/takeover.ts` closes this the moment someone runs it
-  from a network that can reach HiveMQ: it opens two connections under one *random* id — never the
-  ingester's — and reports whether the first is told reason code 142. It subscribes to nothing and
-  writes nothing, so it is safe against the live broker in the way the capture tool is.
+- **The ingester process has never connected to HiveMQ**, so the takeover chain is proven in two
+  pieces rather than end to end: `tools/takeover.ts` saw reason code 142 on the real broker on
+  2026-09-22, and the adapter's and service's response to it is asserted against a fake. Re-run
+  that probe (two connections, one *random* id — never the ingester's, read-only) if the broker or
+  its plan ever changes.
 - **Nothing has measured cost per day**, which the plan asks for and which needs the service
   running.

@@ -480,9 +480,10 @@ undo the exposure.
 max-instances=1`; a fixed MQTT client id, so a broker evicts the older session when a new revision
 attaches; and — the part that is easy to leave out — **an evicted instance exits instead of
 reconnecting**. Without the third, two ingesters evict each other every few seconds and both write.
-That last one reads MQTT 5's session-taken-over reason code, which the local replay broker (aedes,
-3.1.1) cannot send, which is why `MQTT_PROTOCOL_VERSION=4` is a harness setting and never a
-deployment one.
+That last one reads MQTT 5's session-taken-over reason code. **HiveMQ sends it —
+checked on 2026-09-22 with `npm run takeover -w @power-meter/ingester`, which saw reason code 142.**
+The local replay broker (aedes, 3.1.1) cannot, which is why `MQTT_PROTOCOL_VERSION=4` is a harness
+setting and never a deployment one.
 
 **The ingester rolls up only minutes that have closed.** The flush timer does not divide the
 minute, so a batch straddling 12:00 would otherwise write `(meter, 12:00)` twice — and since the

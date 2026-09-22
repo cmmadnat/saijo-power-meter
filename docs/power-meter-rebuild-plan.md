@@ -427,9 +427,13 @@ the takeover path driven through a fake broker — 33 tests in the app, 144 acro
   settles active power on a running meter, because V, I and PF are pinned independently and
   `3 x V x I x PF` is what `M<n>P` has to agree with; energy still needs that meter's own display
   reading.
-- **The takeover has never run against MQTT 5.** aedes speaks 3.1.1 only, where there is no reason
-  code. Running two ingesters against it shows exactly the flap the guard removes — each evicting
-  the other every ~5 s — which is the evidence that the guard is needed, not that it works.
+- ~~**The takeover has never run against MQTT 5.**~~ **Done, 2026-09-22.** `tools/takeover.ts`
+  opened two connections to HiveMQ under one client id and the first was handed `DISCONNECT, reason
+  code 142` — the signal the guard reads. What remains untested is only the ingester *process*
+  doing this against HiveMQ, since it has never been allowed to connect; the adapter's mapping and
+  the service's shutdown are asserted against a fake. Against aedes (3.1.1, no reason code) two
+  ingesters instead flap, each evicting the other every ~5 s, which is the evidence the guard is
+  needed rather than that it works.
 - **The image has never been built** (no Docker daemon in a cloud session) and **the Cloud Run
   service has never existed**, so `min/max-instances`, the probes and the secret environment are
   declared and unapplied.
