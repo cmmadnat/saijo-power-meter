@@ -206,9 +206,13 @@ jobs:
           id="${BUILD_ID}"
 
           if [ -z "${id}" ]; then
+            # The commit lives in a substitution, not a tag: substitutions do
+            # not resolve in a build's `tags`, so tagging with the SHA made
+            # every build creation invalid. The mode is still a tag, because
+            # that one is a literal.
             filter=""
             if [ -n "${SHA}" ]; then
-              filter="tags=${SHA}"
+              filter="substitutions._SHA=${SHA}"
             fi
             if [ "${MODE}" != "any" ]; then
               [ -n "${filter}" ] && filter="${filter} AND "

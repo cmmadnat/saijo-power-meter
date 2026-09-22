@@ -82,13 +82,21 @@ once, and the misleading status is the whole reason this is written down.
 
 ### Finding the build
 
-Every build is tagged with the commit it built and with its mode, so a commit SHA is
-enough of a handle:
+Every build carries the commit it built in the `_SHA` substitution, and its mode as a tag,
+so a commit SHA is enough of a handle:
 
 ```bash
-gcloud builds list --project <project> --filter "tags=<sha>" --format 'value(id,status)'
+gcloud builds list --project <project> --filter "substitutions._SHA=<sha>" --format 'value(id,status)'
 gcloud builds log <build-id> --project <project>
 ```
+
+**The commit is a substitution rather than a tag, and that distinction cost a day.**
+Substitutions resolve in `steps` and `images`; `tags` is not one of them. A `${_SHA}` tag is
+stored verbatim, and a tag must match `[\w][\w.-]*` — which `$`, `{` and `}` do not. The
+trigger is created without complaint, because a tag is only a string until a build is made
+from it. Then every webhook invocation returns a bare `INVALID_ARGUMENT`, *after* the API
+key, the secret and the trigger lookup have all succeeded, and nothing appears in any log:
+the trigger was never the problem, the build it tried to create was.
 
 Builds log to Cloud Logging, not a bucket, so `builds list` and `builds log` are two
 different permissions.
