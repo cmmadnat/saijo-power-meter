@@ -13,7 +13,9 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { rollupReadings } from "@power-meter/application";
 import { MeterRegistry, type MeterId } from "@power-meter/domain";
+import { generateFixtures } from "../fixtures/generate.ts";
 import type { QueryParams, WarehouseClient } from "./client.ts";
 import { loadFixtures, verifyAgainstFixtures } from "./loader.ts";
 import {
@@ -27,7 +29,8 @@ import {
   WarehouseLatestReadingStore,
   WarehouseReadingRepository,
 } from "./repository.ts";
-import { runMigrations } from "./runner.ts";
+import { WarehouseReadingWriter } from "./writer.ts";
+import { resetWarehouse, runMigrations } from "./runner.ts";
 import {
   readingToRow,
   rowToReading,
@@ -351,4 +354,76 @@ test("History over the warehouse matches History over the fixtures, row for row"
   const verification = await verifyAgainstFixtures(client, TARGET, options);
   assert.equal(verification.rows, registry.commissioned().length);
   assert.deepEqual(verification.mismatches, []);
+});
+
+test("the ingester's writer puts raw and rollup in one batch, and rewrites latest", async () => {
+  const client = new FakeWarehouse();
+  const writer = new WarehouseReadingWriter(client, TARGET);
+  const fixtures = generateFixtures({ ...WINDOW, intervalMs: 60_000 });
+  const readings = fixtures.readings.slice(0, 120);
+  const ingestedAt = new Date("2026-09-22T02:00:00Z");
+
+  await writer.append({
+    readings,
+    rollup: rollupReadings(readings),
+    ingestedAt,
+  });
+
+  assert.equal(client.rows(TABLES.readings).length, readings.length);
+  assert.equal(
+    client.rows(TABLES.rollup).length,
+    rollupReadings(readings).length,
+  );
+  // `ingested_at` is the flush, `at` is the reading: the gap between them is
+  // how a replayed or late batch is told from a live one after the fact.
+  const [row] = client.rows(TABLES.readings);
+  assert.equal(row?.["ingested_at"], ingestedAt.toISOString());
+  assert.notEqual(row?.["at"], row?.["ingested_at"]);
+
+  await writer.replaceLatest(readings.slice(0, 3));
+  assert.equal(client.rows(TABLES.latest).length, 3);
+  await writer.replaceLatest(readings.slice(0, 2));
+  assert.equal(client.rows(TABLES.latest).length, 2, "replaced, not appended");
+});
+
+test("an empty flush never blanks the table a restart rehydrates from", async () => {
+  const client = new FakeWarehouse();
+  const writer = new WarehouseReadingWriter(client, TARGET);
+  const fixtures = generateFixtures({ ...WINDOW, intervalMs: 60_000 });
+
+  await writer.replaceLatest(fixtures.readings.slice(0, 5));
+  await writer.replaceLatest([]);
+
+  assert.equal(
+    client.rows(TABLES.latest).length,
+    5,
+    "a broker outage at flush time must not cost the next restart its rehydration",
+  );
+});
+
+test("reset drops every table this code owns, ledger included", async () => {
+  const client = new FakeWarehouse();
+  await runMigrations(client, TARGET);
+  assert.equal((await runMigrations(client, TARGET)).applied.length, 0);
+
+  const dropped = await resetWarehouse(client, TARGET);
+  assert.deepEqual([...dropped], [
+    TABLES.readings,
+    TABLES.rollup,
+    TABLES.latest,
+    TABLES.migrations,
+  ]);
+  for (const table of dropped) {
+    assert.ok(
+      client.statements.some(
+        (sql) => sql === `DROP TABLE IF EXISTS ${tableRef(TARGET, table)}`,
+      ),
+      `${table} was dropped`,
+    );
+  }
+
+  // The ledger goes with the tables, so a migrate afterwards rebuilds the
+  // dataset rather than refusing to run against a half-applied one.
+  client.tables.delete(TABLES.migrations);
+  assert.equal((await runMigrations(client, TARGET)).applied.length, MIGRATIONS.length);
 });

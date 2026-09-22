@@ -6,23 +6,29 @@ const region = new pulumi.Config("gcp").require("region");
 // Everything below is created and owned by Pulumi. The only resources that live
 // outside this program are the ones bootstrap.sh and scripts/setup-cloud-build.sh
 // make, because they have to exist before Pulumi can run at all, or because they
-// are secret values that cannot live in code: the state bucket, its KMS key, the
-// deployer service account, and the three Secret Manager secrets the pipeline
-// reads.
+// are secret values that cannot live in code: the state bucket, its KMS key and
+// the deployer service account. The Secret Manager *secrets* are declared here;
+// only their values are added out of band, since a secret value in a Pulumi
+// program is a secret value in the state bucket and in every diff.
 
 // App-level API enablement. The bootstrap enables only what it needs itself.
 const services = [
     "run.googleapis.com",
     "artifactregistry.googleapis.com",
     "iam.googleapis.com", // creating the service the app runs as
-    // The delivery pipeline itself. Neither secretmanager nor apikeys is here
-    // any more: the App connection fetches the source, so there is no deploy
-    // key, no webhook secret and no API key left to hold.
+    // The delivery pipeline itself. It holds no secrets of its own any more:
+    // the App connection fetches the source, so the deploy key, the webhook
+    // secret and the API key are all gone. Secret Manager is back below, for
+    // the broker's credentials rather than for the pipeline.
     "cloudbuild.googleapis.com",
     // The warehouse. The dataset is declared below; its tables are not, because
     // they are schema and arrive through the migration runner in
     // packages/infrastructure/src/warehouse.
     "bigquery.googleapis.com",
+    // The broker's credentials. The secrets are declared below; their values
+    // are added out of band, because a secret value in a Pulumi program is a
+    // secret value in the state bucket.
+    "secretmanager.googleapis.com",
     // On by default in every project, declared anyway: the logs workflows are
     // useless without it, and a project where someone turned it off should fail
     // here rather than in a job that reads zero entries and looks healthy.
@@ -131,10 +137,9 @@ new gcp.cloudrunv2.ServiceIamMember("web-public", {
 // everything else. Its tables are not: they are schema, and schema is versioned,
 // ordered and idempotent migrations applied by a runner — CLAUDE.md's rule, and
 // the line this file draws is the same one bootstrap.sh draws for the state
-// bucket. `npm run warehouse -w @power-meter/infrastructure -- migrate` creates
-// them; nothing in the pipeline runs it yet, because nothing reads the tables
-// until step 8 and an apply that also migrates is a pipeline change worth
-// making on its own.
+// bucket. The pipeline's `migrate` step applies them — it arrived with step 7,
+// where the ingester became the first thing that depends on the tables
+// existing; see ci/migrate.sh.
 //
 // Retention is a table setting (a 14-day partition expiry), not a resource and
 // not a cleanup job, so it lives with the DDL rather than here.
@@ -174,6 +179,195 @@ new gcp.projects.IAMMember("web-warehouse-jobs", {
 });
 
 export const warehouseDataset = warehouse.datasetId;
+
+// --- The MQTT ingester -------------------------------------------------------
+//
+// One always-on service holding the subscription to the nine station topics.
+// Everything about it is shaped by one constraint: **there must be exactly one
+// of it.** Two instances means two subscriptions, every reading stored twice
+// and every energy total wrong, so `minInstanceCount` and `maxInstanceCount`
+// are both 1 and that is correctness rather than tuning. The second half of
+// that guarantee is in the application — a fixed MQTT client id, so a broker
+// evicts the older session, and an evicted instance that exits instead of
+// reconnecting. See apps/ingester/src/broker.ts.
+//
+// It is not deployed yet, and `deployIngester` is why. The scale factors for
+// active power and energy are still guesses (see the plan's "Still open"), the
+// service refuses to start against a real broker while they are, and a
+// crash-looping revision would fail every apply from here on. So this step
+// declares the identity, the secrets and the access the service needs — all of
+// which are useful now and none of which ingest anything — and leaves the
+// service itself behind a flag that is flipped in the same change that confirms
+// the divisors and adds the secret versions.
+
+const deployIngester = new pulumi.Config().getBoolean("deployIngester") ?? false;
+
+// The broker's address and credentials. The *containers* are declared here; the
+// values are not, and cannot be: a secret in a Pulumi program is a secret in
+// the state bucket and in a diff. Versions are added out of band, once:
+//
+//   printf '%s' "$PASSWORD" | gcloud secrets versions add mqtt-broker-password \
+//     --project saijo-power-meter --data-file=-
+//
+// The customer's workbook carries these in plaintext on its `MQTT Server` tab.
+// They should be rotated before go-live, and the rotation is a new version
+// here plus a restart of the service — no deploy.
+const brokerSecrets = [
+    { secretId: "mqtt-broker-url", env: "MQTT_URL" },
+    { secretId: "mqtt-broker-username", env: "MQTT_USERNAME" },
+    { secretId: "mqtt-broker-password", env: "MQTT_PASSWORD" },
+].map(({ secretId, env }) => ({
+    env,
+    secretId,
+    secret: new gcp.secretmanager.Secret(
+        secretId,
+        {
+            secretId,
+            replication: { userManaged: { replicas: [{ location: region }] } },
+            labels: { component: "ingester" },
+        },
+        { dependsOn: services },
+    ),
+}));
+
+const ingesterIdentity = new gcp.serviceaccount.Account(
+    "ingester",
+    {
+        accountId: "power-meter-ingester",
+        displayName: "Power Meter MQTT ingester",
+    },
+    { dependsOn: services },
+);
+
+// Write access to the warehouse, and only to it. dataEditor on the dataset
+// rather than a project-level role: the ingester appends to three tables and
+// has no business reading, creating or dropping anything else. Migrations are
+// not its job either — the pipeline runs those as the deployer.
+new gcp.bigquery.DatasetIamMember("ingester-warehouse-writer", {
+    datasetId: warehouse.datasetId,
+    role: "roles/bigquery.dataEditor",
+    member: pulumi.interpolate`serviceAccount:${ingesterIdentity.email}`,
+});
+
+// A load job is a job, and starting one is a project-level permission. It
+// grants the right to run a job and bill it here, not the right to read
+// anything: what this account can touch is still only the dataset above.
+new gcp.projects.IAMMember("ingester-warehouse-jobs", {
+    project: warehouse.project,
+    role: "roles/bigquery.jobUser",
+    member: pulumi.interpolate`serviceAccount:${ingesterIdentity.email}`,
+});
+
+for (const { secretId, secret } of brokerSecrets) {
+    new gcp.secretmanager.SecretIamMember(`ingester-${secretId}`, {
+        secretId: secret.id,
+        role: "roles/secretmanager.secretAccessor",
+        member: pulumi.interpolate`serviceAccount:${ingesterIdentity.email}`,
+    });
+}
+
+const ingesterImage = process.env.INGESTER_IMAGE;
+
+function deployTheIngester(): gcp.cloudrunv2.Service {
+    if (!ingesterImage) {
+        throw new Error(
+            "INGESTER_IMAGE is not set but deployIngester is true. The pipeline " +
+                "builds and pushes the ingester image, then passes its commit-pinned " +
+                "reference here; see ci/pulumi.sh.",
+        );
+    }
+
+    const ingester = new gcp.cloudrunv2.Service(
+        "ingester",
+        {
+            name: "power-meter-ingester",
+            location: region,
+            deletionProtection: false,
+            // Reachable, but not by anyone: no allUsers binding below, so a
+            // caller needs an ID token. INGRESS_TRAFFIC_ALL rather than
+            // internal-only because the web service's egress does not go
+            // through a VPC, and internal-only would make the hot state
+            // unreachable from the one thing that reads it.
+            ingress: "INGRESS_TRAFFIC_ALL",
+            template: {
+                serviceAccount: ingesterIdentity.email,
+                // Exactly one. See the note above: this is the correctness
+                // constraint, not a cost setting.
+                scaling: { minInstanceCount: 1, maxInstanceCount: 1 },
+                containers: [
+                    {
+                        image: ingesterImage,
+                        ports: { containerPort: 8080 },
+                        resources: {
+                            limits: { cpu: "1", memory: "512Mi" },
+                            // CPU always allocated. The work here happens
+                            // between requests — that is the whole point of the
+                            // service — and a throttled instance would stop
+                            // decoding the moment nobody was looking at the
+                            // screen.
+                            cpuIdle: false,
+                        },
+                        envs: [
+                            { name: "GOOGLE_PROJECT", value: warehouse.project },
+                            { name: "WAREHOUSE_DATASET", value: warehouse.datasetId },
+                            { name: "WAREHOUSE_LOCATION", value: region },
+                            // Fixed, so the broker evicts the old connection
+                            // when a new revision attaches.
+                            { name: "MQTT_CLIENT_ID", value: "power-meter-ingester" },
+                            // `latest`, so rotating a credential is a new secret
+                            // version and a restart rather than a deploy.
+                            ...brokerSecrets.map(({ env, secretId }) => ({
+                                name: env,
+                                valueSource: {
+                                    secretKeyRef: { secret: secretId, version: "latest" },
+                                },
+                            })),
+                        ],
+                        // Readiness is "connected to the broker and rehydrated",
+                        // so a revision that cannot reach the broker never takes
+                        // traffic and the deploy fails visibly instead of
+                        // silently serving an empty hot state.
+                        startupProbe: {
+                            httpGet: { path: "/readyz", port: 8080 },
+                            initialDelaySeconds: 5,
+                            periodSeconds: 5,
+                            timeoutSeconds: 3,
+                            failureThreshold: 12,
+                        },
+                        // Liveness is only "the process is up". A broker outage
+                        // must not restart the container: that would throw away
+                        // the buffer and the hot state on top of the outage.
+                        livenessProbe: {
+                            httpGet: { path: "/healthz", port: 8080 },
+                            periodSeconds: 30,
+                            timeoutSeconds: 3,
+                            failureThreshold: 3,
+                        },
+                    },
+                ],
+            },
+        },
+        { dependsOn: [images, warehouse, ...services] },
+    );
+
+    // The web app, and nothing else. Deliberately not allUsers: this endpoint
+    // is the live state of a factory and there is no passcode in front of it
+    // until step 9.
+    new gcp.cloudrunv2.ServiceIamMember("ingester-web-invoker", {
+        name: ingester.name,
+        location: ingester.location,
+        role: "roles/run.invoker",
+        member: pulumi.interpolate`serviceAccount:${webIdentity.email}`,
+    });
+
+    return ingester;
+}
+
+const ingesterService = deployIngester ? deployTheIngester() : undefined;
+
+export const ingesterServiceAccount = ingesterIdentity.email;
+export const ingesterDeployed = deployIngester;
+export const ingesterUrl = ingesterService?.uri;
 
 // --- Reading the application's logs from CI ----------------------------------
 //
@@ -292,10 +486,13 @@ const buildOptions = {
 
 // $COMMIT_SHA is supplied by Cloud Build for a GitHub-connected trigger, so
 // nothing here has to bind it out of a payload.
-const imageRef = `${region}-docker.pkg.dev/${projectId}/app/web:` + "$COMMIT_SHA";
+const registry = `${region}-docker.pkg.dev/${projectId}/app`;
+const imageRef = `${registry}/web:` + "$COMMIT_SHA";
+const ingesterImageRef = `${registry}/ingester:` + "$COMMIT_SHA";
 // Floating on purpose, and never deployed: only ever read from and written to
-// as a BuildKit layer cache.
-const cacheRef = `${region}-docker.pkg.dev/${projectId}/app/web:cache`;
+// as BuildKit layer caches.
+const cacheRef = `${registry}/web:cache`;
+const ingesterCacheRef = `${registry}/ingester:cache`;
 
 function pipelineBuild(mode: "preview" | "apply"): gcp.types.input.cloudbuild.TriggerBuild {
     // No clone step. Cloud Build fetches the source into /workspace itself,
@@ -309,7 +506,30 @@ function pipelineBuild(mode: "preview" | "apply"): gcp.types.input.cloudbuild.Tr
                 name: "gcr.io/cloud-builders/docker",
                 entrypoint: "bash",
                 args: ["ci/step.sh", "image", "ci/image.sh"],
-                envs: [`MODE=${mode}`, `IMAGE=${imageRef}`, `CACHE_IMAGE=${cacheRef}`],
+                envs: [
+                    `MODE=${mode}`,
+                    `WEB_IMAGE=${imageRef}`,
+                    `WEB_CACHE_IMAGE=${cacheRef}`,
+                    `INGESTER_IMAGE=${ingesterImageRef}`,
+                    `INGESTER_CACHE_IMAGE=${ingesterCacheRef}`,
+                ],
+            },
+            // Migrations before the revision that depends on them, which is
+            // CLAUDE.md's rule and the reason this step exists at all: step 7
+            // is where something first reads the warehouse. On a pull request
+            // it is a dry run. See ci/migrate.sh for what that does and does
+            // not prove.
+            {
+                id: "migrate",
+                name: "node:22",
+                entrypoint: "bash",
+                args: ["ci/step.sh", "migrate", "ci/migrate.sh"],
+                envs: [
+                    `MODE=${mode}`,
+                    `GOOGLE_PROJECT=${projectId}`,
+                    "WAREHOUSE_DATASET=power_meter",
+                    `WAREHOUSE_LOCATION=${region}`,
+                ],
             },
             {
                 id: "pulumi",
@@ -322,6 +542,7 @@ function pipelineBuild(mode: "preview" | "apply"): gcp.types.input.cloudbuild.Tr
                     `GITHUB_REPO=${githubRepository}`,
                     `PULUMI_BACKEND_URL=gs://${stateBucket}`,
                     `WEB_IMAGE=${imageRef}`,
+                    `INGESTER_IMAGE=${ingesterImageRef}`,
                     `KMS_KEY=${kmsKey}`,
                 ],
             },
@@ -339,7 +560,7 @@ function pipelineBuild(mode: "preview" | "apply"): gcp.types.input.cloudbuild.Tr
                     `GOOGLE_PROJECT=${projectId}`,
                     "SHA=$COMMIT_SHA",
                     "BUILD_ID=$BUILD_ID",
-                    "EXPECTED_STEPS=image pulumi",
+                    "EXPECTED_STEPS=image migrate pulumi",
                 ],
             },
         ],

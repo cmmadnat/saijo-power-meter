@@ -1,7 +1,9 @@
 export type {
   Clock,
   LatestReadingStore,
+  ReadingBatch,
   ReadingRepository,
+  ReadingWriter,
   TimeRange,
 } from "./ports.ts";
 export { systemClock } from "./ports.ts";

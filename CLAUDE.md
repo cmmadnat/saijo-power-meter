@@ -15,26 +15,30 @@ Greenfield. Two kinds of material sit alongside the code, and they pull in oppos
 
 Built so far: the Google Cloud footprint as Pulumi code, the pipeline that builds and applies it,
 the frontend shell — scaffolded, themed, and deployed to Cloud Run so there is a live URL from the
-start — the domain model, the MQTT payload decoder and the fixture generator, and all four
-specified screens: the 55-meter table, the kW and kWh charts, and History. Every one of them runs
-on fixture data; no meter data flows yet.
+start — the domain model, the MQTT payload decoder and the fixture generator, all four specified
+screens (the 55-meter table, the kW and kWh charts, and History), the BigQuery warehouse behind the
+same ports, and the MQTT ingester. Every screen still runs on fixture data, and **the ingester has
+never connected to the customer's broker** — it is gated on the scaling question and verified
+against a local broker replaying those fixtures.
 
 | Path | What it is |
 | --- | --- |
 | `infra/` | Pulumi program (TypeScript) — every Google Cloud resource except the bootstrap ones. |
 | `bootstrap.sh` | One-time, run in Cloud Shell. Creates only what Pulumi cannot create for itself. |
 | `scripts/setup-cloud-build.sh` | One-time, after `bootstrap.sh`. APIs and the deployer's three pipeline roles. |
-| `ci/` | What the Cloud Build steps run: `step.sh`, `image.sh`, `pulumi.sh`, `report.sh`. |
+| `ci/` | What the Cloud Build steps run: `step.sh`, `image.sh`, `migrate.sh`, `pulumi.sh`, `report.sh`. |
 | `packages/domain` | Entities and rules. Imports nothing. |
 | `packages/application` | Use cases and the port interfaces they need. Imports domain only. |
 | `packages/infrastructure` | Adapters: the MQTT payload decoder, the scale-factor table, fixture data, the warehouse. |
 | `apps/web` | Next.js + shadcn/ui frontend. Deployed to Cloud Run. |
+| `apps/ingester` | The MQTT ingester. Always-on, singleton, serves the hot state over HTTP. Declared but not deployed. |
 | `scripts/check-boundaries.mjs` | Enforces the dependency rule. Runs first in CI. |
 | `.github/workflows/check.yml` | Application checks. Holds no cloud credentials. |
 | `.github/workflows/logs.yml` | Reads the Cloud Run service's logs, on dispatch or a `/logs` comment. Runs no Pulumi and holds a read-only identity. |
 | `.github/workflows/build-logs.yml` | Reads a Cloud Build run's status and log, on dispatch or a `/buildlog` comment. Same identity. |
 | `docs/architecture/delivery-pipeline.md` | Why builds run on Cloud Build, and what that cost. |
 | `docs/architecture/warehouse.md` | The three BigQuery tables, the migration rules, and what has never been run. |
+| `docs/architecture/ingester.md` | The ingester: why it is a singleton, what a failure costs, and what is still unproven. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
 | `docs/requirements/` | The frozen spec: the MQTT protocol, the meter registry, and the four screens. |
 | `reference doc/`, root `.xlsx` | Customer specifications — the source those requirements were read from. |
@@ -60,6 +64,15 @@ workflow was, and — in its last section — the webhook design this replaced a
 that killed it. Read it before touching the pipeline. The shape in one line: the trigger holds a
 thin inline build, Cloud Build fetches the source, and every step runs a script from `ci/` in that
 checkout, so pipeline logic is ordinary reviewed code and only its skeleton is a Pulumi resource.
+Four steps now — `image`, `migrate`, `pulumi`, `report` — and `image` builds **both** deployables,
+web and ingester, from the one commit, because they share the payload decoder verbatim and a deploy
+must never put two versions of it in the same system.
+
+**The `migrate` step applies the warehouse migrations before the revision that depends on them.**
+It arrived with step 7, which is the first thing that reads the tables; on a pull request it is
+`migrate --dry-run`, which connects, reads the ledger and prints what it would apply — weaker than
+it looks, since it submits no DDL. `--skip-if-no-dataset` exists for the first apply on a new
+project, where the dataset is a Pulumi resource the *next* step creates.
 
 **The App connection is a console handshake and must exist before the triggers can be applied.** A
 trigger naming an unconnected repository is rejected, so connecting the repo at
@@ -165,6 +178,11 @@ npm run warehouse -w @power-meter/infrastructure -- migrate             # needs 
 npm run warehouse -w @power-meter/infrastructure -- load --hours 24     # replay fixtures
 npm run warehouse -w @power-meter/infrastructure -- verify --hours 24   # adapter vs. pure functions
 npm run warehouse -w @power-meter/infrastructure -- settings            # read back partition expiry
+npm run warehouse -w @power-meter/infrastructure -- reset --yes         # drop every table; migrate after
+
+npm run replay    -w @power-meter/ingester -- --minutes 7 --drop-at 120 --drop-for 40
+npm start         -w @power-meter/ingester      # needs MQTT_URL; docs/architecture/ingester.md
+npm run reconcile -w @power-meter/ingester -- --dir .ingester
 
 cd infra && npm ci             # infra is deliberately NOT a workspace member
 cd infra && npm run typecheck  # tsc --noEmit — the only infra check that works without credentials
@@ -280,12 +298,14 @@ Working in `apps/web` has two traps, both hit once already:
   traced in at all. There is no hoisted `node_modules` beside it — tracing puts everything under
   `apps/web`. The Dockerfile flattens this; changing either setting means re-checking it.
 
-Steps 0–6 are done: the spec is frozen into `docs/requirements/` (including all four screens, in
+Steps 0–7 are done: the spec is frozen into `docs/requirements/` (including all four screens, in
 `power-meter-ui.md`), the shell is deployed, the domain model, decoder and fixtures are in place with
 tests, the Real time route carries screens 1–3 — the 55-meter table and the kW and kWh charts — and
 History carries screen 4, all on those fixtures. Step 6 added the warehouse behind those same ports —
-schema, migrations and a fixture loader — and nothing reads it yet. Remaining, in order: the MQTT ingester,
-wiring the screens to real data, and the passcode gate.
+schema, migrations and a fixture loader. Step 7 added the ingester — `apps/ingester`, the
+`ReadingWriter` port behind it, the `migrate` step in the pipeline — built and verified against a
+local broker, gated on the customer, and deployed nowhere. Remaining, in order: wiring the screens
+to real data (which is also what first *reads* the warehouse), and the passcode gate.
 
 **The screens read their data through three files, `apps/web/lib/realtime-source.ts`,
 `apps/web/lib/series-source.ts` and `apps/web/lib/history-source.ts`.** They are the only places
@@ -362,9 +382,17 @@ remain. Do not quietly settle one from inference; it takes a captured payload.
 `packages/infrastructure/src/warehouse`. That line is the same one `bootstrap.sh` draws for the state
 bucket — a container that must exist before anything can run is infrastructure, what goes inside it
 is the application's own shape. Retention is a table setting (a 14-day partition expiry), so it lives
-with the DDL and there is no cleanup job. `docs/architecture/warehouse.md` has the rest, including
-the four things that have never been run: the deployer still needs `roles/bigquery.admin`, which
-`bootstrap.sh` now lists and this project was never granted.
+with the DDL and there is no cleanup job. `docs/architecture/warehouse.md` has the rest. The tables
+now exist in `saijo-power-meter` and the pipeline's `migrate` step applies the migrations, so the
+hand-run `migrate` is a development command rather than the deployment path.
+
+**`warehouse reset` exists because a fixture row and a real row are indistinguishable.** `load`
+writes synthetic readings into the same three tables the ingester writes real ones into, and no
+column says which is which — a 14-day partition keeps them for a fortnight either way. So the
+dataset is dropped and re-migrated before the first real reading is written, and `reset --yes` is
+that command. It refuses without `--yes`, it takes the ledger with the tables (a dropped table with
+its migration still recorded is exactly the drift the runner stops on), and after go-live it
+destroys history that exists nowhere else.
 
 **The History aggregation did not move into SQL, and must not.** `consumptionFrom()`'s reset rule and
 the three-minute running-hours cap have one implementation, in `packages/application`. The warehouse
@@ -383,7 +411,38 @@ because the ingester writing it has none.
 **`latest` is not the real-time screen's data source.** The ingester serves that from memory; the
 table exists so a restart does not begin blind, and is replaced wholesale rather than upserted.
 
-**The ingester is blocked on the customer.** The scaling divisors for active power and energy are
-not documented anywhere in the workbook, and its sample payload is filler that does not reconcile —
-see `docs/requirements/power-meter-mqtt.md`. Wrong scaling silently corrupts every row it writes and
-no backfill recovers it, so that step does not go live before one real captured payload arrives.
+**The ingester is built and is not connected to anything.** The scaling divisors for active power
+and energy are not documented anywhere in the workbook, and its sample payload is filler that does
+not reconcile — see `docs/requirements/power-meter-mqtt.md`. Wrong scaling silently corrupts every
+row it writes and no backfill recovers it, so `assertSafeToStart` in `apps/ingester/src/config.ts`
+refuses to run while `unconfirmedScales()` names anything, and the Cloud Run service sits behind
+`saijo-power-meter:deployIngester: "false"` in `Pulumi.dev.yaml` — a crash-looping revision would
+fail every apply from then on. Its service account, the three broker secrets and its warehouse
+access apply regardless, because none of them ingests anything. Flipping the flag belongs in the
+same change that confirms the divisors and adds a version to each secret.
+
+**The only way past that gate is a broker on loopback writing nowhere near BigQuery.**
+`WAREHOUSE=memory` or `WAREHOUSE=file` with an `mqtt://127.0.0.1` URL is the replay harness;
+anything else is refused. Both halves are checked, because what is being protected is the
+warehouse and not the broker. Do not add a third exemption.
+
+**Exactly one ingester, and it is three things rather than a setting.** `min-instances=1,
+max-instances=1`; a fixed MQTT client id, so a broker evicts the older session when a new revision
+attaches; and — the part that is easy to leave out — **an evicted instance exits instead of
+reconnecting**. Without the third, two ingesters evict each other every few seconds and both write.
+That last one reads MQTT 5's session-taken-over reason code, which the local replay broker (aedes,
+3.1.1) cannot send, which is why `MQTT_PROTOCOL_VERSION=4` is a harness setting and never a
+deployment one.
+
+**The ingester rolls up only minutes that have closed.** The flush timer does not divide the
+minute, so a batch straddling 12:00 would otherwise write `(meter, 12:00)` twice — and since the
+pair is the row's identity, the chart would simply draw that minute twice as heavily. Readings in
+the running minute stay in memory for the next flush; their raw rows go out immediately, because
+raw has no such identity. Raw and rollup are written in one call for the same reason: a crash
+between two separate writes leaves a minute in one table and not the other, and nothing reads them
+in a way that would notice.
+
+**The decoder is imported by the ingester, never re-implemented in it.** `StationDecoder` comes
+from `@power-meter/infrastructure`, the same object the fixtures and the screens use. That is what
+the plan means by *shared verbatim*, and the one rule in this file that a well-meaning refactor is
+most likely to break.

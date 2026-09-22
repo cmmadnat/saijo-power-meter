@@ -13,7 +13,8 @@ set -euo pipefail
 : "${MODE:?MODE must be preview or apply}"
 : "${PULUMI_BACKEND_URL:?PULUMI_BACKEND_URL must be the gs:// state bucket}"
 : "${GOOGLE_PROJECT:?GOOGLE_PROJECT must be set}"
-: "${WEB_IMAGE:?WEB_IMAGE must be the commit-pinned image reference}"
+: "${WEB_IMAGE:?WEB_IMAGE must be the commit-pinned web image reference}"
+: "${INGESTER_IMAGE:?INGESTER_IMAGE must be the commit-pinned ingester image reference}"
 : "${KMS_KEY:?KMS_KEY must be the secrets-provider key, for first-run stack init}"
 
 STACK=dev

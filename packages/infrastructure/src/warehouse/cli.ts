@@ -7,6 +7,7 @@
  *     npm run warehouse --workspace @power-meter/infrastructure -- load --hours 24
  *     npm run warehouse --workspace @power-meter/infrastructure -- verify --hours 24
  *     npm run warehouse --workspace @power-meter/infrastructure -- settings
+ *     npm run warehouse --workspace @power-meter/infrastructure -- reset --yes
  *
  * `sql` renders the migrations and prints them, touching nothing — it is the
  * one command that runs without credentials, and this session has none by
@@ -19,7 +20,7 @@ import process from "node:process";
 import { bigQueryClient } from "./client.ts";
 import { loadFixtures, verifyAgainstFixtures } from "./loader.ts";
 import { MIGRATIONS, render } from "./migrations.ts";
-import { partitionSettings, runMigrations } from "./runner.ts";
+import { partitionSettings, resetWarehouse, runMigrations } from "./runner.ts";
 import { DEFAULT_DATASET, RETENTION_DAYS, type WarehouseTarget } from "./schema.ts";
 
 function flag(name: string): string | undefined {
@@ -30,6 +31,17 @@ function flag(name: string): string | undefined {
 
 function has(name: string): boolean {
   return process.argv.includes(`--${name}`);
+}
+
+/**
+ * BigQuery says "Not found: Dataset <project>:<dataset>" and there is no code
+ * on the error worth matching, so the message is what there is. Narrow on both
+ * halves so an unrelated 404 — a missing table, say — is not swallowed as a
+ * missing dataset.
+ */
+function isMissingDataset(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not found/i.test(message) && /dataset/i.test(message);
 }
 
 const command = process.argv[2];
@@ -66,10 +78,28 @@ switch (command) {
   }
 
   case "migrate": {
-    const outcome = await runMigrations(await connect(), target, {
-      dryRun: has("dry-run"),
-      onProgress: log,
-    });
+    // `--skip-if-no-dataset` is for the pipeline and nowhere else. The dataset
+    // is a Pulumi resource and the tables are migrations, so on a project whose
+    // stack has never been applied the migrate step runs before the thing it
+    // migrates exists. Failing there would mean a first apply could never
+    // succeed; skipping means the run that creates the dataset does not
+    // migrate, and the next build does. See ci/migrate.sh.
+    let outcome;
+    try {
+      outcome = await runMigrations(await connect(), target, {
+        dryRun: has("dry-run"),
+        onProgress: log,
+      });
+    } catch (error) {
+      if (has("skip-if-no-dataset") && isMissingDataset(error)) {
+        log(
+          `dataset ${target.dataset} does not exist yet — nothing to migrate. ` +
+            "Pulumi creates it; the next run applies the migrations.",
+        );
+        break;
+      }
+      throw error;
+    }
     log(
       outcome.applied.length === 0
         ? `nothing to apply; ${outcome.alreadyApplied.length} migration(s) already recorded`
@@ -106,6 +136,26 @@ switch (command) {
     break;
   }
 
+  case "reset": {
+    // Destructive and deliberately awkward. Its whole reason for existing is
+    // the fixture rows: `load` writes synthetic readings into the same tables
+    // the ingester writes real ones into, and no column tells them apart, so
+    // the dataset is emptied before the first real reading is written. After
+    // go-live this drops history that exists nowhere else.
+    if (!has("yes")) {
+      log(
+        `refusing to drop every table in ${target.dataset}` +
+          `${target.projectId === undefined ? "" : ` (project ${target.projectId})`}. ` +
+          "Re-run with --yes if that is what you mean, then run migrate.",
+      );
+      process.exitCode = 1;
+      break;
+    }
+    const dropped = await resetWarehouse(await connect(), target, { onProgress: log });
+    log(`dropped ${dropped.length} table(s); run migrate to recreate them`);
+    break;
+  }
+
   case "settings": {
     for (const setting of await partitionSettings(await connect(), target)) {
       log(
@@ -118,6 +168,9 @@ switch (command) {
   }
 
   default:
-    log("usage: warehouse <sql|migrate|load|verify|settings> [--project P] [--dataset D] [--hours N] [--dry-run]");
+    log(
+      "usage: warehouse <sql|migrate|load|verify|settings|reset> " +
+        "[--project P] [--dataset D] [--hours N] [--dry-run] [--skip-if-no-dataset] [--yes]",
+    );
     process.exitCode = 1;
 }

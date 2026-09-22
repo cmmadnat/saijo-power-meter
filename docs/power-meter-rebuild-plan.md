@@ -1,7 +1,9 @@
 # Power Meter — rebuild plan (rough, for discussion)
 
 Status: **agreed in outline.** Rate, retention, scope, auth and timezone are settled (see Answered).
-One blocker remains before step 7 can go live, and it needs an answer from the customer: see Still open.
+One blocker remains before step 7 can go live, and it needs an answer from the customer: see Still
+open. Step 7 is built around that blocker rather than waiting for it — the ingester exists and
+refuses to connect to a real broker until the answer arrives.
 
 ## Architecture
 
@@ -346,32 +348,84 @@ of the DDL is unasked; `load`, `verify` and `settings` have never run; and the e
 deployer has not been granted `roles/bigquery.admin`, without which the apply fails. Nothing in the
 pipeline runs `migrate` — that belongs with step 7, where something first depends on the tables.
 
-### Step 7 — MQTT ingester
-**Gated on open questions 1 and 2 — do not go live before they are answered**, because wrong
-scaling silently corrupts every row it writes and a backfill cannot fix what was never captured
-correctly.
+### Step 7 — MQTT ingester — **built, and connected to nothing**
+**Still gated on open questions 1 and 2.** The service exists, it is verified against a local
+broker, and it refuses to run against a real one while the divisors for active power and energy
+are guesses. That refusal is code, not a note: `assertSafeToStart` in `apps/ingester/src/config.ts`
+throws with both field names, and the only way past it is a broker on `127.0.0.1` writing
+somewhere that is not BigQuery.
 
-A single always-on service that holds a subscription to the 9 station topics, decodes with the
-**step-2 decoder shared verbatim**, buffers ~30–60 s, and writes raw **and a 1-minute rollup** in the
-same batch. It also holds the latest reading for all 55 commissioned meters **in memory** and
-serves them over
-HTTP — that is the realtime screen's data source, and it is what keeps the hot path free.
+Shipped:
 
-**It must be a singleton: `min-instances=1, max-instances=1`.** Two instances means two subscriptions,
-every reading stored twice, and every energy total wrong. Fixed MQTT client ID so the broker evicts
-the stale connection across a deploy.
+- `apps/ingester` — the service. `broker.ts` (the `Broker` port and the MQTT.js adapter),
+  `ingester.ts` (decode, buffer, roll up, hold the hot state), `service.ts` (what happens on
+  connect, disconnect and takeover), `http.ts` (`/latest`, `/stats`, `/healthz`, `/readyz`),
+  `config.ts` (the gate), and `tools/replay.ts` + `tools/reconcile.ts`, which are how the claims
+  below were checked.
+- `packages/application/src/ports.ts` — `ReadingWriter`, the write side of the warehouse stated as
+  an interface the application owns, so the ingester is testable without BigQuery.
+- `packages/infrastructure/src/warehouse/writer.ts` — that port, backed by load jobs. Raw and the
+  rollup in one call; `latest` replaced wholesale, and never truncated to nothing.
+- `infra/index.ts` — the ingester's service account, the three broker secrets, its warehouse write
+  access and its secret access, all applied; the Cloud Run **service** behind
+  `saijo-power-meter:deployIngester`, which is `"false"`.
+- `ci/migrate.sh` and the pipeline's new `migrate` step, plus `ci/image.sh` building both images
+  from the one commit. Step 6 left the migrations hand-run because nothing depended on the tables;
+  this is the step that does.
+- `warehouse reset` — see *Loose ends* below.
 
-Broker credentials from Secret Manager — they are currently plaintext in the customer spreadsheet and
-should be rotated before go-live. Handles reconnect, duplicate delivery, and a broker that goes away
-for an hour.
+`docs/architecture/ingester.md` has the reasoning: why exactly one instance is correctness rather
+than tuning, what each failure mode costs, and what is still unproven.
 
-First hour of live data also answers the `M<n>E` question: watch whether the counter only climbs.
+**The singleton guarantee is three things, not one.** `min-instances=1, max-instances=1`; a fixed
+client id, so a broker evicts the older session when a new revision attaches; and an evicted
+instance that **exits rather than reconnecting**. The third is the one that is easy to leave out,
+and leaving it out is worse than having neither: the two instances evict each other every few
+seconds and both write. It reads MQTT 5's session-taken-over reason code, which is the only way a
+client is told *why* it was dropped.
 
-*Verify:* runs against a local broker replaying payloads at 60/min; kill the broker mid-run and
-confirm reconnect with no data loss beyond the documented window; **force a second instance and
-confirm it refuses to start or the broker evicts one** — duplicate ingestion must be impossible, not
-merely unlikely; restart and confirm the in-memory hot state rehydrates from the `latest` table; 24 h
-soak with flat memory; rollup totals reconcile against raw; cost per day measured, not estimated.
+**Only closed minutes are rolled up.** The flush timer does not divide the minute, so a batch
+straddling 12:00 would otherwise write `(meter, 12:00)` twice — and the pair is the row's identity,
+so nothing downstream would catch it; the chart would draw that minute twice as heavily. Raw goes
+out immediately either way, because raw has no such identity.
+
+*Verified, against a local broker (aedes) replaying the fixtures through `toStationPayload`:*
+a seven-minute run at 60 messages/minute — 419 published, 415 received, 2 537 readings across all
+55 commissioned meters, 783 uncommissioned slots dropped, zero decode issues. The broker was killed
+at 11:59:24 for 40 s: the client reconnected at 12:00:04 with the session resumed, the buffer was
+kept across it, and no reading that arrived was lost (`droppedReadings: 0`, `failedFlushes: 0`).
+`SIGTERM` flushed the last 91 readings before exiting. Restarting against the written `latest`
+rehydrated **55 meters** and served them on `/latest` immediately, with `/readyz` correctly 503
+while the broker was down. `tools/reconcile.ts` over the run: 385 rollup rows, every
+`(meter, minute)` exactly once, mean power and last counter matching the raw readings behind every
+bucket, and 2 391 counted + 146 still in the open minute = 2 537 raw. RSS held at 111–118 MB across
+the run. In unit tests: a retried flush that neither loses nor duplicates, a capped buffer that
+counts its drops, a hot state that keeps the *newest* reading when a queue drains out of order, and
+the takeover path driven through a fake broker — 33 tests in the app, 144 across the workspace.
+
+*Not verified, and each for a reason:*
+
+- **No real broker, and no real payload.** The gate; open questions 1 and 2.
+- **The takeover has never run against MQTT 5.** aedes speaks 3.1.1 only, where there is no reason
+  code. Running two ingesters against it shows exactly the flap the guard removes — each evicting
+  the other every ~5 s — which is the evidence that the guard is needed, not that it works.
+- **The image has never been built** (no Docker daemon in a cloud session) and **the Cloud Run
+  service has never existed**, so `min/max-instances`, the probes and the secret environment are
+  declared and unapplied.
+- **No 24-hour soak**, and **cost per day is still an estimate**. Both need the service running.
+- **The `migrate` step has never executed.** The first pull request touching `infra/` runs its dry
+  run.
+
+*Loose ends from step 6, decided:*
+
+- **The fixture rows stay until the dataset is reset, and `reset` is now a command.** `load` writes
+  synthetic readings into the same tables the ingester writes real ones into and nothing in a row
+  tells them apart. `warehouse reset --yes` drops all three tables and the ledger with them; the
+  sequence before the first real ingest is `reset` then `migrate`. A `source` column was the
+  alternative and was rejected: it costs a migration, a column on ~9.7 M rows, and a filter every
+  query has to remember.
+- **`migrate` is no longer hand-run.** It is a pipeline step, before the apply that promotes a
+  revision depending on it.
 
 ### Step 8 — Wire the UI to real data
 Replace fixture calls with API routes / server components. The step-5 aggregation functions move
@@ -435,9 +489,13 @@ cookie, every route and API behind it. No user accounts. Rate-limit the attempt 
 check); the passcode never reaches the client bundle or a log line; rotating it invalidates existing
 sessions; cookie flags correct over HTTPS.
 
-### Step 10 — Deploy — *pulled forward, awaiting merge*
+### Step 10 — Deploy — *web done; the ingester is declared and switched off*
 Cloud Run web service + the singleton ingester in `infra/`, image build and push, Secret Manager
-wiring (broker credentials, passcode), `asia-southeast1`.
+wiring (broker credentials, passcode), `asia-southeast1`. Step 7 brought most of this forward: the
+ingester's identity, secrets and access are applied, and its service waits on
+`saijo-power-meter:deployIngester` — which flips in the same change that confirms the divisors and
+adds a version to each secret. What is left here is the passcode secret and the rollback
+rehearsal.
 Preview on the PR, apply on merge — no credentials in-session, per CLAUDE.md.
 
 *Verify:* `pulumi preview` comment is clean; post-merge the deployed app shows live meter data;
@@ -541,7 +599,9 @@ Swapping BigQuery for Cloud SQL would put this at ~$25–40.
 - **Timezone: Asia/Bangkok** for day boundaries, the History picker, and rollup bucket edges. Stored
   as UTC instants, converted at the edges only.
 - **Voltage scaling: `data / 10`,** documented in the `Sample data` tab.
-- **`M<n>E` cumulative-vs-interval:** settled empirically in step 7's first hour of live data.
+- **`M<n>E` cumulative-vs-interval:** still to be settled empirically, in the first hour of live
+  data. Step 7 is built and cannot answer it, because it has never connected to a meter; the
+  decoder already flags a counter that goes backwards, so the first hour will say.
 
 ## Still open
 
@@ -574,7 +634,10 @@ that meter's own display reading at the same moment.
 
 Steps 0–6 do not need it — fixtures are synthetic and the scale factors live in one constants table.
 **Step 7 is gated on it**, because wrong scaling silently corrupts every row it writes and no
-backfill recovers data that was never captured correctly.
+backfill recovers data that was never captured correctly. The gate is now enforced in two places
+rather than written down: the service refuses to start (`assertSafeToStart`), and its Cloud Run
+service is not deployed (`saijo-power-meter:deployIngester: "false"`). Answering the question is
+one edit to `packages/infrastructure/src/mqtt/scaling.ts`, three secret versions and that flag.
 
 ## Explicitly not doing
 
