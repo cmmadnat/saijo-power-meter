@@ -205,10 +205,18 @@ ${GITHUB_REPO} — Settings > Secrets and variables > Actions > Variables,
 or with the gh CLI:
 
   gh variable set GCP_PROJECT_ID   --repo ${GITHUB_REPO} --body "${PROJECT_ID}"
-  gh variable set GCP_STATE_BUCKET --repo ${GITHUB_REPO} --body "${BUCKET}"
-  gh variable set GCP_KMS_KEY      --repo ${GITHUB_REPO} --body "${KMS_KEY}"
-  gh variable set GCP_DEPLOYER_SA  --repo ${GITHUB_REPO} --body "${SA_EMAIL}"
   gh variable set GCP_WIF_PROVIDER --repo ${GITHUB_REPO} --body "${POOL_NAME}/providers/${PROVIDER_ID}"
+
+Only those two. They are read by .github/workflows/logs.yml and build-logs.yml, which
+authenticate as the read-only log reader over this same provider. The state bucket,
+the KMS key and the deployer address are not repository variables any more — they
+were read by the retired infra.yml, and Cloud Build gets them from infra/index.ts.
+
+For reference, since bootstrap.sh created them:
+
+  state bucket  gs://${BUCKET}
+  KMS key       ${KMS_KEY}
+  deployer      ${SA_EMAIL}"
 
 Then run the Cloud Build setup, which is what actually builds and deploys:
 
