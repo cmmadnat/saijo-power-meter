@@ -126,6 +126,13 @@ creates no build, so its check never appears — and a check **required** by bra
 leave such a pull request pending forever. `infra-preview` is not required here, which is
 observable rather than assumed: PR #31 was merged three minutes before its preview finished.
 
+**Applied on 2026-09-23 and not yet observed skipping anything.** The apply that carried it
+(`b8feb07`, build `a92a84ae`) updated both triggers and went green, which says Cloud Build accepted
+the patterns — including `reference doc/**`, whose space was the one part nothing had validated.
+It does not say a build is actually skipped: that needs a push touching only ignored paths, and the
+first one is its own test. This page's own rule applies to the rule itself — "the trigger was
+created" is not evidence that it works.
+
 ### The fork guard is a setting now
 
 A build runs `ci/*.sh` from the commit it checks out, with the deployer's credentials, so
