@@ -18,7 +18,8 @@ import { Ingester } from "./ingester.ts";
 export interface ServiceOptions {
   readonly config: Config;
   readonly broker: Broker;
-  readonly writer: ReadingWriter;
+  /** Null is observe mode; see `Ingester`. */
+  readonly writer: ReadingWriter | null;
   readonly latestStore?: LatestReadingStore | undefined;
   readonly log?: (message: string) => void;
   /** Bind a port. Off in tests, where the routes are exercised directly. */
@@ -59,7 +60,12 @@ export async function startService(options: ServiceOptions): Promise<Service> {
       ? undefined
       : createHttpServer(ingester, {
           ready: () => connected && rehydrated,
-          detail: () => ({ connected, rehydrated, clientId: config.clientId }),
+          detail: () => ({
+            connected,
+            rehydrated,
+            clientId: config.clientId,
+            recording: ingester.recording,
+          }),
         });
   server?.listen(config.port, () => log(`listening on :${config.port}`));
 

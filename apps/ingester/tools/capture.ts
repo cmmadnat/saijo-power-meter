@@ -24,6 +24,11 @@
  * - **A random client id**, never the ingester's fixed one. Connecting with
  *   `power-meter-ingester` would make the broker evict a running ingester, and
  *   a diagnostic must not take production's subscription away.
+ *
+ *   `--client-id <id>` overrides that, for exactly one check: step 9's "a
+ *   connection on the go-live id is not evicted by the observer". It is safe
+ *   only while nothing records — before go-live, the writing ingester does not
+ *   run, so there is no one on that id to evict. After go-live, do not.
  * - **A clean session, QoS 0.** Nothing is queued for this client while it is
  *   away, so a capture left half-finished does not accumulate a backlog on the
  *   broker or compete with the ingester's own persistent session.
@@ -68,10 +73,19 @@ function log(message: string): void {
   process.stdout.write(`${message}\n`);
 }
 
+const clientId = arg(
+  "client-id",
+  `power-meter-capture-${Math.random().toString(16).slice(2, 10)}`,
+);
+if (!clientId.startsWith("power-meter-capture-")) {
+  log(`connecting as ${clientId}, not a random id: see --client-id in this file's header.`);
+}
+
 const client = mqtt.connect(url, {
-  // Random, never the ingester's fixed id: an id collision evicts whoever
-  // holds it, and a diagnostic must not take production's subscription away.
-  clientId: `power-meter-capture-${Math.random().toString(16).slice(2, 10)}`,
+  // Random by default, never the ingester's fixed id: an id collision evicts
+  // whoever holds it, and a diagnostic must not take production's
+  // subscription away.
+  clientId,
   clean: true,
   // 5 against HiveMQ. `MQTT_PROTOCOL_VERSION=4` is for pointing this at the
   // local replay broker, which speaks 3.1.1 only — useful for checking the
@@ -96,6 +110,14 @@ client.on("connect", () => {
       process.exitCode = 1;
     }
   });
+});
+
+// Reason code 142 is session-taken-over: someone else connected on this id.
+// Printed so step 9's eviction check has something to read either way.
+client.on("disconnect", (packet) => {
+  log(`broker sent DISCONNECT, reason code ${String(packet.reasonCode)}`);
+  client.end(true);
+  process.exitCode = 1;
 });
 
 client.on("error", (error) => {

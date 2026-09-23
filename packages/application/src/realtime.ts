@@ -53,6 +53,28 @@ export const DEFAULT_FRESHNESS: FreshnessThresholds = {
   staleWithinMs: 180_000,
 };
 
+/**
+ * Thresholds for a feed publishing every `intervalMs`, by the same rule as the
+ * default: three missed publishes is a wobble, twenty is a station that has
+ * stopped.
+ *
+ * Never tighter than `DEFAULT_FRESHNESS`, which is this rule at the spec's
+ * ~9 s — so at 9 s it returns the default exactly, and a faster feed does not
+ * start calling a two-second hiccup stale. It exists for the customer's test
+ * publisher, which publishes once a minute: under the default every meter
+ * would read live for thirty seconds and stale for the other thirty.
+ * `null` — nothing observed yet — is the default.
+ */
+export function freshnessForInterval(intervalMs: number | null): FreshnessThresholds {
+  if (intervalMs === null || !Number.isFinite(intervalMs) || intervalMs <= 0) {
+    return DEFAULT_FRESHNESS;
+  }
+  return {
+    liveWithinMs: Math.max(DEFAULT_FRESHNESS.liveWithinMs, Math.ceil(3 * intervalMs)),
+    staleWithinMs: Math.max(DEFAULT_FRESHNESS.staleWithinMs, Math.ceil(20 * intervalMs)),
+  };
+}
+
 /** One row of the table. Values are already in engineering units. */
 export interface RealtimeRow {
   readonly meterId: MeterId;

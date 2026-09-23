@@ -19,11 +19,31 @@ import {
 } from "@power-meter/infrastructure";
 
 /**
- * Where rows go. `bigquery` is the only one a deployment uses; the other two
- * exist for the local replay, which has no project behind it — see
- * `FileReadingWriter` in `@power-meter/infrastructure` and the gate below.
+ * Where rows go.
+ *
+ * - `bigquery` — the go-live deployment.
+ * - `none`     — observe mode, step 9: the customer's broker, and no writer at
+ *                all. The hot state and a rolling hour live in memory and are
+ *                served over HTTP; nothing is stored anywhere, not even the
+ *                restart state.
+ * - `memory`, `file` — the local replay, which has no project behind it; see
+ *                `FileReadingWriter` in `@power-meter/infrastructure`.
  */
-export type WarehouseMode = "bigquery" | "memory" | "file";
+export type WarehouseMode = "bigquery" | "none" | "memory" | "file";
+
+/**
+ * The client id the writing ingester holds. The broker evicts an older session
+ * that reuses it, which is what keeps the writing ingester single.
+ */
+export const GO_LIVE_CLIENT_ID = "power-meter-ingester";
+
+/**
+ * The client id an observing ingester holds, and it must never be the one
+ * above. Sharing it would let the observer evict the writer — or be evicted by
+ * it and exit — and a log line saying `power-meter-ingester` could then be
+ * either of two very different processes.
+ */
+export const OBSERVE_CLIENT_ID = "power-meter-observer";
 
 export interface Config {
   /** `mqtt://`, `mqtts://`, `ws://` or `wss://`. */
@@ -70,7 +90,6 @@ export interface Config {
 }
 
 const DEFAULTS = {
-  clientId: "power-meter-ingester",
   /**
    * 45 s, the middle of the plan's 30–60 s. It is also the loss window on a
    * crash: readings received since the last flush are in memory and nowhere
@@ -92,9 +111,14 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error("MQTT_URL is required (mqtt://, mqtts://, ws:// or wss://).");
   }
   const warehouse = (env["WAREHOUSE"] ?? "bigquery") as WarehouseMode;
-  if (warehouse !== "bigquery" && warehouse !== "memory" && warehouse !== "file") {
+  if (
+    warehouse !== "bigquery" &&
+    warehouse !== "none" &&
+    warehouse !== "memory" &&
+    warehouse !== "file"
+  ) {
     throw new Error(
-      `WAREHOUSE must be "bigquery", "memory" or "file", not ${warehouse}`,
+      `WAREHOUSE must be "bigquery", "none", "memory" or "file", not ${warehouse}`,
     );
   }
 
@@ -102,7 +126,9 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     brokerUrl,
     username: env["MQTT_USERNAME"] || undefined,
     password: env["MQTT_PASSWORD"] || undefined,
-    clientId: env["MQTT_CLIENT_ID"] || DEFAULTS.clientId,
+    clientId:
+      env["MQTT_CLIENT_ID"] ||
+      (warehouse === "none" ? OBSERVE_CLIENT_ID : GO_LIVE_CLIENT_ID),
     protocolVersion: protocolVersion(env["MQTT_PROTOCOL_VERSION"]),
     flushIntervalMs: positive(env["FLUSH_INTERVAL_MS"], DEFAULTS.flushIntervalMs),
     latestFlushIntervalMs: positive(
@@ -158,16 +184,28 @@ export function isLoopbackBroker(brokerUrl: string): boolean {
  * reconcile with itself. Reading a real meter through them produces numbers
  * that look like measurements and are not.
  *
- * The one exemption is a broker on loopback **writing somewhere that is not
- * the warehouse** — `memory` or `file`. That combination is the local replay
- * the plan asks for as verification, and it cannot corrupt anything because
- * there is no warehouse behind it. Both halves are required: a loopback broker
- * with `WAREHOUSE=bigquery` is refused, because what is being protected is the
- * warehouse and not the broker.
+ * There are two exemptions, and they rest on one argument: what is being
+ * protected is the warehouse, not the broker.
+ *
+ * - **A broker on loopback writing somewhere that is not the warehouse** —
+ *   `memory` or `file`. That is the local replay the plan asks for as
+ *   verification. Both halves are required: a loopback broker with
+ *   `WAREHOUSE=bigquery` is refused.
+ * - **`WAREHOUSE=none`, any broker.** Observe mode, step 9. There is no writer
+ *   behind it at all — not BigQuery, not the Firestore restart state — so a
+ *   guessed divisor produces a guessed number on a screen that says so, and
+ *   nothing that outlives the process. It is the one way the customer's broker
+ *   is read by this service before the divisors are settled.
+ *
+ * Do not add a third. Whatever else is checked below is about client ids, and
+ * holds whether or not the scales are confirmed.
  */
 export function assertSafeToStart(config: Config): void {
+  assertClientId(config);
+
   const unconfirmed = unconfirmedScales();
   if (unconfirmed.length === 0) return;
+  if (config.warehouse === "none") return;
 
   const fields = unconfirmed.join(", ");
   if (isLoopbackBroker(config.brokerUrl) && config.warehouse !== "bigquery") {
@@ -182,7 +220,34 @@ export function assertSafeToStart(config: Config): void {
       "that meter's own display reading at the same moment; see\n" +
       "docs/requirements/power-meter-mqtt.md, then edit\n" +
       "packages/infrastructure/src/mqtt/scaling.ts.\n" +
-      "Until then this service runs only against a broker on loopback with\n" +
-      "WAREHOUSE=memory or WAREHOUSE=file, which is the local replay harness.",
+      "Until then this service runs only in observe mode (WAREHOUSE=none), or against\n" +
+      "a broker on loopback with WAREHOUSE=memory or WAREHOUSE=file, which is the local\n" +
+      "replay harness.",
   );
+}
+
+/**
+ * An observer and the writer never share a client id, in either direction.
+ *
+ * An observer on the writer's id would evict the writing ingester — which then
+ * exits, by design — and the factory would stop being recorded with nothing
+ * but an observer left running. A writer on the observer's id is the mirror
+ * case: a deploy that switched observe to record without changing the id, and
+ * a second writer somewhere else on `power-meter-ingester`, would both write.
+ */
+function assertClientId(config: Config): void {
+  if (config.warehouse === "none" && config.clientId === GO_LIVE_CLIENT_ID) {
+    throw new Error(
+      `Refusing to start: WAREHOUSE=none with MQTT_CLIENT_ID=${GO_LIVE_CLIENT_ID}.\n` +
+        "That is the writing ingester's id, and the broker would evict whichever of the\n" +
+        `two connected first. Observe mode runs as ${OBSERVE_CLIENT_ID}, its default.`,
+    );
+  }
+  if (config.warehouse === "bigquery" && config.clientId === OBSERVE_CLIENT_ID) {
+    throw new Error(
+      `Refusing to start: WAREHOUSE=bigquery with MQTT_CLIENT_ID=${OBSERVE_CLIENT_ID}.\n` +
+        "That id is reserved for observe mode, which writes nothing. A writing ingester\n" +
+        `runs as ${GO_LIVE_CLIENT_ID}, so the broker keeps it single.`,
+    );
+  }
 }

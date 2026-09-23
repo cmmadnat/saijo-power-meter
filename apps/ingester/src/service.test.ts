@@ -173,4 +173,26 @@ describe("subscribing", () => {
     // on 3.1.1 and publishes nothing retained, so there is nothing to suppress.
     assert.deepEqual(subscribeOptions(4), { qos: 1 });
   });
+
+  it("observes: ready without a restart state, and exits on a takeover", async () => {
+    const broker = new FakeBroker();
+    const started = await startService({
+      config: { ...config, warehouse: "none", clientId: "power-meter-observer" },
+      broker,
+      writer: null,
+      serve: false,
+    });
+    assert.equal(started.ready(), true, "nothing to rehydrate, so connected is ready");
+    assert.equal(started.ingester.recording, false);
+
+    broker.deliver("PMeterStation01", new Date("2026-09-22T03:00:00Z"));
+    assert.equal(started.ingester.snapshot().length, 5);
+
+    // Another observer revision attaching: this one stands aside, as the
+    // writer would. It never evicts the writer, whose id it does not hold.
+    broker.handlers?.onTakeover("another client connected with the id");
+    await started.stopped;
+    assert.equal(broker.closed, true);
+    assert.equal(started.ingester.stats().flushes, 0);
+  });
 });

@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { MeterRegistry, type Meter, type MeterId, type Reading } from "@power-meter/domain";
 import type { Clock, LatestReadingStore } from "./ports.ts";
-import { DEFAULT_FRESHNESS, realtimeTable, statusFor } from "./realtime.ts";
+import {
+  DEFAULT_FRESHNESS,
+  freshnessForInterval,
+  realtimeTable,
+  statusFor,
+} from "./realtime.ts";
 
 const NOW = new Date("2025-09-21T10:00:00.000Z");
 const clock: Clock = { now: () => NOW };
@@ -52,6 +57,23 @@ test("freshness follows the publish rate", () => {
   assert.equal(statusFor(DEFAULT_FRESHNESS.staleWithinMs), "stale");
   assert.equal(statusFor(DEFAULT_FRESHNESS.staleWithinMs + 1), "offline");
   assert.equal(statusFor(null), "offline", "never seen is offline, not blank");
+});
+
+test("freshness for an observed interval is the default's rule, not a second one", () => {
+  // At the spec's ~9 s the rule reproduces the default exactly.
+  assert.deepEqual(freshnessForInterval(9_000), DEFAULT_FRESHNESS);
+  assert.deepEqual(freshnessForInterval(null), DEFAULT_FRESHNESS);
+  assert.deepEqual(freshnessForInterval(0), DEFAULT_FRESHNESS);
+  // Never tighter than the default for a faster feed.
+  assert.deepEqual(freshnessForInterval(1_000), DEFAULT_FRESHNESS);
+  // The customer's test publisher, once a minute: three missed is stale,
+  // twenty is offline.
+  const minute = freshnessForInterval(60_000);
+  assert.deepEqual(minute, { liveWithinMs: 180_000, staleWithinMs: 1_200_000 });
+  // The flicker the default would show: a reading 45 s old, mid-cycle.
+  assert.equal(statusFor(45_000), "stale");
+  assert.equal(statusFor(45_000, minute), "live");
+  assert.equal(statusFor(59_000, minute), "live");
 });
 
 test("one row per commissioned meter, uncommissioned slots dropped", async () => {

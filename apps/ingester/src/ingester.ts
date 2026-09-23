@@ -36,6 +36,29 @@
  * Since step 8c the copy is one Firestore document rather than a BigQuery
  * table — nothing here knows which, because it goes out through `ReadingWriter`
  * like everything else.
+ *
+ * ## Observe mode
+ *
+ * Constructed with `writer: null`, it records nothing: no buffer, no rollup, no
+ * flush timers, no restart-state mirror. What is left is decode, the hot state
+ * and the rolling hour below — the parts the screens read. That is step 9's
+ * ingester, reading the customer's broker while the divisors are guesses; it is
+ * `null` rather than a writer that discards, so "writes nothing" is a property
+ * of the object graph and not of a method body.
+ *
+ * ## The rolling hour
+ *
+ * Every mode keeps the last hour of readings per meter in memory, served at
+ * `/recent`, so a kW chart has something to draw when nothing is stored. It is
+ * bounded by time and by count, so it is flat over a soak like the hot state.
+ *
+ * ## The publish interval
+ *
+ * The spec says each station publishes every ~9 s; the customer's test feed
+ * publishes once a minute. Freshness thresholds built for the first would show
+ * the second flickering live → stale every minute, so the ingester measures
+ * the interval it actually sees — the median gap between consecutive messages
+ * on the same topic — and reports it beside the hot state.
  */
 import {
   rollupReadings,
@@ -50,7 +73,8 @@ import { StationDecoder, type DecodeIssueKind } from "@power-meter/infrastructur
 import type { BrokerMessage } from "./broker.ts";
 
 export interface IngesterOptions {
-  readonly writer: ReadingWriter;
+  /** Null is observe mode: nothing is buffered, flushed or mirrored. */
+  readonly writer: ReadingWriter | null;
   /** Where a restart reads its hot state back from. Omitted means start blind. */
   readonly latestStore?: LatestReadingStore | undefined;
   readonly registry?: MeterRegistry;
@@ -65,9 +89,13 @@ export interface IngesterOptions {
    * serving the live screen, which is the part nothing else can do.
    */
   readonly maxBufferedReadings?: number;
+  /** How far back `/recent` reaches. An hour, which is what the kW chart draws. */
+  readonly recentWindowMs?: number;
 }
 
 export interface IngesterStats {
+  /** False in observe mode: nothing leaves the process. */
+  readonly recording: boolean;
   readonly messages: number;
   readonly readings: number;
   readonly droppedUncommissioned: number;
@@ -84,20 +112,33 @@ export interface IngesterStats {
   readonly lastMessageAt: string | null;
   readonly lastFlushAt: string | null;
   readonly rehydratedMeters: number;
+  /** The median gap between messages on one topic, or null before there is one. */
+  readonly publishIntervalMs: number | null;
+  readonly recentReadings: number;
 }
 
 const MINUTE_MS = 60_000;
+const HOUR_MS = 60 * MINUTE_MS;
+/**
+ * The most readings kept per meter in the rolling hour: one a second. Far
+ * above the spec's one per ~9 s; it exists so a publisher gone haywire costs a
+ * bounded amount of memory rather than the process.
+ */
+const MAX_RECENT_PER_METER = 3_600;
+/** Gaps kept for the median: a few publishes per station across all nine. */
+const INTERVAL_SAMPLES = 45;
 
 export class Ingester {
   readonly #registry: MeterRegistry;
   readonly #decoder: StationDecoder;
-  readonly #writer: ReadingWriter;
+  readonly #writer: ReadingWriter | null;
   readonly #latestStore: LatestReadingStore | undefined;
   readonly #clock: Clock;
   readonly #log: (message: string) => void;
   readonly #flushIntervalMs: number;
   readonly #latestFlushIntervalMs: number;
   readonly #maxBufferedReadings: number;
+  readonly #recentWindowMs: number;
 
   /** Raw readings not yet written. Cleared on a successful flush. */
   #buffered: Reading[] = [];
@@ -106,6 +147,11 @@ export class Ingester {
   /** Rollup rows built but not yet accepted by the warehouse. */
   #pendingRollupRows: ReadingBatch["rollup"][number][] = [];
   readonly #hot = new Map<MeterId, Reading>();
+  /** The rolling hour, oldest first, per meter. */
+  readonly #recent = new Map<MeterId, Reading[]>();
+  /** When each topic's last message arrived, for the interval estimate. */
+  readonly #lastByTopic = new Map<string, number>();
+  #gaps: number[] = [];
 
   #timer: ReturnType<typeof setInterval> | undefined;
   #latestTimer: ReturnType<typeof setInterval> | undefined;
@@ -135,6 +181,17 @@ export class Ingester {
     this.#flushIntervalMs = options.flushIntervalMs ?? 45_000;
     this.#latestFlushIntervalMs = options.latestFlushIntervalMs ?? 30_000;
     this.#maxBufferedReadings = options.maxBufferedReadings ?? 20_000;
+    this.#recentWindowMs = options.recentWindowMs ?? HOUR_MS;
+  }
+
+  /** How far back `recent()` can reach. */
+  get recentWindowMs(): number {
+    return this.#recentWindowMs;
+  }
+
+  /** False in observe mode. */
+  get recording(): boolean {
+    return this.#writer !== null;
   }
 
   /** The topics this ingester must be subscribed to, from the registry. */
@@ -173,6 +230,7 @@ export class Ingester {
   accept(message: BrokerMessage): void {
     this.#messages += 1;
     this.#lastMessageAt = message.at;
+    this.#observeInterval(message.topic, message.at);
 
     const result = this.#decoder.decode(message.topic, message.payload, message.at);
     this.#droppedUncommissioned += result.droppedUncommissioned;
@@ -182,8 +240,11 @@ export class Ingester {
 
     for (const reading of result.readings) {
       this.#readings += 1;
-      this.#buffered.push(reading);
-      this.#pendingRollup.push(reading);
+      if (this.#writer !== null) {
+        this.#buffered.push(reading);
+        this.#pendingRollup.push(reading);
+      }
+      this.#remember(reading);
       const current = this.#hot.get(reading.meterId);
       // Out-of-order delivery is possible after a reconnect drains a queue, and
       // the hot state is "newest", not "last seen".
@@ -202,7 +263,33 @@ export class Ingester {
     );
   }
 
+  /**
+   * The rolling hour, oldest first, for the meters asked for — every meter
+   * seen when `meters` is omitted. Reaches back `withinMs` from `now`, capped
+   * at the window this ingester keeps.
+   */
+  recent(options: { meters?: readonly MeterId[]; withinMs?: number } = {}): readonly Reading[] {
+    const within = Math.min(options.withinMs ?? this.#recentWindowMs, this.#recentWindowMs);
+    const since = this.#clock.now().getTime() - within;
+    const meters = options.meters ?? [...this.#recent.keys()].sort();
+    return meters.flatMap((meterId) =>
+      (this.#recent.get(meterId) ?? []).filter((reading) => reading.at.getTime() >= since),
+    );
+  }
+
+  /** The median gap between consecutive messages on one topic, or null. */
+  publishIntervalMs(): number | null {
+    if (this.#gaps.length === 0) return null;
+    const sorted = [...this.#gaps].sort((a, b) => a - b);
+    const middle = Math.floor(sorted.length / 2);
+    return sorted.length % 2 === 1
+      ? sorted[middle]!
+      : Math.round((sorted[middle - 1]! + sorted[middle]!) / 2);
+  }
+
   start(): void {
+    // Observe mode has nothing to flush and nothing to mirror.
+    if (this.#writer === null) return;
     this.#timer ??= setInterval(() => {
       void this.flush();
     }, this.#flushIntervalMs);
@@ -225,6 +312,8 @@ export class Ingester {
   }
 
   async #flushOnce(): Promise<void> {
+    const writer = this.#writer;
+    if (writer === null) return;
     const now = this.#clock.now();
     const closedBefore = Math.floor(now.getTime() / MINUTE_MS) * MINUTE_MS;
 
@@ -249,7 +338,7 @@ export class Ingester {
     this.#pendingRollupRows = [];
 
     try {
-      await this.#writer.append({ readings, rollup, ingestedAt: now });
+      await writer.append({ readings, rollup, ingestedAt: now });
       this.#flushes += 1;
       this.#lastFlushAt = now;
       this.#rowsWritten += readings.length;
@@ -272,7 +361,7 @@ export class Ingester {
 
   /** Mirror the hot state to the durable copy a restart reads. */
   async flushLatest(): Promise<void> {
-    if (this.#hot.size === 0) return;
+    if (this.#writer === null || this.#hot.size === 0) return;
     try {
       await this.#writer.replaceLatest(this.snapshot());
       this.#latestFlushes += 1;
@@ -300,6 +389,7 @@ export class Ingester {
 
   stats(): IngesterStats {
     return {
+      recording: this.recording,
       messages: this.#messages,
       readings: this.#readings,
       droppedUncommissioned: this.#droppedUncommissioned,
@@ -316,7 +406,41 @@ export class Ingester {
       lastMessageAt: this.#lastMessageAt?.toISOString() ?? null,
       lastFlushAt: this.#lastFlushAt?.toISOString() ?? null,
       rehydratedMeters: this.#rehydratedMeters,
+      publishIntervalMs: this.publishIntervalMs(),
+      recentReadings: [...this.#recent.values()].reduce((sum, list) => sum + list.length, 0),
     };
+  }
+
+  #remember(reading: Reading): void {
+    let list = this.#recent.get(reading.meterId);
+    if (list === undefined) {
+      list = [];
+      this.#recent.set(reading.meterId, list);
+    }
+    const last = list[list.length - 1];
+    list.push(reading);
+    // Out of order only after a reconnect drains a queue; keep it sorted so
+    // the chart reads it as a line rather than a scribble.
+    if (last !== undefined && reading.at.getTime() < last.at.getTime()) {
+      list.sort((a, b) => a.at.getTime() - b.at.getTime());
+    }
+    const newest = list[list.length - 1]!.at.getTime();
+    let drop = 0;
+    while (drop < list.length && list[drop]!.at.getTime() < newest - this.#recentWindowMs) {
+      drop += 1;
+    }
+    drop = Math.max(drop, list.length - MAX_RECENT_PER_METER);
+    if (drop > 0) list.splice(0, drop);
+  }
+
+  #observeInterval(topic: string, at: Date): void {
+    const previous = this.#lastByTopic.get(topic);
+    this.#lastByTopic.set(topic, at.getTime());
+    if (previous === undefined) return;
+    const gap = at.getTime() - previous;
+    if (gap <= 0) return;
+    this.#gaps.push(gap);
+    if (this.#gaps.length > INTERVAL_SAMPLES) this.#gaps.shift();
   }
 
   #trimBuffer(): void {

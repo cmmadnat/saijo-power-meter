@@ -8,6 +8,10 @@ Written at step 7 of `docs/power-meter-rebuild-plan.md`. **It is built and verif
 local broker, and it has never connected to the customer's.** The reason is at the bottom of
 this page and it is not a technical one.
 
+Step 9 added a second way to run it — **observe mode**, `WAREHOUSE=none` — which is how it first
+meets the customer's broker: no writer at all, so a guessed divisor can reach a screen that says
+so and nothing that outlives the process. See *Observe mode* below.
+
 ## What is where
 
 | | |
@@ -16,7 +20,7 @@ this page and it is not a technical one.
 | `apps/ingester/src/broker.ts` | The `Broker` port and the MQTT.js adapter: reconnect, persistent session, takeover. |
 | `apps/ingester/src/ingester.ts` | Decode, buffer, roll up closed minutes, hold the hot state. |
 | `apps/ingester/src/service.ts` | How the service reacts to connect, disconnect and takeover. |
-| `apps/ingester/src/http.ts` | `/latest`, `/stats`, `/healthz`, `/readyz`. |
+| `apps/ingester/src/http.ts` | `/latest`, `/recent`, `/stats`, `/healthz`, `/readyz`. |
 | `packages/infrastructure/src/file-store/` | The ports backed by files. The replay harness only; moved out of this app at step 8 so the web app's live mode can read what the ingester writes. |
 | `apps/ingester/tools/replay.ts` | A broker on loopback replaying the fixtures at 60 msg/min. |
 | `apps/ingester/tools/reconcile.ts` | Checks a run's rollup against the raw readings behind it. |
@@ -146,13 +150,42 @@ screen reads the ingester's memory over HTTP, as it always did.
 ## The startup gate
 
 `assertSafeToStart` refuses to run while `unconfirmedScales()` is non-empty — today the divisors
-for **active power** and **energy**, neither documented in the customer's workbook. The exemption
-is a broker on loopback with `WAREHOUSE=memory` or `WAREHOUSE=file`, which is the replay harness
-and cannot reach BigQuery. Both halves are required: a loopback broker pointed at the real dataset
-is refused, because what is being protected is the warehouse, not the broker.
+for **active power** and **energy**, neither documented in the customer's workbook. There are two
+exemptions, and one argument behind both: what is being protected is the warehouse, not the broker.
+
+- **A broker on loopback with `WAREHOUSE=memory` or `WAREHOUSE=file`** — the replay harness, which
+  cannot reach BigQuery. Both halves are required: a loopback broker pointed at the real dataset
+  is refused.
+- **`WAREHOUSE=none`, any broker** — observe mode. There is no writer object behind it, not
+  BigQuery and not the Firestore restart state.
+
+There is no third. The gate also checks client ids, whatever the scales: observe mode refuses
+`power-meter-ingester`, and a writer refuses `power-meter-observer`.
 
 This is not caution about a number being slightly off. A wrong divisor writes engineering units
 that look like measurements, the raw integers are never stored, and no backfill recovers them.
+
+## Observe mode
+
+Step 9's ingester: the customer's broker, read into memory, served over HTTP, stored nowhere. The
+feed it reads is a **test publisher** — the customer's own words — and the real meters are not
+publishing yet, so what it shows is the wire format and the fleet's shape, not measurements.
+
+| | |
+| --- | --- |
+| `WAREHOUSE=none` | `main.ts` hands the ingester `writer: null`. Nothing is buffered, rolled up, flushed or mirrored; the flush timers never start. "Writes nothing" is a property of the object graph rather than of a method that discards. |
+| No restart state | Nothing is read back either, so a restart begins empty and fills within one publish. |
+| Clean session | `persistentSession: false`. A queue drained after a restart would arrive in one burst stamped with the moment of the burst; an observer has no loss for a queue to prevent. |
+| `power-meter-observer` | Its default client id. The writing ingester's id is refused in this mode, so the observer can never evict the writer or be mistaken for it. Still `min = max = 1`, and still exits on a takeover — by the next observer revision. |
+| `GET /recent` | The last hour per meter, oldest first, in memory in every mode. `?meters=a,b` and `?minutes=n` narrow it. Capped at an hour and at 3 600 readings per meter. |
+| `publishIntervalMs` | The median gap between messages on one topic, on `/latest` and `/stats`. The test feed publishes once a minute, not every ~9 s, and `freshnessForInterval()` in `packages/application` turns that into thresholds by the default's own rule — three missed publishes is stale, twenty is offline — which at 9 s *is* the default. |
+| `recording` | `false` on `/latest`, `/stats` and `/readyz`, so a reader can tell an observer from the writer without knowing how it was deployed. |
+
+It was run against the replay broker on 2026-09-23 (`WAREHOUSE=none`, loopback, protocol 4): ready
+as `power-meter-observer` with `recording: false`, 55 meters on `/latest`, a measured interval of
+9 011 ms against the replay's 9 s, 240 readings on `/recent`, zero flushes, and no `.ingester`
+directory created. Against HiveMQ it has not run; the checks for that are in
+`docs/runbooks/cloud-shell.md`.
 
 ## Capturing a real payload
 
@@ -217,7 +250,7 @@ every screen is on the live code path, badged *Local replay*. That is what makes
 answerable without a project: *restart and the hot state rehydrates from `latest`*, and *the rollup
 reconciles against raw*.
 
-## Deployment, and the flag that is off
+## Deployment
 
 `infra/index.ts` declares the ingester's service account, the three broker secrets
 (`mqtt-broker-url`, `mqtt-broker-username`, `mqtt-broker-password`), the warehouse write access,
@@ -235,24 +268,56 @@ start a load job; a Storage Write API append is a data-plane call covered by `da
 dataset. It cannot run a query at all now, which is the right shape for a process whose whole job
 is to append.
 
-The Cloud Run **service** is behind `saijo-power-meter:deployIngester`, which is `"false"`. A
-deployed revision would refuse to start — that is the gate doing its job — and a crash-looping
-revision fails every apply from then on. **Step 8c is done, so the quota blocker is gone**; what
-is left is the scaling one. Flipping the flag to `"true"`
-belongs in the same change that confirms the divisors and adds a version to each secret:
+The Cloud Run **service** is behind `saijo-power-meter:deployIngester`, and what it runs is
+`saijo-power-meter:ingesterMode` — `"observe"` (the default: `WAREHOUSE=none`,
+`power-meter-observer`) or `"record"` (`WAREHOUSE=bigquery`, `power-meter-ingester`). `"record"` is
+go-live: a revision set that way refuses to start while the divisors are guesses, and a
+crash-looping revision fails every apply from then on. The program also refuses
+`dataMode: "live"` unless `ingesterMode` is `"record"`, because live mode reads a warehouse an
+observer never writes.
+
+**Turning `deployIngester` on also creates the three secrets' first versions**, read at apply time
+from `reference doc/mqtt` — values the customer already committed, so putting them in Pulumi state
+exposes nothing git has not, and it removes a hand-run step an apply would otherwise depend on:
+Cloud Run refuses a revision whose secret has no version. They carry `deletionPolicy: ABANDON`.
+Rotation, at go-live, is by hand and never into a file:
 
 ```bash
 printf '%s' "$VALUE" | gcloud secrets versions add mqtt-broker-password \
   --project saijo-power-meter --data-file=-
 ```
 
-The values are in the customer's workbook in plaintext, on its `MQTT Server` tab. They should be
-rotated before go-live; a rotation is a new secret version plus a restart, not a deploy.
+then delete the `SecretVersion` resources from the program — ABANDON leaves the old versions in
+place to be disabled, rather than destroying one the service might still be reading.
+
+**It runs on a VM, not on Cloud Run** — `saijo-power-meter:ingesterHost`, `"vm"` by default.
+Cloud Run holding one always-on vCPU bills ~$45–70 a month; Compute Engine's free tier covers one
+e2-micro, which an ingester decoding nine messages a minute does not strain. What that changes:
+
+| | |
+| --- | --- |
+| Region | `us-central1-a`: the free e2-micro exists only in three US regions. Nothing else moved. At go-live, rows cross to the dataset in `asia-southeast1` — a few MB a day. |
+| One instance | No instance group, and `deleteBeforeReplace`: the old VM is deleted before the new one boots. The client id and exit-on-takeover still hold. |
+| Deploys | The commit-pinned image is in the startup script, which cannot change in place, so a code merge *replaces* the VM — a minute or two without an observer. |
+| Secrets | Fetched at boot by the ingester's own image, as its own account, into tmpfs, and passed as `--env-file`. |
+| Access | Private. One firewall rule: SSH from IAP's range. `/latest` is read through `gcloud compute ssh --tunnel-through-iap`. The external IP is outbound only; Cloud NAT would cost more than the rest together. |
+| Health | `docker --restart always`. There is no readiness gate as Cloud Run had; a boot that fails shows in the serial console. |
+| Logs | Cloud Logging under `gce_instance`, not the Cloud Run resource `/logs` reads. |
+| The web app | **Has no route to it.** Cloud Run's `run.invoker` has no VM equivalent, so step 10 must give the Incoming source one; the program refuses `dataMode: "live"` on a VM until then. |
+
+`"cloudrun"` keeps the service above, unchanged, for whoever decides the bill is worth the managed
+probes.
+
+The deployer's role list was checked for this change, per the rule step 8c's red `main` taught:
+`roles/secretmanager.admin` covers adding a version, `roles/run.admin` the service and its invoker
+binding, and `roles/iam.serviceAccountUser` acting as the ingester's account. The VM needed three it did
+not hold — `compute.instanceAdmin.v1`, `compute.networkAdmin`, `compute.securityAdmin` — granted by
+hand before the merge and added to `bootstrap.sh`.
 
 ## What has not been run
 
-- **No connection to the customer's broker.** Gated on the scaling question — see the plan's
-  *Still open*.
+- **No connection to the customer's broker from this service.** Observe mode is built for it and
+  the flag that deploys it is `deployIngester`; the four checks are in the runbook.
 - **The image has never been built.** This session has no Docker daemon; `apps/ingester/Dockerfile`
   is built for the first time by the pipeline's `image` step.
 - **The Cloud Run service has never existed**, so `min/max-instances`, the probes and the secret

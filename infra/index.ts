@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import * as path from "node:path";
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
 
@@ -8,8 +10,10 @@ const region = new pulumi.Config("gcp").require("region");
 // make, because they have to exist before Pulumi can run at all, or because they
 // are secret values that cannot live in code: the state bucket, its KMS key and
 // the deployer service account. The Secret Manager *secrets* are declared here;
-// only their values are added out of band, since a secret value in a Pulumi
-// program is a secret value in the state bucket and in every diff.
+// their values are added out of band, since a secret value in a Pulumi program
+// is a secret value in the state bucket and in every diff. The one exception is
+// the broker's first versions, whose values the customer already committed —
+// see brokerSecretValues below.
 
 // App-level API enablement. The bootstrap enables only what it needs itself.
 const services = [
@@ -35,6 +39,10 @@ const services = [
     // BigQuery because 55 rows rewritten every 30 s is 2 880 table
     // modifications a day against a cap of 1 500.
     "firestore.googleapis.com",
+    // The ingester's free-tier VM, since step 9, and the IAP tunnel that is
+    // the only way into it.
+    "compute.googleapis.com",
+    "iap.googleapis.com",
     // On by default in every project, declared anyway: the logs workflows are
     // useless without it, and a project where someone turned it off should fail
     // here rather than in a job that reads zero entries and looks healthy.
@@ -153,27 +161,54 @@ export const warehouseDataset = warehouse.datasetId;
 // evicts the older session, and an evicted instance that exits instead of
 // reconnecting. See apps/ingester/src/broker.ts.
 //
-// It is not deployed yet, and `deployIngester` is why. The scale factors for
-// active power and energy are still guesses (see the plan's "Still open"), the
-// service refuses to start against a real broker while they are, and a
-// crash-looping revision would fail every apply from here on. So this step
-// declares the identity, the secrets and the access the service needs — all of
-// which are useful now and none of which ingest anything — and leaves the
-// service itself behind a flag that is flipped in the same change that confirms
-// the divisors and adds the secret versions.
+// It is deployed in **observe mode** since step 9: connected to the customer's
+// broker, writing nothing. The scale factors for active power and energy are
+// still guesses, and the service refuses to *write* while they are — but with
+// `WAREHOUSE=none` there is no writer at all, not BigQuery and not the Firestore
+// restart state, so the gate lets it read (apps/ingester/src/config.ts). It
+// serves the hot state and a rolling hour from memory, which is what the
+// viewer's Incoming source reads at step 10.
+//
+// `ingesterMode` is the switch between that and recording, and "record" belongs
+// to go-live (step 11): the same change that confirms the divisors, rotates the
+// broker credentials and resets the warehouse. Flipping it early is safe in one
+// sense only — the revision would refuse to start and the apply would fail.
 
 const deployIngester = new pulumi.Config().getBoolean("deployIngester") ?? false;
+const ingesterMode = new pulumi.Config().get("ingesterMode") ?? "observe";
+if (ingesterMode !== "observe" && ingesterMode !== "record") {
+    throw new Error(
+        `saijo-power-meter:ingesterMode must be "observe" or "record", not ${ingesterMode}.`,
+    );
+}
+// Two ids, never shared, and the app refuses either one in the other's mode.
+// An observer on the writer's id would evict it; see OBSERVE_CLIENT_ID.
+const ingesterClientId =
+    ingesterMode === "record" ? "power-meter-ingester" : "power-meter-observer";
 
-// The broker's address and credentials. The *containers* are declared here; the
-// values are not, and cannot be: a secret in a Pulumi program is a secret in
-// the state bucket and in a diff. Versions are added out of band, once:
+// The broker's address and credentials. The *containers* are declared here,
+// and so — since step 9, and only while observing — are their first versions.
+//
+// A secret value in a Pulumi program is a secret value in the state bucket,
+// which is why the header of this file says values are added out of band. These
+// three are the exception because they are not secret any more: the customer
+// supplied them in `reference doc/mqtt`, which is committed, and they are in
+// git history for good. Putting them in state exposes nothing git has not, and
+// it removes a hand-run step that an apply depends on — Cloud Run refuses a
+// revision whose secret has no version, so a forgotten `gcloud secrets versions
+// add` would be a red `main`.
+//
+// That reasoning ends at rotation, which is a go-live item. The rotated values
+// go in by hand as new versions, never into a file:
 //
 //   printf '%s' "$PASSWORD" | gcloud secrets versions add mqtt-broker-password \
 //     --project saijo-power-meter --data-file=-
 //
-// The customer's workbook carries these in plaintext on its `MQTT Server` tab.
-// They should be rotated before go-live, and the rotation is a new version
-// here plus a restart of the service — no deploy.
+// The service reads `latest`, so a new version plus a restart is the whole
+// rotation. Then delete `brokerSecretValues` below: `deletionPolicy: ABANDON`
+// means removing the resources leaves the old versions where they are, to be
+// disabled with `gcloud secrets versions disable`, rather than Pulumi
+// destroying a version the service might still be reading.
 const brokerSecrets = [
     { secretId: "mqtt-broker-url", env: "MQTT_URL" },
     { secretId: "mqtt-broker-username", env: "MQTT_USERNAME" },
@@ -262,13 +297,63 @@ new gcp.projects.IAMMember("ingester-restart-state", {
 
 export const restartStateDatabase = restartState.name;
 
-for (const { secretId, secret } of brokerSecrets) {
-    new gcp.secretmanager.SecretIamMember(`ingester-${secretId}`, {
-        secretId: secret.id,
-        role: "roles/secretmanager.secretAccessor",
-        member: pulumi.interpolate`serviceAccount:${ingesterIdentity.email}`,
-    });
+const brokerSecretAccess = brokerSecrets.map(
+    ({ secretId, secret }) =>
+        new gcp.secretmanager.SecretIamMember(`ingester-${secretId}`, {
+            secretId: secret.id,
+            role: "roles/secretmanager.secretAccessor",
+            member: pulumi.interpolate`serviceAccount:${ingesterIdentity.email}`,
+        }),
+);
+
+/**
+ * `KEY=VALUE` lines from the customer's file, the same format
+ * apps/ingester/tools/broker-config.ts reads. The host comes without a scheme;
+ * a HiveMQ Cloud cluster has no plain 1883, so it can only mean mqtts:// on
+ * 8883, and that is the one conversion made here.
+ */
+function brokerSecretValues(): Record<string, string> {
+    const file = path.join(__dirname, "..", "reference doc", "mqtt");
+    const entries = Object.fromEntries(
+        readFileSync(file, "utf8")
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line !== "" && !line.startsWith("#") && line.includes("="))
+            .map((line) => {
+                const at = line.indexOf("=");
+                return [line.slice(0, at).trim(), line.slice(at + 1).trim()];
+            }),
+    );
+    const host = entries["TLS_MQTT_URL"] ?? entries["MQTT_URL"];
+    const { USERNAME: username, PASSWORD: password } = entries;
+    if (!host || !username || !password) {
+        throw new Error(
+            `${file} must carry MQTT_URL or TLS_MQTT_URL, USERNAME and PASSWORD.`,
+        );
+    }
+    const url = /^[a-z]+:\/\//.test(host)
+        ? host
+        : `mqtts://${host.includes(":") ? host : `${host}:8883`}`;
+    return {
+        "mqtt-broker-url": url,
+        "mqtt-broker-username": username,
+        "mqtt-broker-password": password,
+    };
 }
+
+const brokerSecretVersions = deployIngester
+    ? (() => {
+          const values = brokerSecretValues();
+          return brokerSecrets.map(
+              ({ secretId, secret }) =>
+                  new gcp.secretmanager.SecretVersion(`${secretId}-v1`, {
+                      secret: secret.id,
+                      secretData: pulumi.secret(values[secretId]!),
+                      deletionPolicy: "ABANDON",
+                  }),
+          );
+      })()
+    : [];
 
 const ingesterImage = process.env.INGESTER_IMAGE;
 
@@ -320,9 +405,17 @@ function deployTheIngester(): gcp.cloudrunv2.Service {
                             // deployment reading a database the program did not
                             // declare is the failure worth making impossible.
                             { name: "FIRESTORE_DATABASE", value: restartState.name },
+                            // "none" is observe mode: no writer, no restart
+                            // state. The two stores above stay declared and
+                            // granted; nothing in this process reaches them.
+                            {
+                                name: "WAREHOUSE",
+                                value: ingesterMode === "record" ? "bigquery" : "none",
+                            },
                             // Fixed, so the broker evicts the old connection
-                            // when a new revision attaches.
-                            { name: "MQTT_CLIENT_ID", value: "power-meter-ingester" },
+                            // when a new revision attaches — and different per
+                            // mode, so an observer never evicts the writer.
+                            { name: "MQTT_CLIENT_ID", value: ingesterClientId },
                             // `latest`, so rotating a credential is a new secret
                             // version and a restart rather than a deploy.
                             ...brokerSecrets.map(({ env, secretId }) => ({
@@ -356,12 +449,26 @@ function deployTheIngester(): gcp.cloudrunv2.Service {
                 ],
             },
         },
-        { dependsOn: [images, warehouse, restartState, ...services] },
+        {
+            // The secret access and versions too: Cloud Run resolves the
+            // secrets when it creates the revision, and a revision created
+            // before the grant lands fails with a permission error.
+            dependsOn: [
+                images,
+                warehouse,
+                restartState,
+                ...services,
+                ...brokerSecretAccess,
+                ...brokerSecretVersions,
+            ],
+        },
     );
 
     // The web app, and nothing else. Deliberately not allUsers: this endpoint
-    // is the live state of a factory and there is no passcode in front of it
-    // until step 9.
+    // is the live state of a factory and there is no passcode in front of the
+    // web app yet (the plan's Backlog, due before go-live). To read it by hand:
+    //   curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+    //     "$(pulumi stack output ingesterUrl)/latest"
     new gcp.cloudrunv2.ServiceIamMember("ingester-web-invoker", {
         name: ingester.name,
         location: ingester.location,
@@ -372,7 +479,199 @@ function deployTheIngester(): gcp.cloudrunv2.Service {
     return ingester;
 }
 
-const ingesterService = deployIngester ? deployTheIngester() : undefined;
+// --- Where the ingester runs: a free-tier VM, or Cloud Run -------------------
+//
+// `ingesterHost` is "vm" by default, since step 9. The Cloud Run service above
+// holds one always-on vCPU, ~$45–70 a month; Compute Engine's free tier covers
+// one e2-micro a month, 30 GB of standard disk and 1 GB of egress from North
+// America. The ingester decodes nine small messages a minute, which an
+// e2-micro's shared quarter-vCPU does without noticing.
+//
+// **The free e2-micro exists only in us-west1, us-central1 and us-east1**, so
+// this is the one resource outside asia-southeast1. That costs nothing in
+// observe mode, which writes nothing. At go-live it means rows cross from
+// us-central1 to the dataset in asia-southeast1 — a few MB a day — and the web
+// app has no route to the VM yet: Cloud Run's run.invoker has no VM
+// equivalent, so reading it from the web app is step 10's problem, and the
+// program refuses live mode on a VM until then.
+//
+// What the VM keeps from the Cloud Run design, and how:
+// - **Exactly one.** One instance, no group, and `deleteBeforeReplace`, so the
+//   old VM is gone before the new one boots: never two subscriptions, even
+//   briefly. The client id and the exit-on-takeover still hold regardless.
+// - **Commit-pinned image.** The image reference is in the startup script,
+//   which Compute Engine cannot change in place, so a new image *replaces* the
+//   VM — a minute or two with no observer per code merge, and nothing lost that
+//   observe mode would have kept.
+// - **Secrets from Secret Manager**, fetched at boot as the ingester's own
+//   account into tmpfs (/run) and handed to the container as its environment.
+// - **Private.** The only ingress rule is SSH from IAP's range, so /latest is
+//   read over `gcloud compute ssh --tunnel-through-iap`. The external IP is
+//   outbound only — to HiveMQ and the registry — because Cloud NAT, the
+//   alternative, costs more than everything else here put together.
+//
+// The deployer needs three compute roles for this that it did not hold before
+// step 9 — instanceAdmin.v1, networkAdmin, securityAdmin. They are in
+// bootstrap.sh, and were granted by hand before this merged, because a preview
+// passes over a missing role and the apply would have failed 403.
+
+const ingesterHost = new pulumi.Config().get("ingesterHost") ?? "vm";
+if (ingesterHost !== "vm" && ingesterHost !== "cloudrun") {
+    throw new Error(
+        `saijo-power-meter:ingesterHost must be "vm" or "cloudrun", not ${ingesterHost}.`,
+    );
+}
+const ingesterZone = "us-central1-a";
+
+function deployTheIngesterVm(): gcp.compute.Instance {
+    if (!ingesterImage) {
+        throw new Error(
+            "INGESTER_IMAGE is not set but deployIngester is true. The pipeline " +
+                "builds and pushes the ingester image, then passes its commit-pinned " +
+                "reference here; see ci/pulumi.sh.",
+        );
+    }
+
+    const network = new gcp.compute.Network(
+        "ingester",
+        { name: "ingester", autoCreateSubnetworks: false },
+        { dependsOn: services },
+    );
+    const subnet = new gcp.compute.Subnetwork("ingester-us-central1", {
+        name: "ingester-us-central1",
+        network: network.id,
+        region: "us-central1",
+        ipCidrRange: "10.10.0.0/24",
+    });
+    // SSH from Identity-Aware Proxy's forwarding range, and nothing else. There
+    // is no rule for 8080: the HTTP surface is reachable only from the VM.
+    new gcp.compute.Firewall("ingester-iap-ssh", {
+        name: "ingester-iap-ssh",
+        network: network.id,
+        direction: "INGRESS",
+        sourceRanges: ["35.235.240.0/20"],
+        targetTags: ["ingester"],
+        allows: [{ protocol: "tcp", ports: ["22"] }],
+    });
+
+    // What Cloud Run granted implicitly, a VM has to be given: pulling the
+    // image, and writing the container's output to Cloud Logging.
+    const pull = new gcp.artifactregistry.RepositoryIamMember("ingester-image-pull", {
+        repository: images.name,
+        location: images.location,
+        role: "roles/artifactregistry.reader",
+        member: pulumi.interpolate`serviceAccount:${ingesterIdentity.email}`,
+    });
+    const logs = new gcp.projects.IAMMember("ingester-log-writer", {
+        project: warehouse.project,
+        role: "roles/logging.logWriter",
+        member: pulumi.interpolate`serviceAccount:${ingesterIdentity.email}`,
+    });
+
+    const registryHost = ingesterImage.split("/")[0];
+    const secretEnv = brokerSecrets
+        .map(({ secretId, env }) => `["${secretId}", "${env}"]`)
+        .join(", ");
+    // Runs on every boot. Container-Optimized OS has docker and curl and a
+    // read-only root; /var is writable and /run is tmpfs, which is where the
+    // credentials go so they never reach the disk as a file of their own.
+    const startupScript = pulumi.interpolate`#!/bin/bash
+set -euo pipefail
+IMAGE='${ingesterImage}'
+PROJECT='${warehouse.project}'
+export DOCKER_CONFIG=/var/lib/ingester/docker
+mkdir -p "$DOCKER_CONFIG" /run/ingester
+chmod 755 /run/ingester
+
+curl -sf -H 'Metadata-Flavor: Google' \\
+  'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' \\
+  | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p' \\
+  | docker login -u oauth2accesstoken --password-stdin 'https://${registryHost}'
+docker pull "$IMAGE"
+
+# The broker's address and credentials, read as the ingester's own account by
+# the ingester's own image: Node has fetch, and COS has no gcloud and no jq.
+cat > /run/ingester/secrets.mjs <<'JS'
+const md = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
+const { access_token } = await (await fetch(md, { headers: { "Metadata-Flavor": "Google" } })).json();
+for (const [id, env] of [${secretEnv}]) {
+  const url = "https://secretmanager.googleapis.com/v1/projects/" + process.argv[2] +
+    "/secrets/" + id + "/versions/latest:access";
+  const response = await fetch(url, { headers: { authorization: "Bearer " + access_token } });
+  if (!response.ok) throw new Error(id + ": HTTP " + response.status);
+  const body = await response.json();
+  console.log(env + "=" + Buffer.from(body.payload.data, "base64").toString("utf8"));
+}
+JS
+chmod 644 /run/ingester/secrets.mjs
+(umask 077 && docker run --rm --network host -v /run/ingester:/w:ro --entrypoint node "$IMAGE" \\
+  /w/secrets.mjs "$PROJECT" > /run/ingester/env)
+
+docker rm -f ingester >/dev/null 2>&1 || true
+docker run -d --name ingester --restart always --network host \\
+  --log-opt max-size=10m --log-opt max-file=3 \\
+  --env-file /run/ingester/env \\
+  -e PORT=8080 \\
+  -e WAREHOUSE='${ingesterMode === "record" ? "bigquery" : "none"}' \\
+  -e MQTT_CLIENT_ID='${ingesterClientId}' \\
+  -e GOOGLE_PROJECT="$PROJECT" \\
+  -e WAREHOUSE_DATASET='${warehouse.datasetId}' \\
+  -e WAREHOUSE_LOCATION='${region}' \\
+  -e FIRESTORE_DATABASE='${restartState.name}' \\
+  "$IMAGE"
+`;
+
+    return new gcp.compute.Instance(
+        "ingester",
+        {
+            name: "power-meter-ingester",
+            zone: ingesterZone,
+            // The free-tier shape, exactly: e2-micro, *standard* persistent
+            // disk (the default, pd-balanced, is not free), in a free region.
+            machineType: "e2-micro",
+            bootDisk: {
+                initializeParams: {
+                    image: "cos-cloud/cos-stable",
+                    size: 10,
+                    type: "pd-standard",
+                },
+            },
+            networkInterfaces: [
+                {
+                    subnetwork: subnet.id,
+                    // Ephemeral external IP, outbound only; see the note above.
+                    accessConfigs: [{}],
+                },
+            ],
+            serviceAccount: {
+                email: ingesterIdentity.email,
+                scopes: ["cloud-platform"],
+            },
+            tags: ["ingester"],
+            metadata: {
+                // COS ships container stdout to Cloud Logging with this set.
+                "google-logging-enabled": "true",
+                "enable-oslogin": "TRUE",
+            },
+            metadataStartupScript: startupScript,
+            allowStoppingForUpdate: true,
+        },
+        {
+            deleteBeforeReplace: true,
+            dependsOn: [
+                pull,
+                logs,
+                ...brokerSecretAccess,
+                ...brokerSecretVersions,
+                ...services,
+            ],
+        },
+    );
+}
+
+const ingesterService =
+    deployIngester && ingesterHost === "cloudrun" ? deployTheIngester() : undefined;
+const ingesterVm = deployIngester && ingesterHost === "vm" ? deployTheIngesterVm() : undefined;
 
 // --- The web service ---------------------------------------------------------
 //
@@ -394,6 +693,19 @@ if (dataMode === "live" && ingesterService === undefined) {
     throw new Error(
         "saijo-power-meter:dataMode is \"live\" but deployIngester is false. Live mode " +
             "reads the real-time table from the ingester; flip both in the same change.",
+    );
+}
+if (dataMode === "live" && ingesterHost === "vm") {
+    throw new Error(
+        "saijo-power-meter:dataMode is \"live\" but the ingester runs on a VM, which the web " +
+            "app has no route to yet. Give it one (step 10) or set ingesterHost to \"cloudrun\".",
+    );
+}
+if (dataMode === "live" && ingesterMode !== "record") {
+    throw new Error(
+        "saijo-power-meter:dataMode is \"live\" but ingesterMode is \"observe\". Live mode " +
+            "reads the charts and History from the warehouse, which an observing ingester " +
+            "never writes; flip both at go-live.",
     );
 }
 
@@ -454,7 +766,11 @@ new gcp.cloudrunv2.ServiceIamMember("web-public", {
 
 export const ingesterServiceAccount = ingesterIdentity.email;
 export const ingesterDeployed = deployIngester;
+export const ingesterRunsAs = deployIngester ? ingesterMode : undefined;
 export const ingesterUrl = ingesterService?.uri;
+export const ingesterHostedOn = deployIngester ? ingesterHost : undefined;
+export const ingesterInstance = ingesterVm?.name;
+export const ingesterInstanceZone = ingesterVm ? ingesterZone : undefined;
 
 // --- Reading the application's logs from CI ----------------------------------
 //

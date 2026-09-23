@@ -1,5 +1,5 @@
 /**
- * The HTTP surface: four routes, all read-only.
+ * The HTTP surface: five routes, all read-only.
  *
  * `GET /latest` is the point of the whole service being always-on — the newest
  * reading for every commissioned meter, out of memory, costing nothing per
@@ -13,12 +13,27 @@
  * in `@power-meter/infrastructure`, beside the web app's client that parses it
  * back, so the two deployables share one definition of it the way they share
  * the decoder. It is re-exported here for this app's own tests.
+ *
+ * `GET /recent` is the rolling in-memory hour, added at step 9 so a kW chart
+ * has something to draw from an observer that stores nothing.
+ * `?meters=a,b` narrows it and `?minutes=n` shortens it; unnarrowed it is every
+ * meter's hour, which at the spec's rate is ~22 000 readings and worth not
+ * asking for every ten seconds.
  */
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { toLatestDto, type LatestResponse } from "@power-meter/infrastructure";
+import type { MeterId } from "@power-meter/domain";
+import {
+  toLatestDto,
+  type LatestResponse,
+  type RecentResponse,
+} from "@power-meter/infrastructure";
 import type { Ingester, IngesterStats } from "./ingester.ts";
 
-export type { LatestReadingDto, LatestResponse } from "@power-meter/infrastructure";
+export type {
+  LatestReadingDto,
+  LatestResponse,
+  RecentResponse,
+} from "@power-meter/infrastructure";
 
 export interface HealthState {
   /** True once the broker connection is up and the hot state has been read back. */
@@ -32,7 +47,8 @@ export function handle(
   ingester: Ingester,
   health: HealthState,
 ): { status: number; body: unknown } {
-  const path = url.split("?")[0] ?? "/";
+  const [path = "/", search = ""] = url.split("?");
+  const query = new URLSearchParams(search);
   switch (path) {
     case "/healthz":
       // Liveness, not readiness. A broker outage must not make Cloud Run
@@ -48,7 +64,34 @@ export function handle(
     case "/latest": {
       const body: LatestResponse = {
         asOf: new Date().toISOString(),
+        recording: ingester.recording,
+        publishIntervalMs: ingester.publishIntervalMs(),
         readings: ingester.snapshot().map(toLatestDto),
+      };
+      return { status: 200, body };
+    }
+
+    case "/recent": {
+      const meters = query.get("meters");
+      const minutes = query.get("minutes");
+      let withinMs: number | undefined;
+      if (minutes !== null) {
+        const parsed = Number(minutes);
+        if (!Number.isFinite(parsed) || parsed <= 0) {
+          return { status: 400, body: { error: "minutes must be a positive number" } };
+        }
+        withinMs = parsed * 60_000;
+      }
+      const readings = ingester.recent({
+        ...(meters === null || meters === ""
+          ? {}
+          : { meters: meters.split(",").filter((id) => id !== "") as MeterId[] }),
+        ...(withinMs === undefined ? {} : { withinMs }),
+      });
+      const body: RecentResponse = {
+        asOf: new Date().toISOString(),
+        windowMs: Math.min(withinMs ?? ingester.recentWindowMs, ingester.recentWindowMs),
+        readings: readings.map(toLatestDto),
       };
       return { status: 200, body };
     }

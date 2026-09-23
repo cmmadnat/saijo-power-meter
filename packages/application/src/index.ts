@@ -26,7 +26,12 @@ export type {
   RealtimeTable,
   RealtimeTableInput,
 } from "./realtime.ts";
-export { DEFAULT_FRESHNESS, realtimeTable, statusFor } from "./realtime.ts";
+export {
+  DEFAULT_FRESHNESS,
+  freshnessForInterval,
+  realtimeTable,
+  statusFor,
+} from "./realtime.ts";
 export type {
   MeterSeries,
   MeterSeriesInput,

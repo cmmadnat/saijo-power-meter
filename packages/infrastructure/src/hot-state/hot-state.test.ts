@@ -26,6 +26,8 @@ test("a reading survives the trip through /latest and back", async () => {
   calls = [];
   const body: LatestResponse = {
     asOf: new Date().toISOString(),
+    recording: true,
+    publishIntervalMs: 9_000,
     readings: JSON.parse(JSON.stringify(fixtures.readings.slice(-55).map(toLatestDto))),
   };
   const store = new IngesterLatestReadingStore({
