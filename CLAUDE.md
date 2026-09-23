@@ -348,8 +348,8 @@ writes: `latest` is gone from BigQuery and is one Firestore document, and raw an
 the Storage Write API instead of load jobs — because load jobs are capped per table per day and the
 ingester's writes are a daily rate. That is measured, not argued: 1 600 appends to each table in
 eight minutes against a scratch dataset, zero failures, where a load job is refused at 1 500 — see
-`docs/architecture/warehouse.md`. What is left of 8c is the merge that applies it. Remaining: the
-passcode gate.
+`docs/architecture/warehouse.md`. **It is applied**: `0002` is in, the `(default)` Firestore
+database exists, and the ingester's `roles/bigquery.jobUser` is gone. Remaining: the passcode gate.
 
 **The screens read their data through three files, `apps/web/lib/realtime-source.ts`,
 `apps/web/lib/series-source.ts` and `apps/web/lib/history-source.ts`, and none of them knows the
@@ -533,12 +533,12 @@ says in advance, and `pulumi import` is the remedy.
 
 **Creating it takes `roles/datastore.owner` on the deployer, and that cost a red `main`.** The
 step 8c merge previewed green and applied 403 — `datastore.databases.create` is in that role and
-the deployer held thirteen others. It is in `bootstrap.sh` now. The general rule, and this is its
+the deployer held thirteen others. It is in `bootstrap.sh` now, and granted. The general rule, and this is its
 second instance after the step 7 one: **a change that adds a kind of resource the stack has never
 created before checks the deployer's role list in the same edit**, because a preview plans rather
 than creates and passes over a missing role. The apply that failed had already run `migrate`, so
-a failure there leaves a *partly* applied merge — see `docs/architecture/warehouse.md` for which
-half.
+a failure there leaves a *partly* applied merge — harmless that time because nothing read either
+store yet, and not something to rely on twice.
 
 **The ingester is built and is not connected to anything.** The scaling divisors for active power
 and energy are not documented anywhere in the workbook, and its sample payload is filler that does

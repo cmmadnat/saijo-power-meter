@@ -602,7 +602,7 @@ badge is present on every route in demo mode and absent in live; `DATA_MODE=live
 `assumed` scales fails to boot, with both field names in the message; no fixture module is reachable
 from a live-mode render path, asserted the way `check-boundaries.mjs` asserts the dependency rule.
 
-### Step 8c — Fit the ingester's writes inside BigQuery's per-table limit — **done, verified against the project**
+### Step 8c — Fit the ingester's writes inside BigQuery's per-table limit — **done, verified and applied**
 **Had to land before `deployIngester` is flipped, and has.** Found after step 8, and not a cost
 problem — a correctness one. The ingester wrote with **load jobs**, and BigQuery caps table
 modifications per table per day.
@@ -708,18 +708,20 @@ repeated whenever the wall clock crossed a minute. Anchored once now, and the te
 which is what would have caught it. The ingester's closed-minute rule is separate code and was
 never involved.
 
-**The merge half-applied.** `migrate` passed — **`0002` is applied to `power_meter` and `latest`
-is dropped in production** — and then `pulumi` failed 403 creating the Firestore database: the
-deployer did not hold `roles/datastore.owner`, and the preview had gone green because a preview
-plans rather than creates. So the Firestore database, the ingester's `roles/datastore.user` and
-the removal of its `roles/bigquery.jobUser` are all still outstanding, while the API enablement
-and the web revision landed. Nothing is broken by the split — nothing reads either store yet —
-and it re-applies whole once the role is granted. The role is in `bootstrap.sh` now; on this
-project it is one `gcloud projects add-iam-policy-binding`.
+**Applied, on the second attempt.** The merge's `migrate` passed and its `pulumi` step failed 403
+creating the Firestore database — the deployer did not hold `roles/datastore.owner`, and the
+preview had gone green because a preview plans rather than creates. Granting the role and
+re-applying finished it: `image / migrate / pulumi` all passed on build `96715c14`, `+ 2 created,
+~ 1 updated, - 1 deleted`. So `0002` is in, the `(default)` Firestore database exists, the ingester
+holds `roles/datastore.user`, and its `roles/bigquery.jobUser` is gone.
+
+The failure is recorded rather than tidied away, in `docs/architecture/delivery-pipeline.md`,
+because it is the second instance of one rule: **a change that adds a kind of resource the stack
+has never created before checks the deployer's role list in the same edit.** The half-applied state
+in between broke nothing only because nothing reads either store yet.
 
 | Unproven | What settles it |
 | --- | --- |
-| Pulumi creates the Firestore database | the apply after the deployer is granted `roles/datastore.owner` |
 | The ingester process itself writing to either store | blocked by the scaling gate, as everything else about it is |
 
 The plan's own verify list asked for `/stats` showing `failedFlushes: 0` against a real dataset.

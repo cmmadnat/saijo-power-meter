@@ -353,33 +353,37 @@ begin with. Nothing in the ingester shares that code — its closed-minute rule 
 `apps/ingester/src/ingester.ts` and was not involved — but a tool that claims a property and does
 not have it is worse than one that claims nothing.
 
-**The merge half-applied, and what landed is worth stating exactly.** The step 8c merge ran on
-2026-09-23 and its `migrate` step passed: **`0002` is applied to `power_meter`, so `latest` is
-dropped in production.** The `pulumi` step then failed creating the Firestore database — the
-deployer did not hold `roles/datastore.owner`, and a preview plans rather than creates, so it had
-gone green. See `docs/architecture/delivery-pipeline.md`. What that leaves:
+**It took two applies, and the first one's failure is worth keeping.** The step 8c merge ran on
+2026-09-23 and its `migrate` step passed — `0002` applied, `latest` dropped — and then `pulumi`
+failed creating the Firestore database: the deployer did not hold `roles/datastore.owner`, and a
+preview plans rather than creates, so it had gone green. See
+`docs/architecture/delivery-pipeline.md` for the rule that comes out of it. Granting the role and
+re-applying finished the job:
 
-| | |
-| --- | --- |
-| `0002` applied, `latest` dropped | ✅ |
-| `firestore.googleapis.com` enabled | ✅ |
-| Web service on the new image | ✅ (still `DATA_MODE=demo`) |
-| The Firestore `(default)` database | ✗ — the 403 |
-| `roles/datastore.user` for the ingester | ✗ — never reached |
-| `roles/bigquery.jobUser` **removed** | ✗ — never reached, the binding is still there |
+```
+apply · e6820e2 · build 96715c14
+  image      passed
+  migrate    passed
+  pulumi     passed
++ 2 created, ~ 1 updated, - 1 deleted. 4 changes, 33 unchanged
+```
 
-Nothing is broken by that split, because nothing reads either store yet: the ingester is not
-deployed and the web app never read `latest`. It re-applies whole once the deployer has the role.
+So the whole of step 8c is applied: `0002` is in, the `(default)` Firestore database exists in
+`asia-southeast1` (it is a stack output, `restartStateDatabase`), the ingester holds
+`roles/datastore.user`, and its `roles/bigquery.jobUser` is **gone** — only a load job needed it.
+
+The half-applied state between the two runs broke nothing, because nothing reads either store yet:
+the ingester is not deployed and the web app never read `latest`. That will not be true of the next
+partial apply, which is the reason to note it happened.
 
 What is still unproven, and what settles it:
 
 | Unproven | The command |
 | --- | --- |
-| Pulumi creates the Firestore database | the apply after the deployer is granted `roles/datastore.owner` |
 | The ingester process itself writing to either store | blocked by the scaling gate, as everything else about it is |
 
-`gcloud firestore databases list` on 2026-09-23 returned nothing, so the project has no `(default)`
-database and Pulumi will create rather than collide with one. One oddity worth knowing before
+`gcloud firestore databases list` returned nothing before the apply, so Pulumi created the
+`(default)` database rather than colliding with one. One oddity worth knowing before
 trusting the pricing page's "no free quota for named databases": the scratch database, created when
 the project had no default, came back from the API with `freeTier: true`. Firestore appears to
 designate the *first* database in a project as the free-tier one rather than `(default)` strictly.

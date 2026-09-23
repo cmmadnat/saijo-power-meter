@@ -21,20 +21,15 @@ node --version          # must be >= 22.6 for --experimental-strip-types; nvm in
 
 ---
 
-## Outstanding: grant the deployer `roles/datastore.owner`
+## Nothing is outstanding
 
-**Status: needed now, as of 2026-09-23.** `main` is red until this is done and an apply re-runs.
+As of 2026-09-23 the project is fully applied: step 8c's migration `0002` is in, the `(default)`
+Firestore database exists, and the deployer holds `roles/datastore.owner`.
 
-The step 8c merge failed its `pulumi` step with:
-
-```
-Error creating Database: googleapi: Error 403: The caller does not have permission
-```
-
-Creating a Firestore database takes `datastore.databases.create`, which lives in
-`roles/datastore.owner`. The deployer holds thirteen project roles and none of them is that one.
-The preview went green because a preview plans rather than creates — see
-`docs/architecture/delivery-pipeline.md`.
+It did not the first time. The step 8c apply failed with
+`Error creating Database: googleapi: Error 403: The caller does not have permission`, because
+creating a Firestore database takes `datastore.databases.create` and only `roles/datastore.owner`
+carries it. The fix, kept here because the next new resource kind may need the same shape of thing:
 
 ```bash
 gcloud projects add-iam-policy-binding saijo-power-meter \
@@ -43,19 +38,18 @@ gcloud projects add-iam-policy-binding saijo-power-meter \
   --condition None
 ```
 
-`bootstrap.sh` carries the role now, so a second project gets it without this step. That script is
-idempotent, so `PROJECT_ID=saijo-power-meter ./bootstrap.sh` would also do it — this one binding is
-just narrower.
+`bootstrap.sh` carries that role now, so a second project gets it without this step, and the script
+is idempotent if you would rather re-run the whole list.
 
-Then get an apply to run. **Merging to `main` is the way**; the apply trigger fires on the push.
-Re-running the failed build from the Cloud Build console works too and changes nothing else.
+**Getting an apply to re-run is a merge to `main`**, which fires the apply trigger. Re-running the
+failed build from the Cloud Build console works too and changes nothing else.
 
 Running `pulumi up` by hand is deliberately *not* the answer. It takes a lock in the shared state
 bucket that a concurrent build cannot see around, and the program reads `WEB_IMAGE` from the
 environment, so a hand-run either has to be given the exact commit-pinned image the pipeline last
 pushed or it rolls the web service backwards.
 
-Afterwards, to confirm what the apply was blocked on:
+To read the project's current state back:
 
 ```bash
 gcloud firestore databases list --project saijo-power-meter
@@ -66,7 +60,7 @@ gcloud projects get-iam-policy saijo-power-meter \
 ```
 
 Expect a `(default)` database in `asia-southeast1`, `roles/datastore.user` present, and
-`roles/bigquery.jobUser` **absent** — step 8c removes it, because only a load job needed it.
+`roles/bigquery.jobUser` **absent**.
 
 ---
 
@@ -146,4 +140,4 @@ read-only identity does the reading:
 ```
 
 That is how a session with no credentials reads a failed apply, and it is what diagnosed the 403
-at the top of this page.
+described above.
