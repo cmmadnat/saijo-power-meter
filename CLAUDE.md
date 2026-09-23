@@ -596,12 +596,15 @@ where offered, is the default. Incoming has `records: false`, so History, the kW
 recorded yet* — never fixtures. `docs/architecture/data-modes.md` has the table of what each screen
 does in it.
 
-**Incoming names a meter by label, never by the workbook.** The feed identifies a meter by topic
-and slot only, so `lib/registry-source.ts` hands the Incoming screens `labelledRegistry()` —
-grouped by station, named by what a viewer typed on `/meters` (the `labels/meters` document), or
-unnamed. No workbook or demo name may reach an Incoming screen — `incoming.test.ts` checks every
-name the table, bands and charts print there against the workbook's. Incoming is also the default view where offered, and carries no badge; its header line
-still says the scaling is unconfirmed. Demo keeps the workbook's names and its badge.
+**Incoming prints the feed's identifiers verbatim and names a meter only by label.** The feed
+identifies a meter by topic and key prefix only, so `lib/registry-source.ts` hands the Incoming
+screens `labelledRegistry()` — grouped by topic as sent (`PMeterStation08`), numbered by key prefix
+(`M6`, via `Meter.verbatim`), named by what a viewer typed on `/meters` (the `labels/meters`
+document) and printed whole, or **Unlabeled**. Do not reformat either identifier, uppercase a
+topic, or parse a label. No workbook or demo name may reach an Incoming screen — `incoming.test.ts`
+checks every name the table, bands and charts print there against the workbook's. Incoming is also
+the default view where offered, and carries no badge; its header line still says the scaling is
+unconfirmed. Demo keeps the workbook's names and its badge.
 
 **There are two ways past that gate, and both write nowhere near BigQuery.** `WAREHOUSE=memory`
 or `WAREHOUSE=file` with an `mqtt://127.0.0.1` URL is the replay harness — both halves checked,

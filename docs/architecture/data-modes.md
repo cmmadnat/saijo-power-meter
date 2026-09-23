@@ -76,16 +76,25 @@ and a recording ingester refuses to write it at all.
 | kW chart, strip load line | The snapshot's hour, through a `RollupRepository`. Only the 1-hour window is offered; a link asking for more gets the hour. |
 | kWh chart, energy today, History | *Not recorded yet.* `DataSource.records` is false, and the screens say so rather than fall back to fixtures or draw an hour under a label that claims a day. |
 
-**Incoming names meters the way its feed does.** The feed carries a topic and an `M<n>` slot and
-nothing else, so the workbook's departments and machine names — the plant as specified, which no
-payload confirms — are not used in this view. `labelledRegistry()` in `packages/application`
-regroups the same meters by station (`Station 08`, in the place every screen puts a department)
-and names each one by the label a viewer gave it on the **Meters** page (`/meters`), or not at all:
-the table prints its number and an *add label* link. Labels are one Firestore document,
-`labels/meters`, edited a station at a time so two people on different stations do not overwrite
-each other, read at most once per 30 s per instance and forgotten on a local write. A label with
-` : CODE` on the end splits into machine number and name exactly as a workbook name does. Anyone
-who can open the app can edit them until the passcode gate lands.
+**Incoming prints the feed's identifiers as sent, and labels are the only context added.** The
+feed carries a topic and a key prefix (`M6` in `M6VL1`, `M6P`, …) and nothing else, so the
+workbook's departments and machine names — the plant as specified, which no payload confirms — are
+not used in this view. `labelledRegistry()` in `packages/application` groups the same meters by
+topic, verbatim (`PMeterStation08`, in the place every screen puts a department), numbers each
+meter by its key prefix, and names it by the label a viewer gave it on the **Meters** page
+(`/meters`). Nothing is reformatted: no `Station 08`, no `08-6`, no uppercasing of a topic, and a
+label is printed whole — ` : CODE` is not split into a machine number the way a workbook name is.
+A meter with no label says **Unlabeled**, on the table, the charts and the problems list; nothing
+stands in for the missing name. Labels are one Firestore document, `labels/meters`, edited a topic
+at a time so two people on different topics do not overwrite each other, read at most once per
+30 s per instance and forgotten on a local write. Anyone who can open the app can edit them until
+the passcode gate lands.
+
+**Which meters exist still comes from the workbook, and that is the one assumption left.** The
+decoder shared with the ingester reads the slots the registry lists per topic: a topic it does not
+know is reported as `unknown-topic`, and a slot the workbook marks uncommissioned is dropped
+without an issue. The 2026-09-22 capture matched the registry topic for topic and slot for slot,
+so nothing is being dropped today; a meter the workbook does not list would not appear.
 
 **No workbook or demo name reaches an Incoming screen, and a test says so.** The Meters page offers
 no workbook hints and no fill-from-workbook, History in Incoming does not point at Demo, and

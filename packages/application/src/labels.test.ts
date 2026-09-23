@@ -5,7 +5,6 @@ import {
   labelledRegistry,
   MAX_LABEL_LENGTH,
   normalizeLabel,
-  stationName,
 } from "./labels.ts";
 import { realtimeTable } from "./realtime.ts";
 
@@ -19,18 +18,15 @@ test("a labelled registry keeps every meter in its slot", () => {
   );
 });
 
-test("groups by station and drops the workbook's names", () => {
+test("groups by topic, verbatim, and drops the workbook's names", () => {
   const labelled = labelledRegistry(workbook, new Map());
   const meter = labelled.find("s08m6" as MeterId);
-  assert.equal(meter?.department, "Station 08");
+  assert.equal(meter?.department, "PMeterStation08");
   assert.equal(meter?.machineName, null);
-  assert.deepEqual(
-    labelled.departments(),
-    workbook.topics().map((_, i) => stationName(i + 1)),
-  );
+  assert.deepEqual(labelled.departments(), workbook.topics());
 });
 
-test("a label becomes the machine name, and a code after it the machine number", async () => {
+test("a label is printed whole, and the meter by its key prefix", async () => {
   const labelled = labelledRegistry(
     workbook,
     new Map([
@@ -46,7 +42,7 @@ test("a label becomes the machine name, and a code after it the machine number",
   const row = (id: string) => table.rows.find((r) => r.meterId === id);
   assert.deepEqual(
     [row("s08m6")?.machineNumber, row("s08m6")?.machineName, row("s08m6")?.meterNumber],
-    ["STL003", "Press line 2", "08-6"],
+    [null, "Press line 2 : STL003", "M6"],
   );
   assert.deepEqual([row("s01m1")?.machineNumber, row("s01m1")?.machineName], [null, "Compressor"]);
   assert.equal(row("s02m1")?.machineName, null);

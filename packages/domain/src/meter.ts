@@ -49,6 +49,13 @@ export interface Meter {
    * than shown as meters reading zero.
    */
   readonly commissioned: boolean;
+  /**
+   * True where the meter is known only by what its feed sends: its number is
+   * its key prefix exactly as the payload carries it (`M6`), and its name is a
+   * person's label, printed whole — never reformatted, never split into a
+   * machine number. Absent for the workbook's meters.
+   */
+  readonly verbatim?: boolean;
 }
 
 /** A meter is running when its active power exceeds its standby level. */
@@ -90,6 +97,7 @@ export interface MachineLabel {
 export function machineLabel(meter: Meter): MachineLabel {
   const full = meter.machineName;
   if (full === null) return { number: null, name: null };
+  if (meter.verbatim === true) return { number: null, name: full };
 
   const at = full.lastIndexOf(NAME_SEPARATOR);
   if (at === -1) return { number: null, name: full };
@@ -107,7 +115,10 @@ export function machineLabel(meter: Meter): MachineLabel {
  * The specification's mock-up numbers meters flat (`Power Meter 1`…), which the
  * workbook does not do and which would shift every time a slot is
  * commissioned. Recorded as an open question in the UI requirements.
+ *
+ * A verbatim meter is numbered by its key prefix as the payload sends it.
  */
 export function meterNumber(meter: Meter): string {
+  if (meter.verbatim === true) return meter.keyPrefix;
   return `${String(meter.station).padStart(2, "0")}-${meter.slot}`;
 }

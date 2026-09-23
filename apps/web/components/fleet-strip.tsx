@@ -196,7 +196,7 @@ export function FleetStrip({
         </ul>
         {busiest !== undefined && busiest.activePowerKw > 0 && (
           <p className={label}>
-            busiest {busiest.department} · {formatNumber(busiest.activePowerKw, 1)} kW
+            busiest <span className="normal-case">{busiest.department}</span> · {formatNumber(busiest.activePowerKw, 1)} kW
           </p>
         )}
       </div>

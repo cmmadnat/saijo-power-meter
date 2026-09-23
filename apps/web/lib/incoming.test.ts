@@ -185,7 +185,7 @@ describe("views", () => {
     assert.match(line, /nothing stored/);
   });
 
-  test("meters are grouped by station and named only by label", async () => {
+  test("meters are grouped by topic and named only by label, all verbatim", async () => {
     const labelled = await mkdtemp(join(tmpdir(), "incoming-labels-"));
     try {
       const source = await createIncomingSource(config(labelled));
@@ -193,14 +193,18 @@ describe("views", () => {
       await source.labels.setLabels(new Map([["s08m6" as MeterId, "Press line 2 : STL003"]]));
 
       const table = await realtimeSnapshot(source);
-      assert.deepEqual(
-        table.departments,
-        registry.topics().map((_, i) => `Station ${String(i + 1).padStart(2, "0")}`),
-      );
+      // The topics exactly as they arrive, and the key prefix as the meter's number.
+      assert.deepEqual(table.departments, registry.topics());
       const row = (id: string) => table.rows.find((r) => r.meterId === id);
       assert.deepEqual(
-        [row("s08m6")?.department, row("s08m6")?.machineNumber, row("s08m6")?.machineName],
-        ["Station 08", "STL003", "Press line 2"],
+        [
+          row("s08m6")?.department,
+          row("s08m6")?.meterNumber,
+          row("s08m6")?.machineNumber,
+          row("s08m6")?.machineName,
+        ],
+        // The label printed whole: nothing is parsed out of what a person typed.
+        ["PMeterStation08", "M6", null, "Press line 2 : STL003"],
       );
       // Nothing from the workbook: an unlabelled meter has no name at all.
       assert.equal(row("s01m1")?.machineName, null);
@@ -212,7 +216,7 @@ describe("views", () => {
         "1h",
         source,
       );
-      assert.equal(charts.view.series[0]?.machineName, "Press line 2");
+      assert.equal(charts.view.series[0]?.machineName, "Press line 2 : STL003");
     } finally {
       await rm(labelled, { recursive: true, force: true });
     }

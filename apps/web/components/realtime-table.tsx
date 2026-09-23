@@ -210,9 +210,9 @@ export function RealtimeTable({
   cadence = "readings arrive every 9 s; a meter silent for more than 3 min is shown offline with its last values.",
 }: {
   /**
-   * True where meters are grouped by station and named by label — Incoming.
-   * The group heading says สถานี rather than แผนก, and an unlabelled meter
-   * links to the Meters page instead of printing a dash.
+   * True where meters are grouped by topic and named by label — Incoming.
+   * The group heading says Topic rather than แผนก, and an unlabelled meter
+   * says "Unlabeled", linking to the Meters page, instead of printing a dash.
    */
   labelling?: boolean;
   /** The footer's line about how often readings arrive and when a meter is called offline. */
@@ -231,7 +231,7 @@ export function RealtimeTable({
   };
 }) {
   const router = useRouter();
-  const groupLabel = labelling ? "สถานี" : "แผนก";
+  const groupLabel = labelling ? "Topic" : "แผนก";
   const [department, setDepartment] = useState<string>(ALL);
   const [live, setLive] = useState(true);
   // Grouping is on by default: 55 rows in five departments read as a list of
@@ -513,7 +513,8 @@ export function RealtimeTable({
                       colSpan={11}
                       className={`${cell} font-mono text-2xs uppercase tracking-widest text-muted-foreground`}
                     >
-                      {group.department}
+                      {/* The name as given — a topic is printed as sent, not shouted. */}
+                      <span className="normal-case">{group.department}</span>
                       <span className="ms-3 normal-case tracking-wider">
                         {group.summary
                           ? `${group.summary.running} of ${group.summary.meters} running` +
@@ -611,9 +612,10 @@ function Row({
           (labelling ? (
             <Link
               href={`/meters#${row.meterId}`}
-              className="font-mono text-2xs uppercase tracking-wider text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
+              className="text-muted-foreground italic underline decoration-dotted underline-offset-2 hover:text-foreground"
+              title="No one has labelled this meter yet — label it on the Meters page"
             >
-              add label
+              Unlabeled
             </Link>
           ) : (
             "—"

@@ -1,18 +1,17 @@
 /**
  * Meters: name the feed's meters.
  *
- * The feed identifies a meter by its station's topic and an `M<n>` slot and
- * nothing more, so this is where a meter gets a name people recognise. One
- * form per station, posting to a server action, so it works without
- * JavaScript and two people labelling different stations do not overwrite
+ * The feed identifies a meter by the topic it arrives on and the prefix its
+ * keys carry, and nothing more — both printed here exactly as sent. This is
+ * where a meter gets a label people recognise. One form per topic, posting to a server action, so it works without
+ * JavaScript and two people labelling different topics do not overwrite
  * each other. Beside each field: the slot's wire key and what it is reading
  * now — switch a machine on and watch which meter moves.
  *
  * Nothing from the workbook or the demo is shown or offered here: a name on
  * this page is one a person gave the meter, and nothing else.
  */
-import { meterNumber, MeterRegistry, type Meter } from "@power-meter/domain";
-import { stationName } from "@power-meter/application";
+import { MeterRegistry, type Meter } from "@power-meter/domain";
 import { saveStationLabels } from "@/app/actions";
 import { dataSource, labelStore } from "@/lib/data-mode";
 import { formatAge, formatNumber } from "@/lib/format";
@@ -43,9 +42,9 @@ export default async function MetersPage(props: PageProps<"/meters">) {
       </p>
       <h1 className="text-2xl font-semibold tracking-wide">Meters</h1>
       <p className="max-w-[80ch] text-sm text-muted-foreground">
-        The feed names a meter only by its station&rsquo;s topic and its slot. Give each one a
-        name here and the Incoming view uses it on every screen; a meter without one shows its
-        number. Clear a field to remove its label.
+        The feed names a meter only by the topic it arrives on and the prefix its keys carry,
+        shown here exactly as sent. Add a label to give it context: the Incoming view shows it on
+        every screen, and a meter without one says Unlabeled. Clear a field to remove its label.
       </p>
     </header>
   );
@@ -83,7 +82,6 @@ export default async function MetersPage(props: PageProps<"/meters">) {
 
       <div className="grid gap-4 xl:grid-cols-2">
         {stations.map(({ topic, meters }) => {
-          const station = meters[0]?.station ?? 0;
           return (
             <form
               key={topic}
@@ -93,9 +91,9 @@ export default async function MetersPage(props: PageProps<"/meters">) {
             >
               <input type="hidden" name="topic" value={topic} />
               <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border px-4 py-3">
-                <h2 className="text-base font-semibold">{stationName(station)}</h2>
-                <span className="font-mono text-2xs uppercase tracking-wider text-muted-foreground">
-                  {topic} · {meters.length} meters
+                <h2 className="font-mono text-base font-semibold">{topic}</h2>
+                <span className="font-mono text-2xs tracking-wider text-muted-foreground">
+                  {meters.length} meters
                 </span>
               </div>
 
@@ -113,9 +111,9 @@ export default async function MetersPage(props: PageProps<"/meters">) {
               <div className="flex flex-wrap items-center gap-2 border-t border-border px-4 py-3">
                 <button
                   type="submit"
-                  className="border border-primary bg-primary px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-primary-foreground"
+                  className="border border-primary bg-primary px-3 py-1.5 font-mono text-xs tracking-wider text-primary-foreground"
                 >
-                  Save {stationName(station)}
+                  Save {topic}
                 </button>
                 {saved === topic && (
                   <span role="status" className="font-mono text-2xs uppercase tracking-wider text-accent-strong">
@@ -148,8 +146,7 @@ function MeterField({
       className="flex scroll-mt-4 flex-wrap items-start gap-x-3 gap-y-1 border-b border-border/60 px-4 py-2 last:border-b-0 target:bg-muted/60 sm:flex-nowrap"
     >
       <label htmlFor={inputId} className="flex w-14 shrink-0 flex-col pt-1.5 font-mono text-xs">
-        <span>{meterNumber(meter)}</span>
-        <span className="text-2xs text-muted-foreground">{meter.keyPrefix}</span>
+        <span>{meter.keyPrefix}</span>
       </label>
       <div className="flex min-w-0 flex-1 flex-col gap-1">
         <input
@@ -157,7 +154,7 @@ function MeterField({
           name={inputId}
           defaultValue={label}
           maxLength={60}
-          placeholder={`${meterNumber(meter)} — unlabelled`}
+          placeholder="Unlabeled"
           autoComplete="off"
           className="w-full border border-input bg-background px-2 py-1.5 text-sm outline-none focus-visible:border-accent-strong focus-visible:ring-1 focus-visible:ring-accent-strong"
         />

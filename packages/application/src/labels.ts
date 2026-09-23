@@ -44,19 +44,16 @@ export function normalizeLabel(raw: string | null | undefined): string | null {
   return cleaned === "" ? null : cleaned;
 }
 
-/** What a station is called where the feed is the source: its number, as its topic has it. */
-export function stationName(station: number): string {
-  return `Station ${String(station).padStart(2, "0")}`;
-}
-
 /**
  * The registry as the real feed knows it: the same meters in the same slots,
- * grouped by station rather than department, and named only by label.
+ * grouped by the topic they arrive on and named only by label — everything
+ * printed as the payload sends it or as a person typed it.
  *
- * `department` carries the station, because department is what every screen
- * groups and filters by — the table's bands, the chart picker, the strip's
- * busiest group — and a station is the grouping the feed actually has. An
- * unlabelled meter has no machine name; the screens show its id.
+ * `department` carries the topic, verbatim, because department is what every
+ * screen groups and filters by — the table's bands, the chart picker, the
+ * strip's busiest group — and the topic is the grouping the feed actually
+ * has. `verbatim` makes the meter's number its key prefix (`M6`) and keeps a
+ * label whole. An unlabelled meter has no name, and the screens say so.
  */
 export function labelledRegistry(
   registry: MeterRegistry,
@@ -66,8 +63,9 @@ export function labelledRegistry(
     registry.all().map(
       (meter): Meter => ({
         ...meter,
-        department: stationName(meter.station),
+        department: meter.topic,
         machineName: labels.get(meter.meterId) ?? null,
+        verbatim: true,
       }),
     ),
   );

@@ -53,5 +53,4 @@ export {
   labelledRegistry,
   MAX_LABEL_LENGTH,
   normalizeLabel,
-  stationName,
 } from "./labels.ts";

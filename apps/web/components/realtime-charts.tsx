@@ -187,7 +187,7 @@ export function RealtimeCharts({
             {groups.map(([department, group]) => (
               <div key={department}>
                 <p className="sticky top-0 border-b border-border bg-muted/80 px-3 py-1 font-mono text-3xs uppercase tracking-wider text-muted-foreground backdrop-blur">
-                  {department}
+                  <span className="normal-case">{department}</span>
                 </p>
                 <ul>
                   {group.map((meter) => {
