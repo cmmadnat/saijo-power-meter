@@ -339,7 +339,8 @@ schema, migrations and a fixture loader. Step 7 added the ingester — `apps/ing
 local broker, gated on the customer, and deployed nowhere. Step 8 put the screens on either data
 mode — the live adapters beside the fixture ones, one switch between them — and verified live mode
 against the replay. Its SQL has been parsed and timed against BigQuery by `warehouse cost`, over
-step 6's fixture rows; no web process has read the warehouse yet. Remaining: the passcode gate.
+step 6's fixture rows; no web process has read the warehouse yet. Remaining: step 8c (the
+ingester's writes, below) and the passcode gate.
 
 **The screens read their data through three files, `apps/web/lib/realtime-source.ts`,
 `apps/web/lib/series-source.ts` and `apps/web/lib/history-source.ts`, and none of them knows the
@@ -503,7 +504,10 @@ refuses to run while `unconfirmedScales()` names anything, and the Cloud Run ser
 `saijo-power-meter:deployIngester: "false"` in `Pulumi.dev.yaml` — a crash-looping revision would
 fail every apply from then on. Its service account, the three broker secrets and its warehouse
 access apply regardless, because none of them ingests anything. Flipping the flag belongs in the
-same change that confirms the divisors and adds a version to each secret.
+same change that confirms the divisors and adds a version to each secret — **and not before step 8c
+lands.** The ingester writes with BigQuery load jobs, which are capped per table per day; at its
+45 s and 30 s flush rates it would exceed that cap every afternoon. Step 8c in the plan moves
+`latest` to one Firestore document and the readings to the Storage Write API.
 
 **The only way past that gate is a broker on loopback writing nowhere near BigQuery.**
 `WAREHOUSE=memory` or `WAREHOUSE=file` with an `mqtt://127.0.0.1` URL is the replay harness;

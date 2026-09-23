@@ -167,11 +167,11 @@ adapters issue, then times each read 20 times through the same adapters and use 
 runs. It was also the first time BigQuery parsed the step-8 SQL — `IN UNNEST(@meterIds)` and the
 meter-major `ORDER BY` on raw — and all three statements ran.
 
-| Read (cache miss) | Processes | Bills | p50 / p95 |
-| --- | --- | --- | --- |
-| Strip — 55 meters since 00:00 | 0.23 MB | 10 MB | 949 / 1 281 ms |
-| Chart — 4 meters, 24 h | 0.23 MB | 10 MB | 308 / 720 ms |
-| History — 55 meters, raw, today | 3.46 MB, 1 query | 10 MB | 258 / 545 ms |
+| Read (cache miss) | Processes | Bills | p50 / p95, run 1 | p50 / p95, run 2 |
+| --- | --- | --- | --- | --- |
+| Strip — 55 meters since 00:00 | 0.23 MB | 10 MB | 949 / 1 281 ms | 571 / 1 568 ms |
+| Chart — 4 meters, 24 h | 0.23 MB | 10 MB | 308 / 720 ms | 297 / 340 ms |
+| History — 55 meters, raw, today | 3.46 MB, 1 query | 10 MB | 258 / 545 ms | 256 / 442 ms |
 
 It confirms the cost table: 20 MB a minute per warm instance, 0.82 TiB a month. Its uncached figure
 is 4.94 TiB a month per open screen, lower than the 7.4 above because it assumes the strip's two
@@ -180,7 +180,7 @@ windows already share one read — two queries a render rather than three.
 **Two limits on those numbers.** The tables still hold only step 6's two hours of fixture rows. A
 full real day of `readings_1m` is ~3 MB, so the strip and the charts stay on the 10 MB floor; a
 full day of raw `readings` is tens of MB, so History on a real day bills above the floor — still one
-query. And the latencies are per cache miss: the strip's ~1.3 s p95 is paid once a minute per
+query. And the latencies are per cache miss: the strip's 1.3–1.6 s p95 is paid once a minute per
 instance, not on every ten-second refresh.
 
 ## No fixture on the live path, checked like the dependency rule

@@ -602,6 +602,59 @@ badge is present on every route in demo mode and absent in live; `DATA_MODE=live
 `assumed` scales fails to boot, with both field names in the message; no fixture module is reachable
 from a live-mode render path, asserted the way `check-boundaries.mjs` asserts the dependency rule.
 
+### Step 8c — Fit the ingester's writes inside BigQuery's per-table limit — **planned, next**
+**Must land before `deployIngester` is flipped.** Found after step 8, and not a cost problem —
+a correctness one. The ingester writes with **load jobs**, and BigQuery caps load jobs (all table
+modifications, failures included) **per table per day** at a fixed number — Google's *Optimize
+load jobs* page confirms the limit exists and that load jobs count against it; the figure is 1,500
+from memory and an older copy of the quotas page, and confirming it is this step's first task. At
+the rates step 7 chose it is overrun every day:
+
+| Table | Written every | Jobs / day | Fails after |
+| --- | --- | --- | --- |
+| `latest` | 30 s | 2 880 | ~12.5 h |
+| `readings`, `readings_1m` | 45 s (one job each) | 1 920 each | ~19 h |
+
+The replay harness writes files, never BigQuery, which is why nothing caught it. Nothing is
+deployed, so nothing is broken yet.
+
+**Decided (option A):**
+
+- **`latest` moves to Firestore, as one document** holding all 55 readings (~15 KB, far under the
+  1 MiB document limit), overwritten every 30 s — 2 880 writes a day, inside Firestore's free tier.
+  It is restart state, not analytics, and never belonged in the warehouse. One document rather than
+  55: per-meter documents would be ~158 000 writes a day, ~$8 a month for nothing.
+- **`readings` and `readings_1m` stay in BigQuery**, written through the **Storage Write API**
+  (default stream) instead of load jobs. Streaming has no per-table job count, the first 2 TiB a
+  month are free, and this project writes ~1 GB a fortnight. The ingester's batch shape does not
+  change: raw and rollup still go out together in one flush, and only closed minutes are rolled up.
+- `ReadingWriter` keeps its interface. The change is adapters: a Firestore `LatestReadingStore` and
+  the `replaceLatest` half of the writer, and a streaming `append`. The screens do not change —
+  `latest` was never their source.
+- A migration drops `latest` (forward-only: nothing reads it once the ingester rehydrates from
+  Firestore). `infra/index.ts` gains the Firestore database, the API, and the ingester account's
+  `roles/datastore.user`; the web account needs nothing, since the web app never reads `latest`.
+
+**Rough cost:** about $0 a month either way — load jobs were free too. The gain is that the ingester
+keeps working after lunchtime.
+
+**Rejected (option B): keep load jobs, write less often** — raw every 90 s, `latest` every 2 min,
+under 1 000 jobs a day. No new service and two numbers to change, but a crash loses up to 90 s of
+readings instead of 45, a restart rehydrates state up to 2 min old, and failed jobs count against
+the same limit, so a bad hour of retries eats the margin.
+
+**Later, optional (option D): serve today's minutes from the ingester.** It could hold the fleet's
+per-minute buckets for the day in memory and serve them, taking the strip and the charts off
+BigQuery entirely — strip 1.3–1.6 s p95 per cache miss down to milliseconds, and up to ~$5 a month
+per extra warm web instance. More logic in the singleton, and a restart reloads the day with one
+query. Worth doing for speed if the strip's cache miss is noticed; not for money.
+
+*Verify:* the quota figure confirmed against the current quotas page and written here; a replay run
+against a real dataset (a scratch one, not `power_meter`) through the streaming writer at the real
+rate for longer than the old failure point, with `/stats` showing no failed flushes; the Firestore
+document read back on restart with 55 meters; `reconcile` over what BigQuery holds; the `latest`
+drop migration applied by the pipeline; `npm run verify` green.
+
 ### Step 9 — Passcode gate
 A single shared passcode, checked server-side against Secret Manager, httpOnly + secure session
 cookie, every route and API behind it. No user accounts. Rate-limit the attempt endpoint.

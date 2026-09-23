@@ -193,8 +193,10 @@ and the secret access. Those apply now and ingest nothing.
 
 The Cloud Run **service** is behind `saijo-power-meter:deployIngester`, which is `"false"`. A
 deployed revision would refuse to start — that is the gate doing its job — and a crash-looping
-revision fails every apply from then on. Flipping it to `"true"` belongs in the same change that
-confirms the divisors and adds a version to each secret:
+revision fails every apply from then on. **Step 8c of the plan comes first:** the writes below go
+through BigQuery load jobs, which are capped per table per day, and at a 45 s flush and a 30 s
+`latest` mirror the ingester would exceed that cap every afternoon. Flipping it to `"true"`
+belongs in the same change that confirms the divisors and adds a version to each secret:
 
 ```bash
 printf '%s' "$VALUE" | gcloud secrets versions add mqtt-broker-password \
