@@ -111,9 +111,11 @@ commit SHA and the apply updates Cloud Run to it, so a docs merge used to roll a
 change in behaviour. It is an **ignore** list and not `includedFiles` on purpose: an include list
 fails closed on anything unlisted, so a new top-level directory silently stops building and the
 symptom is an absence. `check.yml` is the include-list version, which is why a `bootstrap.sh`
-change gets no `verify` run. Before copying the idea elsewhere, check the trap it avoids here: a
-pull request touching only ignored files gets no build and therefore no check, and a check
-*required* by branch protection would then never arrive.
+change gets no `verify` run. Observed on PR #34: a docs-only pull request runs no build, and
+Cloud Build posts the filtered event as a **`neutral`** check of zero duration whose details link
+points at the trigger rather than a build. So the feared hang — a required check that never
+arrives — does not happen; whether `neutral` *satisfies* a required check is a separate question
+this repository has never had to answer, because `infra-preview` is not required.
 
 **The fork guard is a trigger setting, not hand-built.**
 `commentControl: COMMENTS_ENABLED_FOR_EXTERNAL_CONTRIBUTORS_ONLY` means a pull request from
