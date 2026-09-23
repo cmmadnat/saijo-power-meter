@@ -322,18 +322,32 @@ and indistinguishable from a table that was never created.
 
 `verify` needs the window `load` printed, not `--hours`; see above.
 
-**Step 8c's own write path has not been run against a project.** Everything above the two SDK
-wrappers is unit-tested — the row mapping, the two-store writer, the document, the soak's own
-arithmetic — and every one of those tests runs against a fake that has no quota and no parser. What
-is still unproven, and what proves it:
+**Step 8c's own write path is half-proven.** Everything above the two SDK wrappers is unit-tested —
+the row mapping, the two-store writer, the document, the soak's own arithmetic — and every one of
+those tests runs against a fake that has no quota and no parser. Two of the things only a project
+can answer were answered on 2026-09-23, against a throwaway `scratch_8c` dataset:
+
+- **`0002` is legal DDL.** BigQuery's parser accepted `DROP TABLE IF EXISTS`, and `settings`
+  afterwards listed `readings`, `readings_1m` and the ledger, with `latest` gone.
+- **`0001`'s checksum survived step 8c's edits**, which is the one that mattered. The scratch
+  dataset had been migrated by the *pre-8c* code first, so its ledger held `0001`'s recorded
+  checksum; the new code read that ledger, agreed with it, and applied only `0002`. That is exactly
+  what `power_meter` will do — its ledger carries the same row from 2026-09-22 — so the pipeline's
+  `migrate` step has nothing to stumble over. A test now pins that checksum so a future edit fails
+  in the suite rather than against the one dataset that has it.
+
+What is still unproven, and what settles it:
 
 | Unproven | The command |
 | --- | --- |
 | The Storage Write API accepts these rows against a real schema | `warehouse soak --dataset <scratch>` |
-| More than 1 500 appends a day per table go through | the same run, `--cycles 2000` |
-| Migration `0002` is legal DDL, and `0001` still applies before it | `warehouse migrate --dataset <scratch>` on a new dataset |
+| More than 1 500 appends a day per table go through | the same run, `--cycles 1600` or more |
 | The Firestore document round-trips with 55 meters | `npm run hotstate -w @power-meter/ingester -- --database <scratch>` |
-| The pipeline applies `0002` to `power_meter` | the next merge to `main` |
+| The pipeline applies `0002` to `power_meter`, and Pulumi creates the database | the next merge to `main` |
+| The ingester process itself writing to either store | blocked by the scaling gate, as everything else about it is |
+
+`gcloud firestore databases list` on 2026-09-23 returned nothing, so the project has no `(default)`
+database and Pulumi will create rather than collide with one.
 
 The scratch dataset is a deliberate exception to "every Google Cloud resource is declared in
 `infra/`": it is made by hand, written to by one command, and deleted in the same sitting. A
