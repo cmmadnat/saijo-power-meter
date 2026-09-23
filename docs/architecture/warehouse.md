@@ -322,10 +322,8 @@ and indistinguishable from a table that was never created.
 
 `verify` needs the window `load` printed, not `--hours`; see above.
 
-**Step 8c's own write path is half-proven.** Everything above the two SDK wrappers is unit-tested —
-the row mapping, the two-store writer, the document, the soak's own arithmetic — and every one of
-those tests runs against a fake that has no quota and no parser. Two of the things only a project
-can answer were answered on 2026-09-23, against a throwaway `scratch_8c` dataset:
+**Step 8c's write path has been run against the project**, on 2026-09-23, using a throwaway
+`scratch_8c` dataset that was deleted the same afternoon. What that settled:
 
 - **`0002` is legal DDL.** BigQuery's parser accepted `DROP TABLE IF EXISTS`, and `settings`
   afterwards listed `readings`, `readings_1m` and the ledger, with `latest` gone.
@@ -335,19 +333,40 @@ can answer were answered on 2026-09-23, against a throwaway `scratch_8c` dataset
   what `power_meter` will do — its ledger carries the same row from 2026-09-22 — so the pipeline's
   `migrate` step has nothing to stumble over. A test now pins that checksum so a future edit fails
   in the suite rather than against the one dataset that has it.
+- **The daily cap is gone.** `warehouse soak --cycles 1600 --interval 200` made **1 600 appends to
+  each table in about eight minutes — 176 000 rows, zero failures**. A load job would have been
+  refused at 1 500; nothing here noticed the number. That is the whole claim of this step, measured
+  rather than argued.
+- **The rows are readable, and the timestamps decoded.** 88 000 rows and all 55 meters in each
+  table, `reading_at` spanning the eight minutes the soak ran and the rollup's minutes walking back
+  about 27 hours. This is the check that "BigQuery accepted the append" and "the row means what it
+  said" are different claims: a TIMESTAMP handed over as a string rather than a `Date` would have
+  landed at the epoch or been rejected deep in the protobuf encoder.
+- **The restart-state document round-trips.** 55 meters, **10 755 bytes** — 1% of Firestore's 1 MiB
+  document limit — written and read back with every reading identical.
+
+The one thing that read back wrong was the soak's own arithmetic: 1 592 distinct rollup minutes
+instead of 1 600. It anchored each cycle's bucket to that cycle's clock, so the bucket repeated
+whenever the wall clock crossed a minute at the same moment the cycle counter advanced. Fixed by
+anchoring once at the start, and the test now moves its clock, which is what it should have done to
+begin with. Nothing in the ingester shares that code — its closed-minute rule is in
+`apps/ingester/src/ingester.ts` and was not involved — but a tool that claims a property and does
+not have it is worse than one that claims nothing.
 
 What is still unproven, and what settles it:
 
 | Unproven | The command |
 | --- | --- |
-| The Storage Write API accepts these rows against a real schema | `warehouse soak --dataset <scratch>` |
-| More than 1 500 appends a day per table go through | the same run, `--cycles 1600` or more |
-| The Firestore document round-trips with 55 meters | `npm run hotstate -w @power-meter/ingester -- --database <scratch>` |
-| The pipeline applies `0002` to `power_meter`, and Pulumi creates the database | the next merge to `main` |
+| The pipeline applies `0002` to `power_meter`, and Pulumi creates the Firestore database | the next merge to `main` |
 | The ingester process itself writing to either store | blocked by the scaling gate, as everything else about it is |
 
 `gcloud firestore databases list` on 2026-09-23 returned nothing, so the project has no `(default)`
-database and Pulumi will create rather than collide with one.
+database and Pulumi will create rather than collide with one. One oddity worth knowing before
+trusting the pricing page's "no free quota for named databases": the scratch database, created when
+the project had no default, came back from the API with `freeTier: true`. Firestore appears to
+designate the *first* database in a project as the free-tier one rather than `(default)` strictly.
+It does not change the choice here — `(default)` is free either way and is what the documentation
+guarantees — but do not read `freeTier` on a named database as proof the docs are wrong.
 
 The scratch dataset is a deliberate exception to "every Google Cloud resource is declared in
 `infra/`": it is made by hand, written to by one command, and deleted in the same sitting. A

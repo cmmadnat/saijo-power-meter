@@ -602,7 +602,7 @@ badge is present on every route in demo mode and absent in live; `DATA_MODE=live
 `assumed` scales fails to boot, with both field names in the message; no fixture module is reachable
 from a live-mode render path, asserted the way `check-boundaries.mjs` asserts the dependency rule.
 
-### Step 8c — Fit the ingester's writes inside BigQuery's per-table limit — **done, unproven against a project**
+### Step 8c — Fit the ingester's writes inside BigQuery's per-table limit — **done, verified against the project**
 **Had to land before `deployIngester` is flipped, and has.** Found after step 8, and not a cost
 problem — a correctness one. The ingester wrote with **load jobs**, and BigQuery caps table
 modifications per table per day.
@@ -682,20 +682,34 @@ build is unchanged at 60 MB standalone and contains neither new SDK — grepped 
 
 *Still unproven, and this is the part that needs a project:*
 
-**Settled against the project on 2026-09-23**, using a throwaway `scratch_8c` dataset: `0002` is
-legal DDL — BigQuery's parser accepted the `DROP TABLE`, and `settings` afterwards showed `latest`
-gone — and **`0001`'s checksum survived the edits around it**. That second one is the one that
-mattered: the scratch dataset had been migrated by the *pre-8c* code first, so the run had to agree
-with a ledger written before this step, and it did, applying only `0002`. `power_meter` carries the
-same ledger row from 2026-09-22, so the pipeline's `migrate` has nothing to stumble over. A test
-now pins that checksum. `gcloud firestore databases list` returned nothing, so there is no
-`(default)` database for Pulumi to collide with.
+**Settled against the project on 2026-09-23**, using a throwaway `scratch_8c` dataset and a scratch
+Firestore database, both deleted the same afternoon:
+
+- **`0002` is legal DDL** — BigQuery's parser accepted the `DROP TABLE`, and `settings` afterwards
+  showed `latest` gone.
+- **`0001`'s checksum survived the edits around it.** That is the one that mattered: the scratch
+  dataset had been migrated by the *pre-8c* code first, so the run had to agree with a ledger
+  written before this step, and it did, applying only `0002`. `power_meter` carries the same ledger
+  row from 2026-09-22, so the pipeline's `migrate` has nothing to stumble over. A test now pins
+  that checksum.
+- **The daily cap is gone, measured.** `soak --cycles 1600 --interval 200` put **1 600 appends into
+  each table in about eight minutes — 176 000 rows, zero failures.** A load job would have been
+  refused at 1 500.
+- **The rows are readable and the timestamps decoded**: 88 000 rows and 55 meters per table,
+  `reading_at` spanning the run, rollup minutes walking back ~27 hours. Accepted and correct are
+  different claims, and a TIMESTAMP sent as a string rather than a `Date` would have failed this.
+- **The restart-state document round-trips**: 55 meters, 10 755 bytes, 1% of the 1 MiB limit.
+- `gcloud firestore databases list` returned nothing, so Pulumi creates `(default)` rather than
+  colliding with one.
+
+That run also found a bug — in the soak, not the write path. It produced 1 592 distinct rollup
+minutes instead of 1 600, because each cycle's bucket was anchored to that cycle's clock and
+repeated whenever the wall clock crossed a minute. Anchored once now, and the test moves its clock,
+which is what would have caught it. The ingester's closed-minute rule is separate code and was
+never involved.
 
 | Unproven | What settles it |
 | --- | --- |
-| The Storage Write API accepts these rows against a real table schema | `warehouse soak --dataset <scratch>` |
-| More than 1 500 appends a day per table actually go through | the same run at `--cycles 1600` or more |
-| The Firestore document round-trips with 55 meters | `npm run hotstate -w @power-meter/ingester -- --database <scratch>` |
 | The pipeline applies `0002` to `power_meter`, and Pulumi creates the database | the next merge to `main` |
 | The ingester process itself writing to either store | blocked by the scaling gate, as everything else about it is |
 

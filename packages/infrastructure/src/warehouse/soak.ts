@@ -70,6 +70,16 @@ export async function soak(options: SoakOptions): Promise<SoakOutcome> {
     registry,
   }).readings;
 
+  // The minute each cycle's rollup lands in, walking backwards from one fixed
+  // point rather than from each cycle's own clock. That is the whole fix for a
+  // bug a real run found: `floor(now) - cycle` repeats whenever the wall clock
+  // ticks over a minute mid-run, because `now` goes up by one at the same
+  // moment `cycle` does. Eight wall-clock minutes produced eight duplicate
+  // `(meter, minute)` pairs — the row identity the ingester's closed-minute
+  // rule exists to keep unique. Anchored once, the sequence is strictly
+  // decreasing whatever the clock does.
+  const firstMinute = Math.floor(now().getTime() / MINUTE_MS) * MINUTE_MS;
+
   const failures: string[] = [];
   let appends = 0;
   let rows = 0;
@@ -78,13 +88,9 @@ export async function soak(options: SoakOptions): Promise<SoakOutcome> {
     const at = now();
     const readings: Reading[] = template.map((reading) => ({ ...reading, at }));
     // The bucket the ingester would have closed: a whole minute, in the past.
-    // It walks backwards one minute per cycle so no two cycles write the same
-    // `(meter, minute)` pair — that pair is the rollup row's identity, and a
-    // soak that duplicated it would be demonstrating the exact failure the
-    // closed-minute rule exists to prevent.
-    const minute = new Date(
-      Math.floor(at.getTime() / MINUTE_MS) * MINUTE_MS - (cycle + 1) * MINUTE_MS,
-    );
+    // One minute further back per cycle, from the anchor above, so no two
+    // cycles write the same `(meter, minute)` pair.
+    const minute = new Date(firstMinute - (cycle + 1) * MINUTE_MS);
     const rollup = rollupReadings(readings.map((reading) => ({ ...reading, at: minute })));
 
     try {

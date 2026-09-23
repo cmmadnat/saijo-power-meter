@@ -675,13 +675,19 @@ test("a stream row is a load-job row with Dates where the timestamps are", () =>
 
 test("the soak writes one flush-shaped batch per cycle and never repeats a minute", async () => {
   const stream = new FakeRowStream();
-  const at = new Date("2026-09-22T02:00:30.000Z");
+  const start = new Date("2026-09-22T02:00:30.000Z").getTime();
+  // The clock **moves**, by more than a minute over the run. A real run found
+  // the bug this guards: anchoring each cycle's bucket to its own `now` made
+  // the bucket repeat every time the wall clock crossed a minute, because the
+  // cycle counter went up at the same moment. A held clock cannot show that,
+  // which is exactly why the first version of this test passed.
+  let tick = 0;
   const outcome = await soak({
     stream,
     cycles: 5,
     intervalMs: 45_000,
     wait: async () => {},
-    now: () => at,
+    now: () => new Date(start + tick++ * 20_000),
   });
 
   assert.equal(outcome.appends, 5);
@@ -693,10 +699,10 @@ test("the soak writes one flush-shaped batch per cycle and never repeats a minut
     .rows(TABLES.rollup)
     .map((row) => `${String(row["meter_id"])} ${(row["minute"] as Date).toISOString()}`);
   assert.equal(new Set(minutes).size, minutes.length, "no (meter, minute) written twice");
-  // Every rollup minute is a closed one: strictly before the minute the clock
-  // is in, which is the rule the ingester's flush obeys.
+  // Every rollup minute is a closed one: strictly before the minute the run
+  // started in, which is the rule the ingester's flush obeys.
   for (const row of stream.rows(TABLES.rollup)) {
-    assert.ok((row["minute"] as Date).getTime() < at.getTime() - 30_000);
+    assert.ok((row["minute"] as Date).getTime() < start - 30_000);
   }
 });
 

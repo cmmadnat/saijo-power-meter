@@ -345,8 +345,10 @@ against the replay. Its SQL has been parsed and timed against BigQuery by `wareh
 step 6's fixture rows; no web process has read the warehouse yet. Step 8c changed how the ingester
 writes: `latest` is gone from BigQuery and is one Firestore document, and raw and rollup go through
 the Storage Write API instead of load jobs — because load jobs are capped per table per day and the
-ingester's writes are a daily rate. Nothing of 8c has run against a project; the two commands that
-would are in `docs/architecture/warehouse.md`. Remaining: the passcode gate.
+ingester's writes are a daily rate. That is measured, not argued: 1 600 appends to each table in
+eight minutes against a scratch dataset, zero failures, where a load job is refused at 1 500 — see
+`docs/architecture/warehouse.md`. What is left of 8c is the merge that applies it. Remaining: the
+passcode gate.
 
 **The screens read their data through three files, `apps/web/lib/realtime-source.ts`,
 `apps/web/lib/series-source.ts` and `apps/web/lib/history-source.ts`, and none of them knows the
