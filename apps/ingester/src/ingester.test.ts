@@ -546,3 +546,44 @@ describe("the publish interval", () => {
     assert.equal(ingester.stats().publishIntervalMs, 60_000);
   });
 });
+
+describe("a bad payload", () => {
+  it("is counted and kept for the screen, never thrown", () => {
+    const at = new Date("2026-09-23T03:00:00Z");
+    const ingester = new Ingester({ writer: null, registry: REGISTRY, clock: new FixedClock(at) });
+    assert.doesNotThrow(() =>
+      ingester.accept({ topic: TOPIC, payload: new TextEncoder().encode("{not json"), at }),
+    );
+    // A payload that parses but is missing a meter's power field.
+    const [good] = stationMessages(at, new Date(at.getTime() + 9_000));
+    assert.ok(good);
+    const fields = JSON.parse(new TextDecoder().decode(good.payload)) as Record<string, number>;
+    delete fields["M1P"];
+    ingester.accept({ ...good, payload: new TextEncoder().encode(JSON.stringify(fields)) });
+
+    const health = ingester.health({ connected: true, connectedSince: at, lastBrokerProblem: null });
+    assert.equal(health.messages, 2);
+    assert.equal(health.issueCounts["malformed-payload"], 1);
+    assert.equal(health.issueCounts["missing-field"], 1);
+    assert.deepEqual(
+      health.recentIssues.map((issue) => [issue.kind, issue.topic, issue.key ?? null]),
+      [
+        ["malformed-payload", TOPIC, null],
+        ["missing-field", TOPIC, "M1P"],
+      ],
+    );
+    // The rest of that station still decoded.
+    assert.equal(ingester.snapshot().length, COMMISSIONED_ON_STATION_01 - 1);
+  });
+
+  it("keeps a handful of recent issues, not a log", () => {
+    const at = new Date("2026-09-23T03:00:00Z");
+    const ingester = new Ingester({ writer: null, registry: REGISTRY });
+    for (let i = 0; i < 50; i += 1) {
+      ingester.accept({ topic: TOPIC, payload: new TextEncoder().encode("garbage"), at });
+    }
+    const health = ingester.health({ connected: true, connectedSince: at, lastBrokerProblem: null });
+    assert.equal(health.recentIssues.length, 20);
+    assert.equal(health.issueCounts["malformed-payload"], 50);
+  });
+});

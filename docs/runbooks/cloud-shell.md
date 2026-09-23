@@ -116,8 +116,10 @@ Then in a browser, on the web service's URL:
    on Real time, History and a made-up path like `/nope`. Pick Demo: *Demo data* everywhere again.
 2. In Incoming, History says *Not recorded yet*, the kWh chart and "energy today" likewise, and the
    only window offered is **1 hour**.
-3. While the power-meter publisher is silent: 55 rows, all offline, "observer as of" a few seconds
-   old. That is the correct display of a silent feed.
+3. While the power-meter publisher is silent: an amber banner, *No power-meter data received yet*,
+   naming when the observer connected; 55 rows, all offline. That is the correct display of a silent
+   feed. A red banner means something of ours is wrong — the observer stopped, or cannot reach the
+   broker — and says which.
 4. Once the publisher is back: rows go live within a minute, the footer names the measured interval,
    and **show raw** prints integers. Run `npm run capture -w @power-meter/ingester -- --messages 9`
    in the same minute and check a few values match (`M1VL1`, `M1P`, `M1E` against the columns).

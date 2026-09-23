@@ -23,6 +23,7 @@ import type {
   TimeRange,
 } from "@power-meter/application";
 import type { MeterId, MeterRegistry } from "@power-meter/domain";
+import type { FeedHealth } from "@power-meter/infrastructure";
 
 export interface SeriesRequest {
   readonly registry: MeterRegistry;
@@ -57,6 +58,8 @@ export interface FeedStatus {
   /** When the source last heard from its producer; null if never. */
   readonly observedAt: Date | null;
   readonly thresholds: FreshnessThresholds;
+  /** The producer's own account of the feed — connection, messages, errors. Incoming only. */
+  readonly health?: FeedHealth;
 }
 
 export interface DataSource {

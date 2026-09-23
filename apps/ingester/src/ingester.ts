@@ -72,8 +72,24 @@ import { MeterRegistry, type MeterId, type Reading } from "@power-meter/domain";
 import {
   StationDecoder,
   type DecodeIssueKind,
+  type FeedHealth,
+  type FeedIssue,
   type ObserverSnapshot,
 } from "@power-meter/infrastructure";
+
+/**
+ * What the decoder can report, plus the one thing it throws on: a payload that
+ * is not a JSON object at all. That is caught here and counted like any other
+ * issue — one garbled message must never take the process down.
+ */
+export type IngestIssueKind = DecodeIssueKind | "malformed-payload";
+
+/** The broker connection's side of the feed's health, which the service holds. */
+export interface ConnectionState {
+  readonly connected: boolean;
+  readonly connectedSince: Date | null;
+  readonly lastBrokerProblem: { readonly at: Date; readonly message: string } | null;
+}
 import type { BrokerMessage } from "./broker.ts";
 
 export interface IngesterOptions {
@@ -131,6 +147,8 @@ const HOUR_MS = 60 * MINUTE_MS;
 const MAX_RECENT_PER_METER = 3_600;
 /** Gaps kept for the median: a few publishes per station across all nine. */
 const INTERVAL_SAMPLES = 45;
+/** Issues kept for the screen: enough to see a pattern, not a log. */
+const RECENT_ISSUES = 20;
 
 export class Ingester {
   readonly #registry: MeterRegistry;
@@ -164,7 +182,9 @@ export class Ingester {
   #messages = 0;
   #readings = 0;
   #droppedUncommissioned = 0;
-  #issues = new Map<DecodeIssueKind, number>();
+  #issues = new Map<IngestIssueKind, number>();
+  #recentIssues: FeedIssue[] = [];
+  readonly #startedAt: Date;
   #flushes = 0;
   #failedFlushes = 0;
   #droppedReadings = 0;
@@ -186,6 +206,7 @@ export class Ingester {
     this.#latestFlushIntervalMs = options.latestFlushIntervalMs ?? 30_000;
     this.#maxBufferedReadings = options.maxBufferedReadings ?? 20_000;
     this.#recentWindowMs = options.recentWindowMs ?? HOUR_MS;
+    this.#startedAt = this.#clock.now();
   }
 
   /** How far back `recent()` can reach. */
@@ -236,11 +257,21 @@ export class Ingester {
     this.#lastMessageAt = message.at;
     this.#observeInterval(message.topic, message.at);
 
-    const result = this.#decoder.decode(message.topic, message.payload, message.at);
-    this.#droppedUncommissioned += result.droppedUncommissioned;
-    for (const issue of result.issues) {
-      this.#issues.set(issue.kind, (this.#issues.get(issue.kind) ?? 0) + 1);
+    let result: ReturnType<StationDecoder["decode"]>;
+    try {
+      result = this.#decoder.decode(message.topic, message.payload, message.at);
+    } catch (error) {
+      // Not JSON, or not an object. Counted and shown, never thrown: this runs
+      // inside the broker's message handler, and one bad publish must not cost
+      // every good one after it.
+      this.#recordIssue(message, {
+        kind: "malformed-payload",
+        detail: `payload could not be read: ${describe(error)}`,
+      });
+      return;
     }
+    this.#droppedUncommissioned += result.droppedUncommissioned;
+    for (const issue of result.issues) this.#recordIssue(message, issue);
 
     for (const reading of result.readings) {
       this.#readings += 1;
@@ -286,13 +317,26 @@ export class Ingester {
    * 1-minute rollup rows by the same `rollupReadings()` the warehouse's
    * `readings_1m` is written with, and the measured interval.
    */
-  observerSnapshot(): ObserverSnapshot {
+  observerSnapshot(connection?: ConnectionState): ObserverSnapshot {
     return {
       updatedAt: this.#clock.now(),
       publishIntervalMs: this.publishIntervalMs(),
       windowMs: this.#recentWindowMs,
       latest: this.snapshot(),
       rollup: rollupReadings(this.recent()),
+      ...(connection === undefined ? {} : { health: this.health(connection) }),
+    };
+  }
+
+  /** The feed's health as this ingester sees it, with the service's connection state. */
+  health(connection: ConnectionState): FeedHealth {
+    return {
+      startedAt: this.#startedAt,
+      ...connection,
+      messages: this.#messages,
+      lastMessageAt: this.#lastMessageAt,
+      issueCounts: Object.fromEntries(this.#issues),
+      recentIssues: [...this.#recentIssues],
     };
   }
 
@@ -450,6 +494,22 @@ export class Ingester {
     }
     drop = Math.max(drop, list.length - MAX_RECENT_PER_METER);
     if (drop > 0) list.splice(0, drop);
+  }
+
+  #recordIssue(
+    message: BrokerMessage,
+    issue: { kind: IngestIssueKind; meterId?: string; key?: string; detail: string },
+  ): void {
+    this.#issues.set(issue.kind, (this.#issues.get(issue.kind) ?? 0) + 1);
+    this.#recentIssues.push({
+      at: message.at,
+      topic: message.topic,
+      kind: issue.kind,
+      ...(issue.meterId === undefined ? {} : { meterId: issue.meterId }),
+      ...(issue.key === undefined ? {} : { key: issue.key }),
+      detail: issue.detail,
+    });
+    if (this.#recentIssues.length > RECENT_ISSUES) this.#recentIssues.shift();
   }
 
   #observeInterval(topic: string, at: Date): void {

@@ -33,6 +33,19 @@ function hourSnapshot(intervalMs = 9_000): ObserverSnapshot {
     windowMs: 3_600_000,
     latest: [...latest.values()],
     rollup: rollupReadings(readings),
+    health: {
+      startedAt: from,
+      connected: true,
+      connectedSince: from,
+      lastBrokerProblem: { at: from, message: "connection closed" },
+      messages: 3_600,
+      lastMessageAt: to,
+      issueCounts: { "missing-field": 1, "malformed-payload": 1 },
+      recentIssues: [
+        { at: to, topic: "PMeterStation01", kind: "missing-field", meterId: "s01m1", key: "M1P", detail: "M1P is absent" },
+        { at: to, topic: "PMeterStation02", kind: "malformed-payload", detail: "not JSON" },
+      ],
+    },
   };
 }
 
@@ -47,6 +60,13 @@ test("a snapshot survives the document and comes back exactly", () => {
 test("an hour of the whole fleet fits in a Firestore document with room to spare", () => {
   const size = JSON.stringify(toSnapshotDocument(hourSnapshot())).length;
   assert.ok(size < 256 * 1024, `${size} bytes`);
+});
+
+test("a document from before the health section still reads, without it", () => {
+  const { health: _dropped, ...document } = toSnapshotDocument(hourSnapshot());
+  const back = fromSnapshotDocument(JSON.parse(JSON.stringify(document)));
+  assert.equal(back?.health, undefined);
+  assert.equal(back?.latest.length, 55);
 });
 
 test("no document is no snapshot, and a malformed one names its field", () => {

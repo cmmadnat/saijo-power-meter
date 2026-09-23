@@ -49,6 +49,8 @@ export {
   fromSnapshotDocument,
   ObserverSnapshotStore,
   toSnapshotDocument,
+  type FeedHealth,
+  type FeedIssue,
   type ObserverSnapshot,
   type SnapshotDocument,
 } from "./observer/snapshot.ts";
