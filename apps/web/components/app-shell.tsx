@@ -8,6 +8,7 @@ import { chooseView } from "@/app/actions";
 const NAV = [
   { href: "/", label: "Real time" },
   { href: "/history", label: "History" },
+  { href: "/meters", label: "Meters" },
 ] as const;
 
 /**

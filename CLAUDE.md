@@ -531,7 +531,8 @@ than merged. Since step 8c it is **one Firestore document** holding all 55 readi
 project's `(default)` database — not 55 documents (~158 000 writes a day), and not the `latest`
 BigQuery table it used to be (2 880 table modifications a day against a standard table's cap of
 1 500, which cannot be raised). Migration `0002` drops that table. The web app never reads it; its
-one Firestore role, `datastore.viewer` since step 10, is for the observer's separate document.
+one Firestore role, `datastore.user` since the meter labels, reads the observer's separate
+document and writes only `labels/meters`.
 
 **The ingester's repeating writes may never go back to load jobs, and the reason is a number.**
 A load job counts as a table modification, a **standard** table takes 1 500 of those a day — a
@@ -590,10 +591,20 @@ overwrites `observer/latest` every 30 s — latest readings, the last hour as 1-
 the measured publish interval — and the web app reads it through `incoming-adapters.ts`, at most
 once per 10 s per instance. That is the whole integration: no network path joins Cloud Run to the
 private VM, and none should be added. A header toggle picks Demo or Incoming for **the whole app
-at once**, remembered in a `pm-view` cookie; `DATA_MODE` stays the deployment's mode and the
-default. Incoming has `records: false`, so History, the kWh chart and energy today say *not
+at once**, remembered in a `pm-view` cookie; `DATA_MODE` stays the deployment's mode, and Incoming,
+where offered, is the default. Incoming has `records: false`, so History, the kWh chart and energy today say *not
 recorded yet* — never fixtures. `docs/architecture/data-modes.md` has the table of what each screen
 does in it.
+
+**Incoming prints the feed's identifiers verbatim and names a meter only by label.** The feed
+identifies a meter by topic and key prefix only, so `lib/registry-source.ts` hands the Incoming
+screens `labelledRegistry()` — grouped by topic as sent (`PMeterStation08`), numbered by key prefix
+(`M6`, via `Meter.verbatim`), named by what a viewer typed on `/meters` (the `labels/meters`
+document) and printed whole, or **Unlabeled**. Do not reformat either identifier, uppercase a
+topic, or parse a label. No workbook or demo name may reach an Incoming screen — `incoming.test.ts`
+checks every name the table, bands and charts print there against the workbook's. Incoming is also
+the default view where offered, and carries no badge; its header line still says the scaling is
+unconfirmed. Demo keeps the workbook's names and its badge.
 
 **There are two ways past that gate, and both write nowhere near BigQuery.** `WAREHOUSE=memory`
 or `WAREHOUSE=file` with an `mqtt://127.0.0.1` URL is the replay harness — both halves checked,

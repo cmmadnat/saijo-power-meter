@@ -6,10 +6,10 @@
  * real-time screen, nothing here refreshes, sorts or hovers.
  */
 import { formatRunningHours } from "@power-meter/application";
-import { MeterRegistry } from "@power-meter/domain";
 import { HistoryFilters } from "@/components/history-filters";
 import { dataSource, provenance } from "@/lib/data-mode";
 import { currentView } from "@/lib/view";
+import { registryFor } from "@/lib/registry-source";
 import { formatClockMinutes, formatNumber } from "@/lib/format";
 import {
   historySnapshot,
@@ -32,7 +32,9 @@ export default async function HistoryPage(props: PageProps<"/history">) {
   const first = (value: string | string[] | undefined): string | undefined =>
     Array.isArray(value) ? value[0] : value;
 
-  const registry = MeterRegistry.fromWorkbook();
+  const view = await currentView();
+  const source = dataSource(view);
+  const registry = await registryFor(source);
   const range = parseRange({
     fromDate: first(params.fromDate),
     fromTime: first(params.fromTime),
@@ -41,8 +43,6 @@ export default async function HistoryPage(props: PageProps<"/history">) {
   });
   const department = parseDepartment(first(params.department), registry);
 
-  const view = await currentView();
-  const source = dataSource(view);
   // A view that stores nothing has no history to show, and says so. It never
   // falls back to fixtures, and never reads a window it does not have.
   if (!(await source).records) {
@@ -58,9 +58,6 @@ export default async function HistoryPage(props: PageProps<"/history">) {
             stores none of it: its scaling is still unconfirmed, and a guessed number kept as
             history would be indistinguishable from a measurement later. History begins at
             go-live, when the scaling is confirmed and the ingester starts recording.
-          </p>
-          <p className="text-sm text-muted-foreground">
-            Switch to Demo in the header to see what this screen will show.
           </p>
         </section>
       </div>

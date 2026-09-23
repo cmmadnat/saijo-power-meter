@@ -19,6 +19,10 @@
  *   `records: false`; the screens print "not recorded yet" and never fall back
  *   to fixtures to fill the space.
  *
+ * - **Labels** — what the viewers call each meter, in a second document
+ *   (`labels/meters`) that the Meters page edits. The feed names a meter by
+ *   topic and slot and nothing else, so this view names it by label, or by id.
+ *
  * The document is read at most once per `CACHE_MS` per instance, however many
  * screens are open: a read is a Firestore document read, 50 000 of which a day
  * are free, and six a minute is 8 640.
@@ -29,12 +33,15 @@
 import {
   freshnessForInterval,
   type LatestReadingStore,
+  type MeterLabelStore,
   type ReadingRepository,
   type RollupBucket,
   type RollupRepository,
 } from "@power-meter/application";
 import type { MeterId, Reading } from "@power-meter/domain";
 import {
+  DEFAULT_LABELS_DOCUMENT,
+  DocumentMeterLabelStore,
   fileDocumentStore,
   firestoreDocumentStore,
   ObserverSnapshotStore,
@@ -49,6 +56,8 @@ export interface IncomingConfig {
   readonly projectId: string | undefined;
   readonly databaseId: string;
   readonly document: string;
+  /** The labels document, `labels/meters` unless overridden. */
+  readonly labelsDocument?: string;
   /** Where `file` reads, the observer's WAREHOUSE_DIR. */
   readonly dir: string;
 }
@@ -57,6 +66,13 @@ const MINUTE_MS = 60_000;
 const HOUR_MS = 60 * MINUTE_MS;
 /** How long one read of the document serves every request on this instance. */
 export const CACHE_MS = 10_000;
+/**
+ * How long one read of the labels serves this instance. Longer than the
+ * snapshot's, because labels change when a person edits them and not with the
+ * feed; a write on this instance forgets it at once, and another instance sees
+ * it within this long. 2 880 reads a day at most, beside the snapshot's 8 640.
+ */
+export const LABELS_CACHE_MS = 30_000;
 
 export interface IncomingDependencies {
   /** Injected by tests; otherwise Firestore or the file store is constructed. */
@@ -91,6 +107,32 @@ export async function createIncomingSource(
       });
     }
     return cached.snapshot;
+  };
+
+  const labelDocument = new DocumentMeterLabelStore(
+    documents,
+    config.labelsDocument ?? DEFAULT_LABELS_DOCUMENT,
+  );
+  let cachedLabels:
+    | { at: number; labels: Promise<ReadonlyMap<MeterId, string>> }
+    | undefined;
+  const labels: MeterLabelStore = {
+    labels() {
+      const at = now();
+      if (cachedLabels === undefined || at - cachedLabels.at >= LABELS_CACHE_MS) {
+        const read = labelDocument.labels();
+        cachedLabels = { at, labels: read };
+        read.catch(() => {
+          if (cachedLabels?.labels === read) cachedLabels = undefined;
+        });
+      }
+      return cachedLabels.labels;
+    },
+    async setLabels(changes) {
+      cachedLabels = undefined;
+      await labelDocument.setLabels(changes);
+      cachedLabels = undefined;
+    },
   };
 
   const latest: LatestReadingStore = {
@@ -138,6 +180,7 @@ export async function createIncomingSource(
   return {
     records: false,
     maxSeriesMs: HOUR_MS,
+    labels,
 
     async feed() {
       const found = await snapshot();

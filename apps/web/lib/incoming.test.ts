@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { DEFAULT_FRESHNESS, rollupReadings } from "@power-meter/application";
-import { MeterRegistry } from "@power-meter/domain";
+import { machineLabel, MeterRegistry, type MeterId } from "@power-meter/domain";
 import {
   fileDocumentStore,
   ObserverSnapshotStore,
@@ -25,8 +25,14 @@ import {
   viewsOf,
 } from "./data-mode.ts";
 import type { DataSource } from "./data-source.ts";
-import { CACHE_MS, createIncomingSource, type IncomingConfig } from "./incoming-adapters.ts";
+import {
+  CACHE_MS,
+  createIncomingSource,
+  LABELS_CACHE_MS,
+  type IncomingConfig,
+} from "./incoming-adapters.ts";
 import { feedStatus, fleetTrendSnapshot, realtimeSnapshot } from "./realtime-source.ts";
+import { registryFor } from "./registry-source.ts";
 import { chartSeries, parseSelection, parseWindow, windowsFor } from "./series-source.ts";
 
 const registry = MeterRegistry.fromWorkbook();
@@ -139,7 +145,7 @@ describe("the Incoming adapter set", () => {
     const inner = fileDocumentStore(dir);
     const counting: DocumentStore = {
       get: async (path) => {
-        reads += 1;
+        if (path === "observer/latest") reads += 1;
         return inner.get(path);
       },
       set: inner.set,
@@ -161,20 +167,129 @@ describe("views", () => {
     assert.throws(() => readIncoming({ INCOMING: "bigquery" }), /INCOMING must be/);
     const demo = readDataMode({});
     assert.deepEqual(viewsOf(demo, false), ["demo"]);
-    assert.deepEqual(viewsOf(demo, true), ["demo", "incoming"]);
+    // The feed first: where there is a real one, it is what a first visit sees.
+    assert.deepEqual(viewsOf(demo, true), ["incoming", "demo"]);
   });
 
   test("the cookie picks among what is offered, and a stale one is ignored", () => {
-    assert.equal(resolveView("incoming", ["demo", "incoming"]), "incoming");
+    assert.equal(resolveView("demo", ["incoming", "demo"]), "demo");
     assert.equal(resolveView("incoming", ["demo"]), "demo");
-    assert.equal(resolveView("live", ["demo", "incoming"]), "demo");
-    assert.equal(resolveView(undefined, ["demo", "incoming"]), "demo");
+    assert.equal(resolveView("live", ["incoming", "demo"]), "incoming");
+    assert.equal(resolveView(undefined, ["incoming", "demo"]), "incoming");
   });
 
-  test("Incoming is badged, and says the scaling is unconfirmed", () => {
+  test("Incoming carries no badge over its data, and says the scaling is unconfirmed", () => {
     const { badge, line } = provenanceOf(readDataMode({}), "incoming");
-    assert.ok(badge !== null && /incoming/i.test(badge));
+    assert.equal(badge, null);
     assert.match(line, /unconfirmed/);
     assert.match(line, /nothing stored/);
+  });
+
+  test("meters are grouped by topic and named only by label, all verbatim", async () => {
+    const labelled = await mkdtemp(join(tmpdir(), "incoming-labels-"));
+    try {
+      const source = await createIncomingSource(config(labelled));
+      assert.ok(source.labels, "Incoming carries a label store");
+      await source.labels.setLabels(new Map([["s08m6" as MeterId, "Press line 2 : STL003"]]));
+
+      const table = await realtimeSnapshot(source);
+      // The topics exactly as they arrive, and the key prefix as the meter's number.
+      assert.deepEqual(table.departments, registry.topics());
+      const row = (id: string) => table.rows.find((r) => r.meterId === id);
+      assert.deepEqual(
+        [
+          row("s08m6")?.department,
+          row("s08m6")?.meterNumber,
+          row("s08m6")?.machineNumber,
+          row("s08m6")?.machineName,
+        ],
+        // The label printed whole: nothing is parsed out of what a person typed.
+        ["PMeterStation08", "M6", null, "Press line 2 : STL003"],
+      );
+      // Nothing from the workbook: an unlabelled meter has no name at all.
+      assert.equal(row("s01m1")?.machineName, null);
+      assert.equal(row("s01m1")?.machineNumber, null);
+
+      const charts = await chartSeries(
+        await registryFor(source),
+        parseSelection("s08m6", registry),
+        "1h",
+        source,
+      );
+      assert.equal(charts.view.series[0]?.machineName, "Press line 2 : STL003");
+    } finally {
+      await rm(labelled, { recursive: true, force: true });
+    }
+  });
+
+  test("labels are cached, and a write on this instance is seen at once", async () => {
+    let reads = 0;
+    const labelled = await mkdtemp(join(tmpdir(), "incoming-labels-"));
+    const inner = fileDocumentStore(labelled);
+    const counting: DocumentStore = {
+      get: async (path) => {
+        if (path === "labels/meters") reads += 1;
+        return inner.get(path);
+      },
+      set: inner.set,
+    };
+    let clock = 1_000_000;
+    try {
+      const source = await createIncomingSource(config(labelled), { documents: counting, now: () => clock });
+      for (let i = 0; i < 5; i += 1) await registryFor(source);
+      assert.equal(reads, 1);
+      await source.labels?.setLabels(new Map([["s01m1" as MeterId, "Compressor"]]));
+      assert.equal((await registryFor(source)).find("s01m1" as MeterId)?.machineName, "Compressor");
+      const afterWrite = reads;
+      clock += LABELS_CACHE_MS;
+      await registryFor(source);
+      assert.equal(reads, afterWrite + 1);
+    } finally {
+      await rm(labelled, { recursive: true, force: true });
+    }
+  });
+
+  test("no workbook or demo name reaches any Incoming screen", async () => {
+    // Everything the workbook calls a meter or a department: the names the
+    // demo shows, and the ones Incoming must never print.
+    const workbookNames = new Set<string>();
+    for (const meter of registry.all()) {
+      const label = machineLabel(meter);
+      for (const name of [meter.department, meter.machineName, label.name, label.number]) {
+        if (name !== null) workbookNames.add(name);
+      }
+    }
+    const leaked = (value: string | null | undefined) =>
+      value !== null && value !== undefined && workbookNames.has(value);
+
+    const empty = await mkdtemp(join(tmpdir(), "incoming-unlabelled-"));
+    try {
+      const source = await createIncomingSource(config(empty));
+      const incomingRegistry = await registryFor(source);
+      for (const meter of incomingRegistry.all()) {
+        assert.ok(!leaked(meter.department) && !leaked(meter.machineName), meter.meterId);
+      }
+      const table = await realtimeSnapshot(source);
+      for (const row of table.rows) {
+        assert.ok(
+          !leaked(row.department) && !leaked(row.machineName) && !leaked(row.machineNumber),
+          `${row.meterId}: ${row.department} / ${row.machineName}`,
+        );
+      }
+      assert.ok(table.byDepartment.every((band) => !leaked(band.department)));
+      const everyMeter = incomingRegistry.commissioned().slice(0, 8).map((m) => m.meterId).join(",");
+      const charts = await chartSeries(
+        incomingRegistry,
+        parseSelection(everyMeter, incomingRegistry),
+        "1h",
+        source,
+      );
+      assert.ok(charts.view.series.length > 0);
+      for (const series of charts.view.series) {
+        assert.ok(!leaked(series.machineName) && !leaked(series.machineNumber), series.meterId);
+      }
+    } finally {
+      await rm(empty, { recursive: true, force: true });
+    }
   });
 });

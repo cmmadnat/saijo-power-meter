@@ -69,3 +69,9 @@ test("meter number is the workbook's station and meter id", () => {
   const last = registry.all().at(-1) as Meter;
   assert.equal(meterNumber(last), "09-8");
 });
+
+test("a verbatim meter is numbered and named exactly as given", () => {
+  const raw: Meter = { ...meter("Press line 2 : STL003"), keyPrefix: "M6", verbatim: true };
+  assert.equal(meterNumber(raw), "M6");
+  assert.deepEqual(machineLabel(raw), { number: null, name: "Press line 2 : STL003" });
+});

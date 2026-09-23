@@ -11,7 +11,8 @@ stopped being fixture-only.
 | `apps/web/lib/demo-adapters.ts` | Demo: the fixture generator. Loaded only in demo mode. |
 | `apps/web/lib/live-adapters.ts` | Live: the ingester's `/latest`, the warehouse's rollup and raw readings. |
 | `apps/web/lib/incoming-adapters.ts` | Incoming (step 10): the observer's one Firestore document. Stores nothing. |
-| `apps/web/lib/view.ts`, `app/actions.ts` | The viewer's choice of view: the cookie, and the toggle's server action. |
+| `apps/web/lib/view.ts`, `app/actions.ts` | The viewer's choice of view: the cookie, and the toggle's server action. The label save is there too. |
+| `apps/web/lib/registry-source.ts`, `app/meters/` | The registry a source's screens use, and the Meters page that labels the feed's meters. |
 | `apps/web/lib/{realtime,series,history}-source.ts` | Parse the URL, ask for a port, call a use case. Mode-blind. |
 | `apps/web/instrumentation.ts`, `lib/boot-check.ts` | Runs the gate at boot and exits non-zero if it refuses. |
 | `apps/web/app/error.tsx` | What a screen shows when its source did not answer; retries every 10 s. |
@@ -54,8 +55,8 @@ them, remembered in a cookie (`pm-view`, a year, httpOnly). Two rules carry over
 
 **Incoming is not a weaker live mode and does not go through the gate.** Its numbers are decoded
 through the guessed divisors — which is exactly why nothing of it is stored — and it says so on
-every route, not-found included: badge *Incoming · unconfirmed*, and a provenance line naming the
-test publisher.
+every route: a provenance line naming the test publisher and the unconfirmed scaling. It carried a
+badge too until the meter labels arrived; see below.
 
 **Where its data comes from.** The observer (`WAREHOUSE=none`) overwrites one Firestore document,
 `observer/latest`, every ~30 s: the newest reading per meter, the last hour as 1-minute rollup rows
@@ -75,9 +76,41 @@ and a recording ingester refuses to write it at all.
 | kW chart, strip load line | The snapshot's hour, through a `RollupRepository`. Only the 1-hour window is offered; a link asking for more gets the hour. |
 | kWh chart, energy today, History | *Not recorded yet.* `DataSource.records` is false, and the screens say so rather than fall back to fixtures or draw an hour under a label that claims a day. |
 
+**Incoming prints the feed's identifiers as sent, and labels are the only context added.** The
+feed carries a topic and a key prefix (`M6` in `M6VL1`, `M6P`, …) and nothing else, so the
+workbook's departments and machine names — the plant as specified, which no payload confirms — are
+not used in this view. `labelledRegistry()` in `packages/application` groups the same meters by
+topic, verbatim (`PMeterStation08`, in the place every screen puts a department), numbers each
+meter by its key prefix, and names it by the label a viewer gave it on the **Meters** page
+(`/meters`). Nothing is reformatted: no `Station 08`, no `08-6`, no uppercasing of a topic, and a
+label is printed whole — ` : CODE` is not split into a machine number the way a workbook name is.
+A meter with no label says **Unlabeled**, on the table, the charts and the problems list; nothing
+stands in for the missing name. Labels are one Firestore document, `labels/meters`, edited a topic
+at a time so two people on different topics do not overwrite each other, read at most once per
+30 s per instance and forgotten on a local write. Anyone who can open the app can edit them until
+the passcode gate lands.
+
+**Which meters exist still comes from the workbook, and that is the one assumption left.** The
+decoder shared with the ingester reads the slots the registry lists per topic: a topic it does not
+know is reported as `unknown-topic`, and a slot the workbook marks uncommissioned is dropped
+without an issue. The 2026-09-22 capture matched the registry topic for topic and slot for slot,
+so nothing is being dropped today; a meter the workbook does not list would not appear.
+
+**No workbook or demo name reaches an Incoming screen, and a test says so.** The Meters page offers
+no workbook hints and no fill-from-workbook, History in Incoming does not point at Demo, and
+`incoming.test.ts` checks every department, machine name and machine number the table, the bands
+and the charts produce in Incoming against every name in the workbook. The workbook still supplies
+which slots exist on which topic — the feed publishes exactly those — and nothing else.
+
+**Incoming is the default view, and carries no badge.** A demo deployment that offers it lists it
+first, so a first visit lands on the feed; the cookie still remembers a choice of Demo. The badge
+was dropped at the owner's request — pinned over the table, it hid rows on a phone — and the
+header line on every page still says *scaling unconfirmed · nothing stored*.
+
 It costs nothing: 2 880 document writes a day and at most 8 640 reads per web instance, inside
-Firestore's free 20 000 and 50 000. The web service gained `roles/datastore.viewer`, which reads
-documents and writes none; it had no Firestore access before.
+Firestore's free 20 000 and 50 000. The web service holds `roles/datastore.user`, for the labels — it
+was `datastore.viewer` until they arrived. Firestore IAM cannot scope that to one path, so the
+role could write the observer's document too; the code writes only `labels/meters`.
 
 ## The gate
 

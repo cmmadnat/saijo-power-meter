@@ -190,7 +190,8 @@ const ingesterClientId =
 // `observer/latest`, and the web app's Incoming view reads it — so the two need
 // no network path to each other, which matters now that the ingester is a
 // private VM in another region. The ingester already holds datastore.user for
-// its restart state; the web app gets datastore.viewer below. A recording
+// its restart state; the web app gets datastore.user below, for the meter
+// labels it writes beside that document. A recording
 // ingester writes none of it: the app refuses the combination.
 const incomingOffered = deployIngester && ingesterMode === "observe";
 const observerSnapshot = incomingOffered ? "firestore" : "off";
@@ -733,8 +734,8 @@ const webEnvs = [
     // it and mints an ID token with this URL as the audience.
     ...(ingesterService ? [{ name: "INGESTER_URL", value: ingesterService.uri }] : []),
     // The Incoming view, and the header toggle that offers it. Read from the
-    // same (default) database the observer writes; the web app can read, not
-    // write, documents there.
+    // same (default) database the observer writes; the web app writes only the
+    // meter labels there.
     ...(incomingOffered
         ? [
               { name: "INCOMING", value: "firestore" },
@@ -743,13 +744,17 @@ const webEnvs = [
         : []),
 ];
 
-// Read-only on Firestore documents, for the Incoming view's one document. It
-// was "no Firestore access at all" until step 10; viewer is the narrowest
-// predefined role that reads a document, and it can write nothing.
+// Documents in Firestore, for the Incoming view: it reads the observer's
+// snapshot, and reads and writes `labels/meters`, the names people give the
+// feed's meters on the Meters page. Read-only (datastore.viewer) until labels
+// arrived; datastore.user is the narrowest predefined role that writes a
+// document, and Firestore IAM cannot scope it to one path — so the web app
+// *could* write the observer's document or the ingester's restart state. Its
+// code writes only the labels path (`DocumentMeterLabelStore`).
 if (incomingOffered) {
-    new gcp.projects.IAMMember("web-incoming-reader", {
+    new gcp.projects.IAMMember("web-incoming-documents", {
         project: restartState.project,
-        role: "roles/datastore.viewer",
+        role: "roles/datastore.user",
         member: pulumi.interpolate`serviceAccount:${webIdentity.email}`,
     });
 }

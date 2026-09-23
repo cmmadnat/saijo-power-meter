@@ -1,6 +1,7 @@
 "use client";
 
 import { Fragment, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { formatAge, formatNumber } from "@/lib/format";
 
@@ -205,8 +206,15 @@ export function RealtimeTable({
   byDepartment,
   asOf,
   counts,
+  labelling = false,
   cadence = "readings arrive every 9 s; a meter silent for more than 3 min is shown offline with its last values.",
 }: {
+  /**
+   * True where meters are grouped by topic and named by label — Incoming.
+   * The group heading says Topic rather than แผนก, and an unlabelled meter
+   * says "Unlabeled", linking to the Meters page, instead of printing a dash.
+   */
+  labelling?: boolean;
   /** The footer's line about how often readings arrive and when a meter is called offline. */
   cadence?: string;
   rows: readonly RealtimeTableRow[];
@@ -223,6 +231,7 @@ export function RealtimeTable({
   };
 }) {
   const router = useRouter();
+  const groupLabel = labelling ? "Topic" : "แผนก";
   const [department, setDepartment] = useState<string>(ALL);
   const [live, setLive] = useState(true);
   // Grouping is on by default: 55 rows in five departments read as a list of
@@ -299,7 +308,7 @@ export function RealtimeTable({
       <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
         <div className="flex flex-wrap items-center gap-1">
           <span className="me-1 font-mono text-2xs uppercase tracking-wider text-muted-foreground">
-            แผนก
+            {groupLabel}
           </span>
           {[ALL, ...departments].map((name) => {
             const selected = department === name;
@@ -334,7 +343,7 @@ export function RealtimeTable({
                 : "border-border text-muted-foreground hover:border-accent-strong hover:text-foreground",
             ].join(" ")}
           >
-            group by แผนก
+            group by {groupLabel}
           </button>
         )}
 
@@ -403,7 +412,7 @@ export function RealtimeTable({
               </th>
               <th rowSpan={2} scope="col" className={headCell}>
                 <SortButton
-                  label="แผนก"
+                  label={groupLabel}
                   columnKey="department"
                   sort={sort}
                   onSort={onSort}
@@ -504,7 +513,8 @@ export function RealtimeTable({
                       colSpan={11}
                       className={`${cell} font-mono text-2xs uppercase tracking-widest text-muted-foreground`}
                     >
-                      {group.department}
+                      {/* The name as given — a topic is printed as sent, not shouted. */}
+                      <span className="normal-case">{group.department}</span>
                       <span className="ms-3 normal-case tracking-wider">
                         {group.summary
                           ? `${group.summary.running} of ${group.summary.meters} running` +
@@ -523,14 +533,14 @@ export function RealtimeTable({
                     <td className={numeric} />
                   </tr>
                   {group.rows.map((row) => (
-                    <Row key={row.meterId} row={row} cell={cell} numeric={numeric} raw={showRaw} />
+                    <Row key={row.meterId} row={row} cell={cell} numeric={numeric} raw={showRaw} labelling={labelling} />
                   ))}
                 </Fragment>
               ))}
 
             {groups === null &&
               visible.map((row) => (
-                <Row key={row.meterId} row={row} cell={cell} numeric={numeric} raw={showRaw} />
+                <Row key={row.meterId} row={row} cell={cell} numeric={numeric} raw={showRaw} labelling={labelling} />
               ))}
           </tbody>
         </table>
@@ -552,11 +562,13 @@ function Row({
   cell,
   numeric,
   raw = false,
+  labelling = false,
 }: {
   row: RealtimeTableRow;
   cell: string;
   numeric: string;
   raw?: boolean;
+  labelling?: boolean;
 }) {
   const dim = row.status === "offline";
   const wire = raw ? (row.raw ?? null) : null;
@@ -595,7 +607,20 @@ function Row({
       <td className={`${cell} font-mono whitespace-nowrap`}>
         {row.machineNumber ?? "—"}
       </td>
-      <td className={cell}>{row.machineName ?? "—"}</td>
+      <td className={cell}>
+        {row.machineName ??
+          (labelling ? (
+            <Link
+              href={`/meters#${row.meterId}`}
+              className="text-muted-foreground italic underline decoration-dotted underline-offset-2 hover:text-foreground"
+              title="No one has labelled this meter yet — label it on the Meters page"
+            >
+              Unlabeled
+            </Link>
+          ) : (
+            "—"
+          ))}
+      </td>
       {[0, 1, 2].map((phase) => (
         <td
           key={`v${phase}`}

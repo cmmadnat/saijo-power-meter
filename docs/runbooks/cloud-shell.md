@@ -100,7 +100,7 @@ another e2-micro anywhere on that account uses it up.
 ## Outstanding: step 10's checks, once it is applied
 
 The merge replaces the VM (its startup script gains `OBSERVER_SNAPSHOT=firestore`) and gives the
-web service `INCOMING=firestore` and `roles/datastore.viewer`. `vm` and `doc` are defined above.
+web service `INCOMING=firestore` and `roles/datastore.user` (`datastore.viewer` before the meter labels). `vm` and `doc` are defined above.
 
 ```bash
 # The observer writes its one document, every ~30 s: run twice, 30 s apart, updateTime moves.
