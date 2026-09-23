@@ -790,6 +790,14 @@ viewer's instead of the deployment's.
 (asserted, not eyeballed); both badges present on every route including not-found; the raw
 integers on screen match a `capture` run taken at the same minute.
 
+**Step 10 is where the project waits until the customer goes live, and it is a safe place to wait.**
+Nothing is stored, so nothing accumulates that step 11 must undo. When the real meters begin
+publishing they appear in Incoming first, raw integers on screen, and reading one meter's display at
+the same moment is the evidence the divisors need — so step 11 starts from a screen the customer is
+already looking at. What waiting costs: the observe ingester is billed around the clock, and
+History and the kWh chart stay *not recorded yet*. The passcode gate and the subscription alert are
+done during the wait.
+
 ### Step 11 — Go-live, when the meters publish
 Everything `CLAUDE.md` already says must happen together, gathered into one step: divisors confirmed
 in `scaling.ts` from a real payload and that meter's display; broker credentials rotated into Secret
