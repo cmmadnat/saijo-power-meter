@@ -42,13 +42,14 @@ done
 The merge creates the three broker secrets' first versions from `reference doc/mqtt`, a network,
 one IAP-only SSH rule, and the VM. The VM is private — no port but 22, and that only from IAP — so
 every check goes through the tunnel. The first `gcloud compute ssh` creates an OS Login key.
+Docker needs `sudo`: the OS Login user is not in the `docker` group. `curl` does not.
 
 ```bash
 vm() { gcloud compute ssh power-meter-ingester --zone us-central1-a --project saijo-power-meter \
          --tunnel-through-iap --command "$1"; }
 
 # 0. It booted: the container is up, and its log says observe mode.
-vm 'docker ps --format "{{.Names}} {{.Status}} {{.Image}}"; docker logs --tail 20 ingester'
+vm 'sudo docker ps --format "{{.Names}} {{.Status}} {{.Image}}"; sudo docker logs --tail 20 ingester'
 
 # 1. Every station's commissioned slots, and nothing else: expect 5 5 8 7 7 6 7 6 4, recording false,
 #    and the interval the feed actually publishes at (the test publisher: ~60000).
@@ -71,7 +72,7 @@ for i in $(seq 1 15); do vm 'curl -s localhost:8080/latest' | jq '.readings | le
 # 4. A connection on the go-live id is not evicted by the observer, and does not evict it.
 #    Read-only, clean session, writes nothing. Expect nine messages and no "DISCONNECT, reason code 142".
 npm run capture -w @power-meter/ingester -- --messages 9 --client-id power-meter-ingester
-vm 'docker logs --tail 5 ingester'                 # and no "shutting down" here either
+vm 'sudo docker logs --tail 5 ingester'                 # and no "shutting down" here either
 ```
 
 `bq ls -j` is *not* the check for 2: the Storage Write API creates no jobs, so an ingester that was
@@ -80,7 +81,7 @@ anything appends. `--client-id power-meter-ingester` is safe only **before go-li
 writing ingester runs on that id, the same command evicts it.
 
 `/logs` reads the Cloud Run service's logs and does not see the VM. Its container output is in
-Cloud Logging under `resource.type="gce_instance"`, or `vm 'docker logs ingester'`.
+Cloud Logging under `resource.type="gce_instance"`, or `vm 'sudo docker logs ingester'`.
 
 **If check 0 shows no container**, the startup script failed; its output is in the serial console:
 `gcloud compute instances get-serial-port-output power-meter-ingester --zone us-central1-a
