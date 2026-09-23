@@ -452,7 +452,75 @@ the takeover path driven through a fake broker — 33 tests in the app, 144 acro
 - **`migrate` is no longer hand-run.** It is a pipeline step, before the apply that promotes a
   revision depending on it.
 
-### Step 8 — Wire the UI to real data
+### Step 8 — Wire the UI to real data — **built; live mode verified against the replay, not BigQuery**
+Shipped together with 8b, because the one decides what the other may delete. The reasoning, the
+cost table and what is unproven are in `docs/architecture/data-modes.md`. Shipped:
+
+- `packages/application` — a `RollupRepository` port; `meterSeries` takes either port and folds a
+  stored minute into its buckets by the same three rules it folds a reading by; `fleetTrend`, the
+  strip's two windowed tiles, built from `meterSeries` and a sum across meters.
+- `packages/infrastructure` — `WarehouseRollupRepository`; `WarehouseReadingRepository` batching
+  meters under a row budget; `CachedRollupRepository`; `IngesterLatestReadingStore` and
+  `metadataIdToken` for the private ingester; the `/latest` wire shape moved here so both
+  deployables share it; the replay's file store moved here and given a read side;
+  `warehouse cost`.
+- `apps/web/lib/live-adapters.ts`, and the three source files rewritten to ask for a port.
+- `apps/web/components/fleet-strip.tsx` and `sparkline.tsx` — the two deferred tiles.
+- `apps/web/app/error.tsx` — live mode can fail where demo cannot, and the real-time route is a
+  wall display, so a failed read shows a retrying error screen rather than Next's default page.
+- `infra/index.ts` — `DATA_MODE` and, once the ingester exists, `INGESTER_URL` on the web
+  service, which now sits below the ingester so it can read its URL.
+
+**Decided: the charts and the strip read `readings_1m`; History reads raw.** A change of table, not
+of arithmetic — proved by drawing the same chart from raw readings and from their rollup, in the
+application layer and again through the warehouse adapter. The cost is a right-hand edge that
+trails by up to a closed minute plus a flush. History stays on raw because running hours are read
+off the gaps; its gap cap is **back at the three-minute default** in live, and stays widened in demo,
+where the sampling is still coarse.
+
+**Decided: "since the shift started" is since 00:00 Bangkok.** The specification defines no shifts,
+and 00:00 is where History's default window opens. The load line sits under "total load now"
+rather than in a sixth tile.
+
+**Measured: what the strip costs behind a ten-second refresh.** Every one of these reads bills
+BigQuery's 10 MB minimum, so the number of queries is the cost. Uncached, the route would issue 18
+a minute per open screen — ~7.4 TiB a month *per screen*. Shipped, rollup reads are cached until the
+minute turns and the strip's two windows share one read: **2 queries a minute per instance,
+~0.82 TiB a month, independent of screens open** — asserted in `sources.test.ts` with a counting
+client. The per-query bytes and the latency need BigQuery; `warehouse cost` measures both and has
+not been run.
+
+**Changed from step 6: History no longer issues one query per meter.** Fifty-five queries each
+billing the 10 MB floor, and each able to scan the day's partitions since clustering need not prune
+at this size, became batches under a 750 000-row budget — one query for today, eleven for a
+fortnight.
+
+*Verified:* `npm run verify` green. The web app's source functions run the same assertions against
+both adapter sets (`apps/web/lib/sources.test.ts`) — the demo set, and the live set over a loopback
+`/latest` and the file warehouse — and live History over what was stored equals History over the
+readings themselves, row for row. End to end: the replay broker, a real ingester process writing
+`WAREHOUSE=file`, and the production web build in `DATA_MODE=live` reading both; screenshots of all
+four screens in each mode. Page load, sequential, production build, p50 / p95: demo `/` 81 / 102 ms,
+History today 116 / 145 ms; live over twenty minutes of replay `/` 36 / 50 ms, History 62 / 74 ms.
+On the same replay the energy tile read 475 kWh against History's default footer of 485.7 — the
+difference is the not-yet-rolled-up tail, which the tile labels, plus each meter's first minute,
+since the replay began mid-day with no pre-midnight baseline. The image: the
+BigQuery SDK is bundled into the server chunks, standalone 58 → 59 MB, and a client constructed inside
+the production build reaches the credentials check.
+
+*Not verified, and why:*
+
+- ~~**No BigQuery.**~~ **Done, 2026-09-23**, from Cloud Shell: `warehouse cost --runs 20` parsed
+  and ran all three statements against the project. p50 / p95 per cache miss — strip 949 / 1 281 ms,
+  24-hour chart 308 / 720 ms, today's History 258 / 545 ms in one query — each billing the 10 MB
+  floor. What remains is that the data read was step 6's fixtures, and that no web process has yet
+  read the warehouse: that happens when live mode is switched on.
+- **The ID token has not been minted on Cloud Run**, because the ingester service does not exist.
+- **The two strip tiles have not been checked against History in BigQuery.** In the replay they
+  differ by the rollup's lagging tail, as designed; the warehouse still holds step 6's fixtures.
+
+*As specified:*
+
 Replace fixture calls with API routes / server components. The step-5 aggregation functions move
 server-side unchanged. Fixtures stay — as the test fixtures, and as the demo mode step 8b makes a
 shipped feature, so this step *adds* the live adapters beside them rather than deleting the
@@ -468,7 +536,35 @@ is answerable then and not now. The design they complete is on the canvas the bu
 measured; the four screens are the only thing that changed; the strip's two deferred tiles read the
 warehouse, with the cost of that refresh measured rather than assumed.
 
-### Step 8b — Two data modes: live and demo
+### Step 8b — Two data modes: live and demo — **done**
+Shipped as specified below, with the reasoning in `docs/architecture/data-modes.md`:
+`apps/web/lib/data-mode.ts` reads `DATA_MODE` once, runs the gate, and loads one of
+`demo-adapters.ts` or `live-adapters.ts` by dynamic import; the three source files ask it for a
+`DataSource` and never learn which. `instrumentation.ts` refuses to boot.
+
+Three decisions beyond the text below:
+
+- **An unrecognised `DATA_MODE` refuses to boot** rather than falling back to demo. Unset is demo, as
+  specified; a typo is a misconfiguration and deserves a crash loop.
+- **The replay harness is live mode, badged *Local replay*.** An ingester on loopback with
+  `WAREHOUSE=file` passes the gate — the ingester's own exemption, both halves required — and
+  runs live code over fixture numbers, so it is marked exactly as demo is.
+- **Fixtures are a second entry point, `@power-meter/infrastructure/fixtures`,** and
+  `check-boundaries.mjs` walks the web app's import graph to prove live mode never reaches it —
+  with one exempt edge, the dynamic import of the demo set.
+
+*Verified:* `DATA_MODE` unset, empty and `demo` are demo (unit tests, and the production server's
+boot line). The badge renders on `/`, `/history` and a 404 in demo and in the harness; live renders
+none on any of the three, checked in a browser against a throwaway build with the divisors marked
+confirmed — which is also what found the 404 page prerendered with the demo badge baked in, now
+fixed by making the layout request-time. With the ingester stopped, live mode shows a retrying
+error screen and recovers by itself when it returns. `DATA_MODE=live`
+with the two assumed scales exits 1 on the production build, naming `activePower, energy`; so does a
+loopback ingester in front of BigQuery, and so does `DATA_MODE=prod`. A planted import of the demo
+set from the fleet strip fails `npm run boundaries` with the chain printed.
+
+*As specified:*
+
 Decided with the customer, and it changes what step 8 is allowed to do: replacing the three source
 files must not delete the fixture path. The application runs in one of two modes, chosen by
 configuration, and both are first-class:
@@ -505,6 +601,59 @@ the existing screen tests against each adapter set; `DATA_MODE` unset behaves as
 badge is present on every route in demo mode and absent in live; `DATA_MODE=live` with the two
 `assumed` scales fails to boot, with both field names in the message; no fixture module is reachable
 from a live-mode render path, asserted the way `check-boundaries.mjs` asserts the dependency rule.
+
+### Step 8c — Fit the ingester's writes inside BigQuery's per-table limit — **planned, next**
+**Must land before `deployIngester` is flipped.** Found after step 8, and not a cost problem —
+a correctness one. The ingester writes with **load jobs**, and BigQuery caps load jobs (all table
+modifications, failures included) **per table per day** at a fixed number — Google's *Optimize
+load jobs* page confirms the limit exists and that load jobs count against it; the figure is 1,500
+from memory and an older copy of the quotas page, and confirming it is this step's first task. At
+the rates step 7 chose it is overrun every day:
+
+| Table | Written every | Jobs / day | Fails after |
+| --- | --- | --- | --- |
+| `latest` | 30 s | 2 880 | ~12.5 h |
+| `readings`, `readings_1m` | 45 s (one job each) | 1 920 each | ~19 h |
+
+The replay harness writes files, never BigQuery, which is why nothing caught it. Nothing is
+deployed, so nothing is broken yet.
+
+**Decided (option A):**
+
+- **`latest` moves to Firestore, as one document** holding all 55 readings (~15 KB, far under the
+  1 MiB document limit), overwritten every 30 s — 2 880 writes a day, inside Firestore's free tier.
+  It is restart state, not analytics, and never belonged in the warehouse. One document rather than
+  55: per-meter documents would be ~158 000 writes a day, ~$8 a month for nothing.
+- **`readings` and `readings_1m` stay in BigQuery**, written through the **Storage Write API**
+  (default stream) instead of load jobs. Streaming has no per-table job count, the first 2 TiB a
+  month are free, and this project writes ~1 GB a fortnight. The ingester's batch shape does not
+  change: raw and rollup still go out together in one flush, and only closed minutes are rolled up.
+- `ReadingWriter` keeps its interface. The change is adapters: a Firestore `LatestReadingStore` and
+  the `replaceLatest` half of the writer, and a streaming `append`. The screens do not change —
+  `latest` was never their source.
+- A migration drops `latest` (forward-only: nothing reads it once the ingester rehydrates from
+  Firestore). `infra/index.ts` gains the Firestore database, the API, and the ingester account's
+  `roles/datastore.user`; the web account needs nothing, since the web app never reads `latest`.
+
+**Rough cost:** about $0 a month either way — load jobs were free too. The gain is that the ingester
+keeps working after lunchtime.
+
+**Rejected (option B): keep load jobs, write less often** — raw every 90 s, `latest` every 2 min,
+under 1 000 jobs a day. No new service and two numbers to change, but a crash loses up to 90 s of
+readings instead of 45, a restart rehydrates state up to 2 min old, and failed jobs count against
+the same limit, so a bad hour of retries eats the margin.
+
+**Later, optional (option D): serve today's minutes from the ingester.** It could hold the fleet's
+per-minute buckets for the day in memory and serve them, taking the strip and the charts off
+BigQuery entirely — strip 1.3–1.6 s p95 per cache miss down to milliseconds, and up to ~$5 a month
+per extra warm web instance. More logic in the singleton, and a restart reloads the day with one
+query. Worth doing for speed if the strip's cache miss is noticed; not for money.
+
+*Verify:* the quota figure confirmed against the current quotas page and written here; a replay run
+against a real dataset (a scratch one, not `power_meter`) through the streaming writer at the real
+rate for longer than the old failure point, with `/stats` showing no failed flushes; the Firestore
+document read back on restart with 55 meters; `reconcile` over what BigQuery holds; the `latest`
+drop migration applied by the pipeline; `npm run verify` green.
 
 ### Step 9 — Passcode gate
 A single shared passcode, checked server-side against Secret Manager, httpOnly + secure session

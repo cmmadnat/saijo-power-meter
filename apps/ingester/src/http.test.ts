@@ -12,7 +12,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ReadingBatch, ReadingWriter } from "@power-meter/application";
 import { MeterRegistry, type Reading } from "@power-meter/domain";
-import { generateFixtures, toStationPayload } from "@power-meter/infrastructure";
+import { generateFixtures, toStationPayload } from "@power-meter/infrastructure/fixtures";
 import { handle, type LatestResponse } from "./http.ts";
 import { Ingester } from "./ingester.ts";
 

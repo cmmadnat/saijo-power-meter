@@ -14,7 +14,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type { ReadingBatch, ReadingWriter } from "@power-meter/application";
 import { MeterRegistry, type Reading } from "@power-meter/domain";
-import { generateFixtures, toStationPayload } from "@power-meter/infrastructure";
+import { generateFixtures, toStationPayload } from "@power-meter/infrastructure/fixtures";
 import { subscribeOptions, type Broker, type BrokerHandlers } from "./broker.ts";
 import type { Config } from "./config.ts";
 import { startService } from "./service.ts";

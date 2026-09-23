@@ -1,24 +1,19 @@
 /**
  * The History screen's data, and the window it is asked for.
  *
- * Third of the three source files, and the same role as the other two: the only
- * place that knows the numbers are fixtures today. Step 8 replaces the
- * repository constructed here; `historyTable` above it and the screen above
- * that do not change.
+ * Third of the three source files, and the same role as the other two: it
+ * parses the window off the URL, asks `data-mode.ts` for a repository covering
+ * it, and hands that to `historyTable`. In demo mode the repository is
+ * generated readings and comes with a widened gap cap, because a long window
+ * is sampled coarsely; in live mode it is the warehouse's raw readings and the
+ * cap is back at its three-minute default. The screen above does not change.
  *
- * Server-only: it reaches into the meter registry and generates readings.
+ * Server-only: it reaches into the meter registry.
  */
-import {
-  DEFAULT_MAX_RUN_GAP_MS,
-  historyTable,
-  type HistoryTable,
-} from "@power-meter/application";
+import { historyTable, type HistoryTable } from "@power-meter/application";
 import { MeterRegistry, type Department } from "@power-meter/domain";
-import {
-  defaultProfiles,
-  FixtureReadingRepository,
-  generateFixtures,
-} from "@power-meter/infrastructure";
+import { dataSource } from "./data-mode.ts";
+import type { DataSource } from "./data-source.ts";
 import { TIME_ZONE } from "./format.ts";
 
 /**
@@ -149,48 +144,20 @@ export function parseDepartment(
     : null;
 }
 
-/** The real publish interval; fixtures are generated no finer than this. */
-const PUBLISH_INTERVAL_MS = 9_000;
-
-/**
- * Generating a week of 55 meters at the real 9-second rate is nine million
- * readings to produce and immediately reduce to 55 rows. The window is sampled
- * coarsely instead, the way the charts do it.
- */
-function samplingIntervalMs(spanMs: number): number {
-  const target = spanMs / 2_000;
-  const steps = Math.max(1, Math.ceil(target / PUBLISH_INTERVAL_MS));
-  return steps * PUBLISH_INTERVAL_MS;
-}
-
 export async function historySnapshot(
   range: HistoryRange,
   department: Department | null,
+  source: DataSource | Promise<DataSource> = dataSource(),
 ): Promise<HistoryTable> {
   const registry = MeterRegistry.fromWorkbook();
-  const spanMs = range.to.getTime() - range.from.getTime();
-  const intervalMs = samplingIntervalMs(spanMs);
-
-  const fixtures = generateFixtures({
-    registry,
-    from: range.from,
-    to: range.to,
-    intervalMs,
-    profiles: defaultProfiles(registry),
-  });
+  const window = { from: range.from, to: range.to };
+  const { repository, maxRunGapMs } = (await source).history(registry, window);
 
   return historyTable({
     registry,
-    repository: new FixtureReadingRepository(fixtures.readings),
-    range: { from: range.from, to: range.to },
+    repository,
+    range: window,
     department,
-    // The use case caps a gap at three minutes so an unobserved stretch is not
-    // counted as running. That cap assumes readings arrive on the real 9-second
-    // schedule; here they are sampled coarsely to keep a long window cheap, so
-    // a week's 5-minute sampling would otherwise make every gap uncountable and
-    // every machine read as never running. The cap travels with the sampling
-    // rate, and at step 8 it goes back to the default because the readings will
-    // be real ones.
-    maxRunGapMs: Math.max(DEFAULT_MAX_RUN_GAP_MS, intervalMs * 2),
+    ...(maxRunGapMs === undefined ? {} : { maxRunGapMs }),
   });
 }

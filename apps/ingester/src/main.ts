@@ -9,6 +9,8 @@
 import process from "node:process";
 import {
   bigQueryClient,
+  FileLatestReadingStore,
+  FileReadingWriter,
   WarehouseLatestReadingStore,
   WarehouseReadingWriter,
 } from "@power-meter/infrastructure";
@@ -18,7 +20,6 @@ import type {
   ReadingWriter,
 } from "@power-meter/application";
 import { MeterRegistry, type Reading } from "@power-meter/domain";
-import { FileLatestReadingStore, FileReadingWriter } from "./file-store.ts";
 import { MqttBroker } from "./broker.ts";
 import { assertSafeToStart, readConfig, type Config } from "./config.ts";
 import { startService } from "./service.ts";

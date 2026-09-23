@@ -8,16 +8,16 @@
  * has. It is flagged to the customer alongside the other additions in
  * docs/requirements/power-meter-ui.md.
  *
- * Every figure here is derived from the same snapshot the table already holds —
- * no second query, and nothing that needs history. That is also why there is no
- * "energy today" tile and no sparkline, both of which the design sketch had: a
- * cumulative figure needs a baseline from the start of the shift, and a
- * sparkline needs the whole window. Neither is available from the latest
- * reading per meter, and adding a warehouse query to a screen that refreshes
- * every ten seconds is a cost decision for step 8, not a detail to slip in here.
+ * Most figures are derived from the same snapshot the table holds. The two
+ * that need a window — the last hour's load line under "total load now", and
+ * energy since 00:00 — arrived at step 8, from `fleetTrend` over the 1-minute
+ * rollup, read at most once a minute however often the screen refreshes. The
+ * component only draws them; see docs/architecture/data-modes.md for what that
+ * read costs.
  */
 import type { DepartmentLoad } from "@power-meter/application";
 import { formatNumber } from "@/lib/format";
+import { Sparkline, type SparklinePoint } from "@/components/sparkline";
 
 export interface FleetStripProps {
   readonly counts: {
@@ -33,6 +33,13 @@ export interface FleetStripProps {
   /** Status per meter in table order, for the census squares. */
   readonly statuses: readonly ("live" | "stale" | "offline")[];
   readonly asOf: string;
+  /** Energy since 00:00 across the fleet, kWh; null when nothing reported today. */
+  readonly energyTodayKwh: number | null;
+  readonly energyMeters: number;
+  /** "00:00" — where the energy figure starts. */
+  readonly energySince: string;
+  /** The last hour of total load, a point a minute. */
+  readonly spark: readonly SparklinePoint[];
 }
 
 const DOT: Record<"live" | "stale" | "offline", string> = {
@@ -59,6 +66,10 @@ export function FleetStrip({
   meterCount,
   statuses,
   asOf,
+  energyTodayKwh,
+  energyMeters,
+  energySince,
+  spark,
 }: FleetStripProps) {
   const idle = counts.reporting - counts.running;
   const busiest = [...byDepartment].sort(
@@ -68,7 +79,7 @@ export function FleetStrip({
   return (
     <section
       aria-label="Fleet summary"
-      className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4"
+      className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5"
     >
       <div className={tile}>
         <p className={label}>reporting</p>
@@ -104,8 +115,23 @@ export function FleetStrip({
             kW
           </span>
         </p>
+        <Sparkline points={spark} />
         <p className={label}>
-          reporting meters only · as of {asOf}
+          reporting meters only · as of {asOf} · line: last hour
+        </p>
+      </div>
+
+      <div className={tile}>
+        <p className={label}>energy today</p>
+        <p className={figure}>
+          {formatNumber(energyTodayKwh, 0)}
+          <span className="ms-1 font-sans text-sm text-muted-foreground">
+            kWh
+          </span>
+        </p>
+        <p className={label}>
+          since {energySince} · {energyMeters} of {meterCount} meters
+          {energyTodayKwh === null ? "" : " · to the last closed minute"}
         </p>
       </div>
 

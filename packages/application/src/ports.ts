@@ -45,6 +45,31 @@ export interface ReadingRepository {
 }
 
 /**
+ * The 1-minute rollup, for the charts and the fleet strip.
+ *
+ * A second read port rather than a second method on `ReadingRepository`,
+ * because it is a different table with a different contract: the rows are
+ * `rollupReadings` buckets, one per meter per *absolute* minute in which that
+ * meter said anything. It exists to make wide windows cheap — a 24-hour chart
+ * is 1 440 rows per meter here against ~9 600 raw — and handing its rows to
+ * `meterSeries` is a change of table, not of arithmetic: the use case folds a
+ * stored minute into its own bucket by the same three rules it folds a reading
+ * by. History does not read it, because running hours are read off the gaps
+ * between actual readings and a minute-resolution source would round them.
+ */
+export interface RollupRepository {
+  /**
+   * Rollup rows for the given meters whose minute starts within the range,
+   * ordered by meter and then ascending in time — the same contract as
+   * `readingsInRange`, for the same reason.
+   */
+  bucketsInRange(
+    meterIds: readonly MeterId[],
+    range: TimeRange,
+  ): AsyncIterable<RollupBucket>;
+}
+
+/**
  * The newest reading per meter, for the real-time screen.
  *
  * Separate from ReadingRepository because it is a different cost shape, not

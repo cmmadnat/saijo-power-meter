@@ -21,7 +21,7 @@ import type {
   LatestReadingStore,
 } from "@power-meter/application";
 import { MeterRegistry, type MeterId, type Reading } from "@power-meter/domain";
-import { generateFixtures, toStationPayload } from "@power-meter/infrastructure";
+import { generateFixtures, toStationPayload } from "@power-meter/infrastructure/fixtures";
 import type { BrokerMessage } from "./broker.ts";
 import { Ingester } from "./ingester.ts";
 

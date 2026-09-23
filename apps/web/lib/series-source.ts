@@ -1,18 +1,17 @@
 /**
  * The charts' data, and the selection they are drawn for.
  *
- * Same shape as lib/realtime-source.ts and the same role: the only file that
- * knows the numbers are fixtures today. Step 8 replaces the two adapters built
- * here with the warehouse's repository; the use case above them and the charts
- * above that do not change.
+ * One of the three source files. It parses the selection and the window off
+ * the URL, asks `data-mode.ts` for a port covering that window, and hands it to
+ * `meterSeries`. In demo mode the port is generated readings; in live mode it
+ * is the warehouse's 1-minute rollup, with the window aligned to the minute so
+ * that a stored minute lands in exactly one bucket. Which of the two it got is
+ * not this file's business — the use case folds either by the same rules.
  */
 import { meterSeries, type SeriesView } from "@power-meter/application";
-import { MeterRegistry, type MeterId } from "@power-meter/domain";
-import {
-  defaultProfiles,
-  FixtureReadingRepository,
-  generateFixtures,
-} from "@power-meter/infrastructure";
+import { type MeterId, type MeterRegistry } from "@power-meter/domain";
+import { dataSource } from "./data-mode.ts";
+import type { DataSource } from "./data-source.ts";
 
 /**
  * The windows the charts offer. Presets rather than a custom range: the
@@ -83,21 +82,6 @@ export function parseWindow(raw: string | undefined): WindowId {
   return found ? found.id : DEFAULT_WINDOW;
 }
 
-/** The real publish interval; fixtures are generated no finer than this. */
-const PUBLISH_INTERVAL_MS = 9_000;
-
-/**
- * Generating 24 hours at the real 9-second rate would be ~9 600 readings per
- * meter, all of which the use case then averages away into 360 buckets. Coarser
- * generation for a longer window costs nothing visible and keeps a page render
- * from building a hundred thousand objects it immediately discards.
- */
-function samplingIntervalMs(spanMs: number): number {
-  const target = spanMs / 2_000;
-  const steps = Math.max(1, Math.ceil(target / PUBLISH_INTERVAL_MS));
-  return steps * PUBLISH_INTERVAL_MS;
-}
-
 export interface ChartData {
   readonly view: SeriesView;
   readonly window: WindowId;
@@ -108,47 +92,25 @@ export async function chartSeries(
   registry: MeterRegistry,
   selection: Selection,
   window: WindowId,
+  source: DataSource | Promise<DataSource> = dataSource(),
 ): Promise<ChartData> {
   const spanMs = (WINDOWS.find((w) => w.id === window) ?? WINDOWS[1]).ms;
-  const intervalMs = samplingIntervalMs(spanMs);
-  const to = new Date(Math.floor(Date.now() / intervalMs) * intervalMs);
-  const from = new Date(to.getTime() - spanMs);
-
   const meterIds = selection.filter((id): id is MeterId => id !== null);
+  const { range, repository } = (await source).series({
+    registry,
+    meterIds,
+    spanMs,
+    now: new Date(),
+  });
+
   if (meterIds.length === 0) {
     return {
-      view: { from, to, bucketMs: 60_000, series: [] },
+      view: { ...range, bucketMs: 60_000, series: [] },
       window,
       selection,
     };
   }
 
-  // Only the selected meters are generated: the registry passed to the
-  // generator is what decides how much work this is.
-  const selected = MeterRegistry.of(
-    registry.all().filter((meter) => meterIds.includes(meter.meterId)),
-  );
-  const fixtures = generateFixtures({
-    registry: selected,
-    from,
-    to,
-    intervalMs,
-    // Profiles come from the whole fleet, not from this handful: without it a
-    // meter the table shows running could be drawn idle here, purely because
-    // the chart generated four meters instead of 55.
-    profiles: defaultProfiles(registry),
-    // The counter reset belongs to the table's fixture set, where it is one
-    // meter among 55. Here it would be a step down in whichever meter happened
-    // to sort first, for reasons no reader could see.
-    energyResetFor: null,
-  });
-
-  const view = await meterSeries({
-    registry,
-    repository: new FixtureReadingRepository(fixtures.readings),
-    meterIds,
-    range: { from, to },
-  });
-
+  const view = await meterSeries({ registry, repository, meterIds, range });
   return { view, window, selection };
 }

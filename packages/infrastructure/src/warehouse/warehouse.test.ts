@@ -13,7 +13,13 @@
  */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { rollupReadings } from "@power-meter/application";
+import {
+  historyTable,
+  meterSeries,
+  rollupReadings,
+  type RollupBucket,
+  type RollupRepository,
+} from "@power-meter/application";
 import { MeterRegistry, type MeterId } from "@power-meter/domain";
 import { generateFixtures } from "../fixtures/generate.ts";
 import type { QueryParams, WarehouseClient } from "./client.ts";
@@ -28,10 +34,16 @@ import {
 import {
   WarehouseLatestReadingStore,
   WarehouseReadingRepository,
+  WarehouseRollupRepository,
+  metersPerQuery,
 } from "./repository.ts";
+import { CachedRollupRepository } from "./cache.ts";
+import { billedBytes, measureCost, percentile } from "./cost.ts";
+import { FixtureReadingRepository } from "../fixtures/repository.ts";
 import { partitionSettings, resetWarehouse, runMigrations } from "./runner.ts";
 import { WarehouseReadingWriter } from "./writer.ts";
 import {
+  bucketToRow,
   readingToRow,
   rowToReading,
   RETENTION_DAYS,
@@ -69,20 +81,39 @@ class FakeWarehouse implements WarehouseClient {
 
   async *stream<Row>(sql: string, params?: QueryParams): AsyncIterable<Row> {
     this.statements.push(sql);
+    if (sql.includes(tableRef(TARGET, TABLES.rollup))) {
+      const meters = params?.["meterIds"] as string[];
+      const from = (params?.["from"] as Date).getTime();
+      const to = (params?.["to"] as Date).getTime();
+      const at = (row: Record<string, unknown>) => new Date(row["minute"] as string).getTime();
+      const matching = this.rows(TABLES.rollup)
+        .filter((row) => meters.includes(row["meter_id"] as string))
+        .filter((row) => at(row) >= from && at(row) < to)
+        .sort((a, b) =>
+          a["meter_id"] === b["meter_id"]
+            ? at(a) - at(b)
+            : (a["meter_id"] as string) < (b["meter_id"] as string)
+              ? -1
+              : 1,
+        );
+      for (const row of matching) yield wrap(row) as Row;
+      return;
+    }
     if (!sql.includes(tableRef(TARGET, TABLES.readings))) return;
 
+    const meters = params?.["meterIds"] as string[];
     const from = (params?.["from"] as Date).getTime();
     const to = (params?.["to"] as Date).getTime();
+    const at = (row: Record<string, unknown>) => new Date(row["reading_at"] as string).getTime();
     const matching = this.rows(TABLES.readings)
-      .filter((row) => row["meter_id"] === params?.["meterId"])
-      .filter((row) => {
-        const at = new Date(row["reading_at"] as string).getTime();
-        return at >= from && at < to;
-      })
-      .sort(
-        (a, b) =>
-          new Date(a["reading_at"] as string).getTime() -
-          new Date(b["reading_at"] as string).getTime(),
+      .filter((row) => meters.includes(row["meter_id"] as string))
+      .filter((row) => at(row) >= from && at(row) < to)
+      .sort((a, b) =>
+        a["meter_id"] === b["meter_id"]
+          ? at(a) - at(b)
+          : (a["meter_id"] as string) < (b["meter_id"] as string)
+            ? -1
+            : 1,
       );
     for (const row of matching) yield wrap(row) as Row;
   }
@@ -377,11 +408,22 @@ test("every readings query carries the partition filter the table demands", asyn
     // no rows loaded; the queries are the subject
   }
 
-  assert.equal(client.statements.length, 2, "one query per meter");
+  assert.equal(client.statements.length, 1, "six hours of two meters is one query");
   for (const sql of client.statements) {
     assert.match(sql, /DATE\(reading_at\) BETWEEN DATE\(@from\) AND DATE\(@to\)/);
-    assert.match(sql, /ORDER BY reading_at/);
+    assert.match(sql, /ORDER BY meter_id, reading_at/);
   }
+});
+
+test("meters share a query up to the row budget, and no further", () => {
+  const day = { from: new Date(0), to: new Date(24 * 3_600_000) };
+  const fortnight = { from: new Date(0), to: new Date(14 * 24 * 3_600_000) };
+  // Today's History — 9 600 rows a meter — is one query for all 55.
+  assert.equal(metersPerQuery(day, 55, 750_000), 55);
+  // A fortnight is 134 400 rows a meter: five meters a query, eleven queries.
+  assert.equal(metersPerQuery(fortnight, 55, 750_000), 5);
+  // A budget smaller than one meter's window still makes progress.
+  assert.equal(metersPerQuery(fortnight, 55, 10), 1);
 });
 
 test("no meters means no query at all", async () => {
@@ -508,4 +550,183 @@ test("reset drops every table this code owns, ledger included", async () => {
   // dataset rather than refusing to run against a half-applied one.
   client.tables.delete(TABLES.migrations);
   assert.equal((await runMigrations(client, TARGET)).applied.length, MIGRATIONS.length);
+});
+
+// --- step 8: the read side the screens use -----------------------------------
+
+test("the rollup is read in one query, partition-filtered, for every meter asked for", async () => {
+  const client = new FakeWarehouse();
+  const fixtures = generateFixtures({ registry, ...WINDOW, intervalMs: 9_000 });
+  await client.load(TABLES.rollup, (async function* () {
+    for (const bucket of rollupReadings(fixtures.readings)) yield bucketToRow(bucket);
+  })());
+
+  const repository = new WarehouseRollupRepository(client, TARGET);
+  const meterIds = ["s03m4", "s01m1", "s05m1"] as MeterId[];
+  const rows: RollupBucket[] = [];
+  for await (const row of repository.bucketsInRange(meterIds, WINDOW)) rows.push(row);
+
+  assert.equal(client.statements.length, 1, "one query, not one per meter");
+  const sql = client.statements[0] ?? "";
+  assert.match(sql, /DATE\(minute\) BETWEEN DATE\(@from\) AND DATE\(@to\)/);
+  assert.match(sql, /meter_id IN UNNEST\(@meterIds\)/);
+  assert.match(sql, /ORDER BY meter_id, minute/);
+  // Meter-major and ascending, which is the port's contract.
+  const keys = rows.map((r) => `${r.meterId}|${r.at.toISOString()}`);
+  assert.deepEqual(keys, [...keys].sort());
+  assert.deepEqual([...new Set(rows.map((r) => r.meterId))], ["s01m1", "s03m4", "s05m1"]);
+  assert.ok(rows.every((r) => r.at instanceof Date && r.readingCount > 0));
+});
+
+test("the chart over the stored rollup is the chart over the raw fixtures", async () => {
+  // The claim that moving the charts to readings_1m is a change of table and
+  // not of arithmetic, checked through the adapter and the JSON round trip.
+  const client = new FakeWarehouse();
+  const fixtures = generateFixtures({ registry, ...WINDOW, intervalMs: 9_000 });
+  await client.load(TABLES.rollup, (async function* () {
+    for (const bucket of rollupReadings(fixtures.readings)) yield bucketToRow(bucket);
+  })());
+  const meterIds = ["s01m1", "s03m4", "s05m1", "s07m5"] as MeterId[];
+
+  const raw = await meterSeries({
+    registry,
+    repository: new FixtureReadingRepository(fixtures.readings),
+    meterIds,
+    range: WINDOW,
+  });
+  const stored = await meterSeries({
+    registry,
+    repository: new WarehouseRollupRepository(client, TARGET),
+    meterIds,
+    range: WINDOW,
+  });
+  stored.series.forEach((series, i) =>
+    series.points.forEach((point, j) => {
+      const expected = raw.series[i]?.points[j];
+      const close = (a: number | null | undefined, b: number | null | undefined) =>
+        a === null || b === null || a === undefined || b === undefined
+          ? a === b
+          : Math.abs(a - b) < 1e-9;
+      assert.ok(close(point.activePowerKw, expected?.activePowerKw), `${series.meterId} power at ${j}`);
+      assert.ok(close(point.energyConsumedKwh, expected?.energyConsumedKwh), `${series.meterId} energy at ${j}`);
+    }),
+  );
+});
+
+test("History read in batches is History read in one query, row for row", async () => {
+  const client = new FakeWarehouse();
+  await loadFixtures(client, TARGET, { ...WINDOW, intervalMs: 60_000 });
+
+  const whole = await historyTable({
+    registry,
+    repository: new WarehouseReadingRepository(client, TARGET),
+    range: WINDOW,
+  });
+  const before = client.statements.length;
+  const batched = await historyTable({
+    registry,
+    // Two hours is 800 rows a meter; a 2 000-row budget puts two meters in a query.
+    repository: new WarehouseReadingRepository(client, TARGET, { rowBudget: 2_000 }),
+    range: WINDOW,
+  });
+  assert.equal(client.statements.length - before, Math.ceil(registry.commissioned().length / 2));
+  assert.deepEqual(batched.rows, whole.rows);
+});
+
+test("a failing batch fails the read", async () => {
+  class Failing extends FakeWarehouse {
+    override async *stream<Row>(sql: string, params?: QueryParams): AsyncIterable<Row> {
+      if ((params?.["meterIds"] as string[]).includes("s01m3")) throw new Error("quota exceeded");
+      yield* super.stream<Row>(sql, params);
+    }
+  }
+  const repository = new WarehouseReadingRepository(new Failing(), TARGET, { rowBudget: 800 });
+  await assert.rejects(async () => {
+    for await (const _ of repository.readingsInRange(
+      ["s01m1", "s01m2", "s01m3"] as MeterId[],
+      WINDOW,
+    )) {
+      // drain
+    }
+  }, /quota exceeded/);
+});
+
+test("a rollup read is asked once per minute, however often the screen refreshes", async () => {
+  let reads = 0;
+  let clock = 0;
+  const inner: RollupRepository = {
+    async *bucketsInRange() {
+      reads += 1;
+      yield { meterId: "s01m1" as MeterId, at: new Date(0), readingCount: 1, activePowerKw: 1, energyKwh: 1 };
+    },
+  };
+  const cached = new CachedRollupRepository(inner, { ttlMs: 60_000, now: () => clock });
+  const drain = async (range: { from: Date; to: Date }) => {
+    const out: RollupBucket[] = [];
+    for await (const row of cached.bucketsInRange(["s01m1"] as MeterId[], range)) out.push(row);
+    return out;
+  };
+  const minute = { from: new Date(0), to: new Date(60_000) };
+
+  // Six refreshes ten seconds apart within one minute: one read.
+  for (let i = 0; i < 6; i += 1) {
+    clock = i * 10_000;
+    assert.equal((await drain(minute)).length, 1);
+  }
+  assert.equal(reads, 1);
+  assert.deepEqual(cached.stats(), { hits: 5, misses: 1 });
+
+  // The next minute's window is a new key, and the TTL is the backstop.
+  await drain({ from: new Date(60_000), to: new Date(120_000) });
+  assert.equal(reads, 2);
+  clock = 61_000;
+  await drain(minute);
+  assert.equal(reads, 3);
+});
+
+test("a failed rollup read is not remembered", async () => {
+  let reads = 0;
+  const inner: RollupRepository = {
+    async *bucketsInRange() {
+      reads += 1;
+      if (reads === 1) throw new Error("transient");
+    },
+  };
+  const cached = new CachedRollupRepository(inner);
+  const range = { from: new Date(0), to: new Date(60_000) };
+  const drain = async () => {
+    for await (const _ of cached.bucketsInRange(["s01m1"] as MeterId[], range)) {
+      // drain
+    }
+  };
+  await assert.rejects(drain, /transient/);
+  await drain();
+  assert.equal(reads, 2);
+});
+
+test("cost bills the 10 MB floor, rounds up to the MB, and runs the screens' own reads", async () => {
+  assert.equal(billedBytes(0), 10 * 1024 * 1024);
+  assert.equal(billedBytes(3.1 * 1024 * 1024), 10 * 1024 * 1024);
+  assert.equal(billedBytes(12.2 * 1024 * 1024), 13 * 1024 * 1024);
+  assert.equal(percentile([5, 1, 4, 2, 3], 50), 3);
+  assert.equal(percentile([...Array(100).keys()].map((i) => i + 1), 95), 95);
+
+  const client = new FakeWarehouse();
+  const lines: string[] = [];
+  const dryRuns: string[] = [];
+  await measureCost({
+    client,
+    target: TARGET,
+    dryRun: async (sql) => {
+      dryRuns.push(sql);
+      return 3 * 1024 * 1024;
+    },
+    runs: 2,
+    log: (line) => lines.push(line),
+  });
+  assert.equal(dryRuns.length, 3);
+  assert.ok(dryRuns.every((sql) => /DATE\((minute|reading_at)\) BETWEEN/.test(sql)));
+  assert.match(lines[0] ?? "", /strip .* bills 10 MB per view/);
+  assert.match(lines[2] ?? "", /History .* bills 10 MB per view \(1 query\)/);
+  assert.match(lines[3] ?? "", /20 MB a minute per instance -> 0\.82 TiB a month/);
 });

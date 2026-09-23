@@ -17,7 +17,7 @@ this page and it is not a technical one.
 | `apps/ingester/src/ingester.ts` | Decode, buffer, roll up closed minutes, hold the hot state. |
 | `apps/ingester/src/service.ts` | How the service reacts to connect, disconnect and takeover. |
 | `apps/ingester/src/http.ts` | `/latest`, `/stats`, `/healthz`, `/readyz`. |
-| `apps/ingester/src/file-store.ts` | The ports backed by files. The replay harness only. |
+| `packages/infrastructure/src/file-store/` | The ports backed by files. The replay harness only; moved out of this app at step 8 so the web app's live mode can read what the ingester writes. |
 | `apps/ingester/tools/replay.ts` | A broker on loopback replaying the fixtures at 60 msg/min. |
 | `apps/ingester/tools/reconcile.ts` | Checks a run's rollup against the raw readings behind it. |
 | `apps/ingester/tools/capture.ts` | Reads the real broker, prints raw payloads, writes nothing. |
@@ -101,6 +101,11 @@ The newest reading for each of the 55 commissioned meters, in a map, served at `
 to read — the reason the plan calls the *live* screen the expensive part and the history the cheap
 one.
 
+The wire shape — `LatestResponse` and `toLatestDto` — lives in
+`packages/infrastructure/src/hot-state/dto.ts`, beside `IngesterLatestReadingStore`, the web app's
+client for it. Both deployables import the one definition, the way they share the decoder. The web
+app calls it with an ID token minted for this service's URL, because the service is private.
+
 It is mirrored to the `latest` table every ~30 s. That table is not the screen's data source; it is
 what a restarted ingester rehydrates from, so a deploy does not begin blind. A failure to read it
 is logged and the service starts anyway: an empty hot state costs a few seconds of blank rows,
@@ -174,7 +179,9 @@ npm run reconcile -w @power-meter/ingester -- --dir .ingester
 ```
 
 `WAREHOUSE=file` writes the rows the warehouse adapter would write, as JSONL, plus `latest.json`
-in the shape the `latest` table holds. That is what makes two of the plan's verification items
+in the shape the `latest` table holds. Since step 8 the web app reads the same directory back: run it
+with `DATA_MODE=live INGESTER_URL=http://127.0.0.1:8099 WAREHOUSE=file WAREHOUSE_DIR=.ingester` and
+every screen is on the live code path, badged *Local replay*. That is what makes two of the plan's verification items
 answerable without a project: *restart and the hot state rehydrates from `latest`*, and *the rollup
 reconciles against raw*.
 
@@ -186,8 +193,10 @@ and the secret access. Those apply now and ingest nothing.
 
 The Cloud Run **service** is behind `saijo-power-meter:deployIngester`, which is `"false"`. A
 deployed revision would refuse to start — that is the gate doing its job — and a crash-looping
-revision fails every apply from then on. Flipping it to `"true"` belongs in the same change that
-confirms the divisors and adds a version to each secret:
+revision fails every apply from then on. **Step 8c of the plan comes first:** the writes below go
+through BigQuery load jobs, which are capped per table per day, and at a 45 s flush and a 30 s
+`latest` mirror the ingester would exceed that cap every afternoon. Flipping it to `"true"`
+belongs in the same change that confirms the divisors and adds a version to each secret:
 
 ```bash
 printf '%s' "$VALUE" | gcloud secrets versions add mqtt-broker-password \

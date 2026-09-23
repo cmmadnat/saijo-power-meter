@@ -8,6 +8,7 @@
 import { formatRunningHours } from "@power-meter/application";
 import { MeterRegistry } from "@power-meter/domain";
 import { HistoryFilters } from "@/components/history-filters";
+import { provenance } from "@/lib/data-mode";
 import { formatClockMinutes, formatNumber } from "@/lib/format";
 import {
   historySnapshot,
@@ -15,8 +16,8 @@ import {
   parseRange,
 } from "@/lib/history-source";
 
-// The window comes from the URL and the fixtures are generated per request, so
-// there is nothing to cache between them.
+// The window comes from the URL and is read per request, so there is nothing
+// to cache between them.
 export const dynamic = "force-dynamic";
 
 const DATE = new Intl.DateTimeFormat("en-GB", {
@@ -66,7 +67,7 @@ export default async function HistoryPage(props: PageProps<"/history">) {
           <h1 className="text-2xl font-semibold tracking-wide">History</h1>
         </div>
         <p className="font-mono text-xs text-muted-foreground">
-          Fixture data · no meter is connected yet
+          {provenance().line}
         </p>
       </header>
 

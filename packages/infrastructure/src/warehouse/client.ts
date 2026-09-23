@@ -47,9 +47,10 @@ export interface BigQueryClientOptions {
  * The real client.
  *
  * The SDK is imported dynamically so that importing this module — which the
- * package's entry point does — does not drag `@google-cloud/bigquery` and its
- * fifty-odd transitive packages into the web app's traced output. Nothing in
- * `apps/web` constructs one yet, and when step 8 does, it pays for it then.
+ * package's entry point does — does not drag `@google-cloud/bigquery` into a
+ * bundle that never constructs a client. The web app's live mode does, since
+ * step 8, and pays for it there: Turbopack bundles the SDK into the server
+ * chunks, about 1 MB of standalone output.
  */
 export async function bigQueryClient(
   options: BigQueryClientOptions,
@@ -122,4 +123,31 @@ export async function bigQueryClient(
     load: (table, rows) => writeRows(table, rows, "WRITE_APPEND"),
     replace: (table, rows) => writeRows(table, rows, "WRITE_TRUNCATE"),
   };
+}
+
+/**
+ * What BigQuery says a query would read, without running it.
+ *
+ * Outside `WarehouseClient` on purpose: nothing on a request path needs it.
+ * It exists for `warehouse cost`, which is how the price of the live screens'
+ * queries is measured rather than assumed. On-demand billing charges the bytes
+ * processed, rounded up to the MB, with a 10 MB minimum per table read.
+ */
+export async function dryRunBytes(
+  options: BigQueryClientOptions,
+  sql: string,
+  params: QueryParams,
+): Promise<number> {
+  const { BigQuery } = await import("@google-cloud/bigquery");
+  const bigquery = new BigQuery({
+    ...(options.projectId === undefined ? {} : { projectId: options.projectId }),
+    ...(options.location === undefined ? {} : { location: options.location }),
+  });
+  const [job] = await bigquery.createQueryJob({
+    query: sql,
+    params,
+    dryRun: true,
+    ...(options.location === undefined ? {} : { location: options.location }),
+  });
+  return Number(job.metadata?.statistics?.totalBytesProcessed ?? 0);
 }

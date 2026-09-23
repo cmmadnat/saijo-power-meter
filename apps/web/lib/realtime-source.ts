@@ -1,61 +1,57 @@
 /**
- * Where the real-time screen's numbers come from, today.
+ * Where the real-time screen's numbers come from: the table, and the fleet
+ * strip's two windowed tiles.
  *
- * Today that is the fixture generator: the store and the ingester do not exist
- * yet, and the screens are deliberately built and reviewed before they do. This
- * module is the only place that knows it — the page calls a use case, the use
- * case calls a port, and at step 8 the two adapters constructed here are
- * replaced by the ingester's HTTP hot state without the screen changing.
+ * One of the three source files, and like the other two it does not know which
+ * data mode it is in. It asks `data-mode.ts` for the ports and hands them to
+ * the use cases in `packages/application`; in demo mode those ports are the
+ * fixture generator, in live mode the ingester's hot state and the warehouse's
+ * rollup. The screen above this file is the same in both.
  *
- * Server-only. It reaches into the meter registry and generates a window of
- * readings per request, neither of which belongs in the client bundle.
+ * Server-only. It reaches into the meter registry, and in live mode holds the
+ * token that reads the ingester, neither of which belongs in the client bundle.
  */
 import {
+  fleetTrend,
   realtimeTable,
   systemClock,
+  type FleetTrend,
   type RealtimeTable,
 } from "@power-meter/application";
 import { MeterRegistry } from "@power-meter/domain";
-import {
-  FixtureLatestReadingStore,
-  generateFixtures,
-} from "@power-meter/infrastructure";
+import { dataSource } from "./data-mode.ts";
+import type { DataSource } from "./data-source.ts";
+import { startOfDay } from "./format.ts";
 
-/**
- * How much history the fixture window covers.
- *
- * Only the tail of it reaches this screen, but the window has to be long enough
- * for the generator's offline meters — which fall silent 20–40% of the way in —
- * to read as genuinely offline rather than merely stale. Forty-five minutes puts
- * them 27–36 minutes behind, well past the offline threshold.
- */
-const WINDOW_MS = 45 * 60_000;
-
-/** The real publish interval: 60 messages/minute across 9 stations. */
-const INTERVAL_MS = 9_000;
-
-/**
- * Build the table as of now.
- *
- * The window is aligned to the publish interval rather than to the wall clock,
- * so successive refreshes land on the same sample grid and the numbers drift
- * the way a meter's do instead of being re-rolled from scratch each time.
- */
-export async function realtimeSnapshot(): Promise<RealtimeTable> {
+/** Build the table as of now. */
+export async function realtimeSnapshot(
+  source: DataSource | Promise<DataSource> = dataSource(),
+): Promise<RealtimeTable> {
   const registry = MeterRegistry.fromWorkbook();
-  const to = new Date(Math.floor(Date.now() / INTERVAL_MS) * INTERVAL_MS);
-  const from = new Date(to.getTime() - WINDOW_MS);
-
-  const fixtures = generateFixtures({
-    registry,
-    from,
-    to,
-    intervalMs: INTERVAL_MS,
-  });
-
+  const now = systemClock.now();
   return realtimeTable({
     registry,
-    latest: new FixtureLatestReadingStore(fixtures.readings),
+    latest: (await source).latest(registry, now),
     clock: systemClock,
   });
+}
+
+/** How far back the strip's load line reaches. */
+const SPARK_MS = 60 * 60_000;
+
+/**
+ * Energy since 00:00 Bangkok and the last hour of total load, for the strip.
+ *
+ * "Since the shift started" in the plan; the specification defines no shifts,
+ * so the day is the shift — the same boundary History opens on by default,
+ * which means the tile and History's default footer answer the same question.
+ */
+export async function fleetTrendSnapshot(
+  source: DataSource | Promise<DataSource> = dataSource(),
+): Promise<FleetTrend> {
+  const registry = MeterRegistry.fromWorkbook();
+  const now = systemClock.now();
+  const dayStart = startOfDay(now);
+  const { range, repository } = (await source).trend({ registry, dayStart, sparkMs: SPARK_MS, now });
+  return fleetTrend({ registry, repository, dayStart, to: range.to, sparkMs: SPARK_MS });
 }

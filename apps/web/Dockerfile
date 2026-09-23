@@ -1,8 +1,8 @@
 # Next.js standalone build for Cloud Run, from the workspace root.
 #
 # The build context is the repository root, not apps/web: the app imports
-# @power-meter/domain and @power-meter/application, and npm hoists the
-# dependency tree to the root, so neither is reachable from inside apps/web.
+# the three @power-meter packages, and npm hoists the
+# dependency tree to the root, so none is reachable from inside apps/web.
 #
 # Cloud Run sets PORT at runtime and the standalone server.js reads it, so the
 # port is never hardcoded here. HOSTNAME must be 0.0.0.0 or the server binds to
@@ -16,6 +16,9 @@ COPY package.json package-lock.json ./
 COPY apps/web/package.json apps/web/
 COPY packages/domain/package.json packages/domain/
 COPY packages/application/package.json packages/application/
+# The web app imports the adapters, and live mode constructs a BigQuery client
+# from them; without this manifest the SDK is installed only by luck of hoisting.
+COPY packages/infrastructure/package.json packages/infrastructure/
 RUN npm ci
 
 FROM node:22-alpine AS builder

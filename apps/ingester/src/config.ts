@@ -12,12 +12,12 @@
  * So `assertSafeToStart` below is the gate the plan puts on step 7, and it is
  * written to be hard to talk your way past.
  */
-import { unconfirmedScales } from "@power-meter/infrastructure";
+import { isLoopbackUrl, unconfirmedScales } from "@power-meter/infrastructure";
 
 /**
  * Where rows go. `bigquery` is the only one a deployment uses; the other two
  * exist for the local replay, which has no project behind it — see
- * `file-store.ts` and the gate below.
+ * `FileReadingWriter` in `@power-meter/infrastructure` and the gate below.
  */
 export type WarehouseMode = "bigquery" | "memory" | "file";
 
@@ -122,23 +122,12 @@ function positive(value: string | undefined, fallback: number): number {
  * Whether this configuration points at a broker on this machine.
  *
  * It is the whole exemption: a replay against a broker on loopback is a test
- * harness, a connection to anything else is the factory. Hostnames are
- * compared rather than resolved, because a name that resolves to 127.0.0.1
- * today is a DNS record someone else controls tomorrow.
+ * harness, a connection to anything else is the factory. `isLoopbackUrl` is
+ * shared with the web app's gate, which grants the same exemption for an
+ * ingester on loopback — one definition of "this machine" for both.
  */
 export function isLoopbackBroker(brokerUrl: string): boolean {
-  let host: string;
-  try {
-    host = new URL(brokerUrl).hostname.toLowerCase();
-  } catch {
-    return false;
-  }
-  return (
-    host === "localhost" ||
-    host === "127.0.0.1" ||
-    host === "::1" ||
-    host === "[::1]"
-  );
+  return isLoopbackUrl(brokerUrl);
 }
 
 /**

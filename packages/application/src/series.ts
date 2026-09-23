@@ -15,7 +15,7 @@
  * 1-minute rollup does at step 6, so this function keeps the two definitions in
  * one place rather than letting a SQL query and a chart quietly disagree.
  */
-import type { ReadingRepository, TimeRange } from "./ports.ts";
+import type { ReadingRepository, RollupRepository, TimeRange } from "./ports.ts";
 import {
   machineLabel,
   meterNumber,
@@ -68,7 +68,14 @@ export interface SeriesView {
 
 export interface MeterSeriesInput {
   readonly registry: MeterRegistry;
-  readonly repository: ReadingRepository;
+  /**
+   * Raw readings, or the 1-minute rollup. Either is folded into the same
+   * buckets by the same three rules; see `addRollupToBucket`. The rollup is
+   * exact only when `range.from` falls on a whole minute, because a stored
+   * minute cannot be split across two of this function's buckets — callers
+   * reading the rollup align their window to the minute.
+   */
+  readonly repository: ReadingRepository | RollupRepository;
   readonly meterIds: readonly MeterId[];
   readonly range: TimeRange;
   /**
@@ -171,6 +178,34 @@ function addToBucket(bucket: Bucket, reading: Reading): void {
   }
 }
 
+/**
+ * Fold a stored rollup row into a bucket, by the same three rules.
+ *
+ * This is what makes pointing the charts at `readings_1m` a change of table
+ * rather than of arithmetic. A rollup row is a closed bucket — a count, a mean
+ * and a last counter — so merging it is exact: the power sum is the mean times
+ * the count, which is the sum the raw readings would have added; the count adds;
+ * and the counter is the latest minute's, because minutes are disjoint and the
+ * latest one holds the latest reading. A chart bucket is always a whole number
+ * of minutes, so on a minute-aligned window every stored minute lands inside
+ * exactly one of them and the result is what the raw readings would have drawn.
+ */
+function addRollupToBucket(bucket: Bucket, rollup: RollupBucket): void {
+  const atMs = rollup.at.getTime();
+  bucket.count += rollup.readingCount;
+  bucket.powerSumKw += rollup.activePowerKw * rollup.readingCount;
+  if (atMs >= bucket.lastAtMs) {
+    bucket.lastAtMs = atMs;
+    bucket.lastEnergyKwh = rollup.energyKwh;
+  }
+}
+
+function isRollupRepository(
+  repository: ReadingRepository | RollupRepository,
+): repository is RollupRepository {
+  return "bucketsInRange" in repository;
+}
+
 /** Null rather than zero for an empty bucket: a gap in the line, not no load. */
 function meanActivePowerKw(bucket: Bucket): number | null {
   return bucket.count === 0 ? null : bucket.powerSumKw / bucket.count;
@@ -268,19 +303,25 @@ export async function meterSeries(
     );
   }
 
-  for await (const reading of input.repository.readingsInRange(
-    input.meterIds,
-    input.range,
-  )) {
-    const buckets = accumulators.get(reading.meterId);
-    if (buckets === undefined) continue;
-    const index = Math.floor((reading.at.getTime() - from.getTime()) / bucketMs);
+  const bucketFor = (meterId: MeterId, at: Date): Bucket | undefined => {
+    const index = Math.floor((at.getTime() - from.getTime()) / bucketMs);
     // The repository's contract is half-open [from, to), but a repository that
-    // returns one reading outside it should not write past the end of an array.
-    if (index < 0 || index >= bucketCount) continue;
-    const bucket = buckets[index];
-    if (bucket === undefined) continue;
-    addToBucket(bucket, reading);
+    // returns one row outside it should not write past the end of an array.
+    if (index < 0 || index >= bucketCount) return undefined;
+    return accumulators.get(meterId)?.[index];
+  };
+
+  const { repository } = input;
+  if (isRollupRepository(repository)) {
+    for await (const rollup of repository.bucketsInRange(input.meterIds, input.range)) {
+      const bucket = bucketFor(rollup.meterId, rollup.at);
+      if (bucket !== undefined) addRollupToBucket(bucket, rollup);
+    }
+  } else {
+    for await (const reading of repository.readingsInRange(input.meterIds, input.range)) {
+      const bucket = bucketFor(reading.meterId, reading.at);
+      if (bucket !== undefined) addToBucket(bucket, reading);
+    }
   }
 
   const series = input.meterIds.map((meterId): MeterSeries => {

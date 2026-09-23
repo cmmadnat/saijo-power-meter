@@ -4,6 +4,7 @@ export type {
   ReadingBatch,
   ReadingRepository,
   ReadingWriter,
+  RollupRepository,
   TimeRange,
 } from "./ports.ts";
 export { systemClock } from "./ports.ts";
@@ -40,3 +41,5 @@ export {
   MIN_BUCKET_MS,
   rollupReadings,
 } from "./series.ts";
+export type { FleetTrend, FleetTrendInput, TrendPoint } from "./trend.ts";
+export { fleetTrend } from "./trend.ts";
