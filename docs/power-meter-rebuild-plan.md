@@ -731,34 +731,95 @@ the same writer, the same batch shape, the same two tables, driven by a tool tha
 behind it. It runs faster than real time on purpose, because the limit being disproved is per *day*
 and crossing it in an hour is a stronger result than crossing it in thirteen.
 
-### Step 9 — Passcode gate
-A single shared passcode, checked server-side against Secret Manager, httpOnly + secure session
-cookie, every route and API behind it. No user accounts. Rate-limit the attempt endpoint.
+### Steps 9–11 — revised 2026-09-23: show the customer what is arriving, beside what it will be
 
-*Verify:* every route and API path 302s or 401s when unauthenticated (enumerate them, don't spot
-check); the passcode never reaches the client bundle or a log line; rotating it invalidates existing
-sessions; cookie flags correct over HTTPS.
+The previous steps 9–11 (passcode gate, deploy, operations) moved to the **Backlog** below. The
+reason is the customer's own message of 2026-09-22: they have put a **simulated** feed for all nine
+stations on HiveMQ, publishing **once a minute**, and the useful thing to give them now is a way to
+see that feed on the real screens next to the demo of the finished product — not a gate in front of
+a demo nobody needs to protect.
 
-### Step 10 — Deploy — *web done; the ingester is declared and switched off*
-Cloud Run web service + the singleton ingester in `infra/`, image build and push, Secret Manager
-wiring (broker credentials, passcode), `asia-southeast1`. Step 7 brought most of this forward: the
-ingester's identity, secrets and access are applied, and its service waits on
-`saijo-power-meter:deployIngester` — which flips in the same change that confirms the divisors and
-adds a version to each secret. What is left here is the passcode secret and the rollback
-rehearsal.
-Preview on the PR, apply on merge — no credentials in-session, per CLAUDE.md.
+The constraint that shapes all three steps: the live gate exists to keep **wrongly-scaled numbers
+out of the warehouse**, where no backfill can fix them — not to keep them off a screen. So the
+incoming feed can be shown as long as nothing stores it and every screen says what it is. Three
+rules in `CLAUDE.md` bend to make room for that — a third gate exemption, a data source chosen per
+viewer rather than per deployment, and the ingester deployed before go-live — and each is changed in
+the step that needs it, with the reasoning beside it, not before.
 
-*Verify:* `pulumi preview` comment is clean; post-merge the deployed app shows live meter data;
-rollback path exercised once.
+### Step 9 — The ingester in observe mode
+Deploy the ingester to Cloud Run, connected to the customer's broker, **writing nothing**: no
+BigQuery, no Firestore. It keeps the latest reading per slot in memory and serves it on `/latest`,
+as it already does, plus a rolling in-memory hour per meter so a kW chart has something to draw.
 
-### Step 11 — Operations
-The 1-minute rollup landed in step 7 and retention is a partition-expiry setting from step 6, so the
-hourly rollup this step used to carry is **no longer needed** — 14 days is not a long enough range to
-justify it. What remains: an alert when a station stops publishing, and one when the ingester's
-subscription drops. Otherwise the customer notices bad data before we do.
+- `WAREHOUSE=none` — a writer that persists nothing. `assertSafeToStart` accepts a remote broker
+  *only* with it: the third exemption, justified in the code by the same argument as the other two
+  — what is protected is the warehouse, and this touches none of it.
+- Its own MQTT client id, distinct from the go-live ingester's, so the observe instance can never
+  evict the real one or be mistaken for it. Still `min=max=1`.
+- `deployIngester` flips to true; the three `mqtt-broker-*` secrets get versions (the values
+  already committed in `reference doc/mqtt` — rotation stays a go-live item); the deployer's role
+  list is checked in the same change, per the rule that cost step 8c a red `main`.
+- The feed publishes once a minute, not the specification's ~9 s per station. `DEFAULT_FRESHNESS`
+  (live ≤ 30 s, stale ≤ 180 s) would show every meter flickering live → stale each minute, so the
+  observe source carries its own thresholds derived from the interval it actually sees, and the
+  screen says which interval that is.
 
-*Verify:* unplug a station in staging and confirm the alert fires within a defined window; confirm
-14-day-old partitions are actually gone; confirm a killed ingester pages someone.
+*Verify:* the deployed `/latest` returns the nine topics' slots, 5/5/8/7/7/6/7/6/4; no job appears
+in BigQuery's history and `ingester/latest`'s update time does not move while it runs; a restart
+begins empty and fills within one publish; a second instance with the go-live client id is not
+evicted by it.
+
+### Step 10 — A viewer toggle: Demo ↔ Incoming
+A control in the header, remembered in a cookie, that chooses the data source for **the whole app
+at once** — never one screen — so "no half-live app" still holds; it becomes a choice of the
+viewer's instead of the deployment's.
+
+- **Demo** — today's fixtures on every screen, badged *Demo data*. "What it will be."
+- **Incoming** — the observe ingester's `/latest` and its in-memory hour, badged *Incoming — test
+  publisher, scaling unconfirmed*. The table shows scaled values with the raw integers one click
+  away, so the customer can compare them with what HiveMQ's console shows. The kW chart draws the
+  last hour. The kWh chart and History say **not recorded yet**: nothing is stored, and they never
+  fall back to fixtures to fill the space.
+- `DATA_MODE` keeps its meaning. `live` and its gate are untouched and still reserved for go-live;
+  Incoming is a third `DataSource`, not a weaker live mode. The deployment's `DATA_MODE` decides the
+  default, the toggle decides the rest.
+- `npm run boundaries` still allows fixtures only through `demo-adapters.ts`; the toggle picks
+  between two loaded sources, it does not open a new path to the fixtures.
+
+*Verify:* switching changes every route in one navigation; Incoming never renders a fixture value
+(asserted, not eyeballed); both badges present on every route including not-found; the raw
+integers on screen match a `capture` run taken at the same minute.
+
+### Step 11 — Go-live, when the meters publish
+Everything `CLAUDE.md` already says must happen together, gathered into one step: divisors confirmed
+in `scaling.ts` from a real payload and that meter's display; broker credentials rotated into Secret
+Manager; `warehouse reset --yes`; the ingester switched from observe to writing, on the go-live
+client id; `DATA_MODE=live`. The toggle's Incoming becomes **Live** — charts and History from the
+warehouse — and Demo stays on the toggle as the product tour.
+
+**The passcode gate lands before this step.** Test-publisher numbers on a public URL are harmless;
+a factory's real load is not.
+
+*Verify:* as old step 10 — the deployed app shows live meter data, and the rollback path is
+exercised once.
+
+### Backlog
+Moved out of steps 9–11 on 2026-09-23, unchanged in substance.
+
+- **Passcode gate** *(old step 9 — due before go-live).* A single shared passcode, checked
+  server-side against Secret Manager, httpOnly + secure session cookie, every route and API behind
+  it. No user accounts. Rate-limit the attempt endpoint. *Verify:* every route and API path 302s or
+  401s when unauthenticated (enumerate them, don't spot check); the passcode never reaches the
+  client bundle or a log line; rotating it invalidates existing sessions; cookie flags correct over
+  HTTPS.
+- **Deploy leftovers** *(old step 10).* The passcode secret and the rollback rehearsal. The web
+  service is deployed; the ingester's deployment moved into new step 9.
+- **Operations** *(old step 11).* An alert when a station stops publishing, and one when the
+  ingester's subscription drops — the second is worth having as soon as step 9 runs. The hourly
+  rollup is not needed: 14 days does not justify it. *Verify:* silence a station and confirm the
+  alert fires within a defined window (there is no staging stack; the replay harness or a paused
+  publisher stands in); confirm 14-day-old partitions are gone; confirm a killed ingester pages
+  someone.
 
 ---
 
@@ -863,6 +924,11 @@ traffic, but the customer confirms that is a **test publisher, put up as a rough
 are not publishing yet. So no capture can settle the divisors, however many are taken: a simulator
 cannot know what scaling the real device applies. The question is now *when the meters go live*, and
 step 7 waits on that rather than on an answer somebody could write down today.
+
+**The test publisher sends once a minute** (customer, 2026-09-22), against the specification's
+60 messages a minute across nine stations. That is the simulator's rate, not a revision of the
+meters' — worth confirming in the same conversation, because the freshness thresholds, History's
+three-minute running-hours cap and the ingester's rates were all sized for ~9 s.
 
 **Units are settled: active power is kW** (customer-confirmed). That narrows the question without
 closing it — 4995 raw would be ~5 MW, so the value is scaled, and the divisor is still unknown.
