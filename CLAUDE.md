@@ -105,6 +105,16 @@ last line rather than the oldest.
 
 Neither trigger works from a branch: `issue_comment` always runs the default branch's copy.
 
+**A docs-only push builds nothing.** Both triggers carry an `ignoredFiles` list — `docs/**`, the
+root `*.md` and `*.xlsx`, both `reference` directories — because the image is tagged with the
+commit SHA and the apply updates Cloud Run to it, so a docs merge used to roll a revision for no
+change in behaviour. It is an **ignore** list and not `includedFiles` on purpose: an include list
+fails closed on anything unlisted, so a new top-level directory silently stops building and the
+symptom is an absence. `check.yml` is the include-list version, which is why a `bootstrap.sh`
+change gets no `verify` run. Before copying the idea elsewhere, check the trap it avoids here: a
+pull request touching only ignored files gets no build and therefore no check, and a check
+*required* by branch protection would then never arrive.
+
 **The fork guard is a trigger setting, not hand-built.**
 `commentControl: COMMENTS_ENABLED_FOR_EXTERNAL_CONTRIBUTORS_ONLY` means a pull request from
 outside this repository does not build until someone with write access comments `/gcbrun`. That

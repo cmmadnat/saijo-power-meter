@@ -141,3 +141,7 @@ read-only identity does the reading:
 
 That is how a session with no credentials reads a failed apply, and it is what diagnosed the 403
 described above.
+
+One wrinkle since the triggers started ignoring docs-only pushes: `main`'s head may be a commit no
+build ever ran for, so `/buildlog sha=<head>` finds nothing. Use a bare `/buildlog` for the most
+recent build, or `/buildlog failed`.

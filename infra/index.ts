@@ -676,6 +676,38 @@ new gcp.projects.IAMMember("deployer-log-writer", {
     member: `serviceAccount:${deployerEmail}`,
 });
 
+// Paths that cannot change what a build produces. A push touching only these
+// creates no build at all.
+//
+// **An ignore list, never an include list**, and the difference is which way it
+// fails. `includedFiles` fails closed on anything unlisted: add a top-level
+// directory, or move `ci/` somewhere, and builds silently stop happening for
+// it — with nothing to notice, because the symptom is an absence. This fails
+// open: a path nobody thought about still builds. `.github/workflows/check.yml`
+// is the include-list version, and it is why a change to `bootstrap.sh` — which
+// sits at the root, outside every one of its patterns — gets no `verify` run.
+//
+// What it buys is more than the five minutes of build: the image is tagged with
+// the commit SHA and the apply updates Cloud Run to it, so a docs-only merge
+// used to roll a new revision for no change in behaviour, and the revision list
+// stopped being readable as deploy history.
+//
+// The trap this does NOT walk into, and the reason to check before copying it
+// elsewhere: a pull request touching only ignored files creates no build, so
+// its check never appears — and a check required by branch protection would
+// leave that pull request pending forever. `infra-preview` is not required
+// here.
+//
+// `*.md` rather than `**/*.md` on purpose: it matches the root files, and a
+// README inside `apps/` is traced into an image, so it stays a reason to build.
+const ignoredFiles = [
+    "docs/**",
+    "*.md",
+    "*.xlsx",
+    "reference/**",
+    "reference doc/**",
+];
+
 const previewTrigger = new gcp.cloudbuild.Trigger(
     "infra-preview",
     {
@@ -684,6 +716,7 @@ const previewTrigger = new gcp.cloudbuild.Trigger(
         project: projectId,
         description: "Pull request: build the image and preview the stack.",
         serviceAccount: triggerServiceAccount,
+        ignoredFiles,
         github: {
             owner: repoOwner,
             name: repoName,
@@ -710,6 +743,7 @@ const applyTrigger = new gcp.cloudbuild.Trigger(
         project: projectId,
         description: "Push to main: build and push the image, then apply the stack.",
         serviceAccount: triggerServiceAccount,
+        ignoredFiles,
         github: {
             owner: repoOwner,
             name: repoName,

@@ -105,6 +105,27 @@ ends the log with a step verdict and the last 80 lines of whatever failed, and *
 non-zero itself** if any step failed — so a red build reads as red, and a step that never
 ran is reported as "did not run" rather than counted as a pass.
 
+### A docs-only change builds nothing, and that is a setting too
+
+Both triggers carry an `ignoredFiles` list — `docs/**`, the root `*.md` and `*.xlsx`, and both
+`reference` directories — so a push touching only those creates no build. The gain is not the five
+minutes: the image is tagged with the commit SHA and the apply updates Cloud Run to it, so a docs
+merge used to roll a new revision for no change in behaviour, and the revision list stopped reading
+as deploy history.
+
+Two things about it are deliberate. It is an **ignore** list rather than `includedFiles`, because
+the two fail in opposite directions: an include list fails *closed* on anything unlisted, so adding
+a top-level directory silently stops building it and the symptom is an absence nobody notices.
+`.github/workflows/check.yml` is the include-list version, and it is why a change to `bootstrap.sh`
+— root-level, outside every one of its patterns — gets no `verify` run. And the pattern is `*.md`
+rather than `**/*.md`: a README inside `apps/` is traced into an image, so it stays a reason to
+build.
+
+The trap to check before copying this anywhere else: a pull request touching only ignored files
+creates no build, so its check never appears — and a check **required** by branch protection would
+leave such a pull request pending forever. `infra-preview` is not required here, which is
+observable rather than assumed: PR #31 was merged three minutes before its preview finished.
+
 ### The fork guard is a setting now
 
 A build runs `ci/*.sh` from the commit it checks out, with the deployer's credentials, so
