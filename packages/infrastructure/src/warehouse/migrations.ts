@@ -10,11 +10,16 @@
  *   changed, because the alternative is a database whose shape does not match
  *   the code that believes it made it.
  * - **Ordered.** Versions are contiguous from 0001 and applied ascending.
- * - **Idempotent.** Every statement is `CREATE ... IF NOT EXISTS` or an `ALTER`
- *   that states a end state rather than a change. BigQuery has no transaction
- *   spanning DDL, so a run that dies between its last statement and the row
- *   recording it will re-run that migration, and that has to be harmless rather
- *   than merely unlikely.
+ * - **Idempotent.** Every statement is `CREATE ... IF NOT EXISTS`, an `ALTER`
+ *   that states a end state rather than a change, or a `DROP ... IF EXISTS`.
+ *   BigQuery has no transaction spanning DDL, so a run that dies between its
+ *   last statement and the row recording it will re-run that migration, and
+ *   that has to be harmless rather than merely unlikely.
+ * - **Forward-only.** A migration that is wrong is followed by another one, not
+ *   edited — 0002 below drops a table 0001 creates, and on a fresh dataset both
+ *   run in order and the table exists for the length of one statement. Editing
+ *   0001 instead would change its checksum and stop the runner dead on the one
+ *   project that has already applied it.
  *
  * The dataset is not created here. It is a Google Cloud resource, so it is
  * declared in `infra/` with everything else and the runner expects to find it.
@@ -37,7 +42,7 @@ export interface Migration {
   readonly statements: readonly string[];
 }
 
-/** The reading columns, shared by `readings` and `latest`. */
+/** The reading columns of `readings`. 0001 also gave them to `latest`, which 0002 drops. */
 const READING_COLUMNS = `
   meter_id STRING NOT NULL OPTIONS (description = "Stable id from the meter registry, s<station>m<slot>."),
   reading_at TIMESTAMP NOT NULL OPTIONS (description = "When the reading was received. UTC; rendered in Asia/Bangkok. Named reading_at rather than at because AT is a reserved keyword in GoogleSQL."),
@@ -82,13 +87,31 @@ OPTIONS (
   description = "1-minute rollup, written in the same batch as raw. Produced by rollupReadings() in packages/application, which is also what the charts bucket by."
 )`,
 
-      `CREATE TABLE IF NOT EXISTS {{dataset}}.${TABLES.latest} (${READING_COLUMNS},
+      `CREATE TABLE IF NOT EXISTS {{dataset}}.latest (${READING_COLUMNS},
   updated_at TIMESTAMP NOT NULL
 )
 CLUSTER BY meter_id
 OPTIONS (
   description = "One row per commissioned meter. Not the real-time screen's source — the ingester serves that from memory. This exists so a restart does not begin blind."
 )`,
+    ],
+  },
+  {
+    version: "0002",
+    name: "drop latest; the restart state moved to Firestore",
+    statements: [
+      // Step 8c. The table was rewritten whole every 30 s, and a standard
+      // table takes 1 500 modifications a day — a limit that cannot be raised
+      // and that failed writes count against, so the mirror would have stopped
+      // at about half past twelve every afternoon and a restart would have
+      // rehydrated from the morning. 55 rows of restart state are now one
+      // Firestore document; see packages/infrastructure/src/firestore.
+      //
+      // Forward-only, and safe to apply before the ingester ever runs: nothing
+      // reads this table. The web app never did — the real-time screen reads
+      // the ingester's memory over HTTP — and the only reader, the ingester's
+      // own rehydrate, reads the document now.
+      `DROP TABLE IF EXISTS {{dataset}}.latest`,
     ],
   },
 ];

@@ -12,7 +12,11 @@
  * So `assertSafeToStart` below is the gate the plan puts on step 7, and it is
  * written to be hard to talk your way past.
  */
-import { isLoopbackUrl, unconfirmedScales } from "@power-meter/infrastructure";
+import {
+  DEFAULT_LATEST_DOCUMENT,
+  isLoopbackUrl,
+  unconfirmedScales,
+} from "@power-meter/infrastructure";
 
 /**
  * Where rows go. `bigquery` is the only one a deployment uses; the other two
@@ -44,7 +48,7 @@ export interface Config {
   readonly protocolVersion: 4 | 5;
   /** How long a batch is held before it is written. */
   readonly flushIntervalMs: number;
-  /** How often the in-memory hot state is mirrored to the `latest` table. */
+  /** How often the in-memory hot state is mirrored to the Firestore document. */
   readonly latestFlushIntervalMs: number;
   readonly warehouse: WarehouseMode;
   /** Where `WAREHOUSE=file` writes. Ignored by the other modes. */
@@ -52,6 +56,16 @@ export interface Config {
   readonly projectId: string | undefined;
   readonly dataset: string;
   readonly location: string;
+  /**
+   * The Firestore database holding the restart state, since step 8c.
+   *
+   * `(default)`, because Firestore's free quota covers exactly one database per
+   * project and that is the one — a named database is billed from its first
+   * write. Pulumi declares it; see infra/index.ts.
+   */
+  readonly firestoreDatabase: string;
+  /** `<collection>/<document>`. One document holds all 55 meters. */
+  readonly latestDocument: string;
   readonly port: number;
 }
 
@@ -60,13 +74,15 @@ const DEFAULTS = {
   /**
    * 45 s, the middle of the plan's 30–60 s. It is also the loss window on a
    * crash: readings received since the last flush are in memory and nowhere
-   * else. Shorter costs more load jobs; longer loses more. Both directions are
-   * cheap to change, which is why this is a number and not an argument.
+   * else. Both directions are cheap to change, which is why this is a number
+   * and not an argument — and since step 8c, shorter no longer spends a
+   * per-table daily quota: the Storage Write API has none.
    */
   flushIntervalMs: 45_000,
   latestFlushIntervalMs: 30_000,
   dataset: "power_meter",
   location: "asia-southeast1",
+  firestoreDatabase: "(default)",
   port: 8080,
 } as const;
 
@@ -98,6 +114,8 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     projectId: env["GOOGLE_PROJECT"] || undefined,
     dataset: env["WAREHOUSE_DATASET"] || DEFAULTS.dataset,
     location: env["WAREHOUSE_LOCATION"] || DEFAULTS.location,
+    firestoreDatabase: env["FIRESTORE_DATABASE"] || DEFAULTS.firestoreDatabase,
+    latestDocument: env["LATEST_DOCUMENT"] || DEFAULT_LATEST_DOCUMENT,
     port: positive(env["PORT"], DEFAULTS.port),
   };
 }

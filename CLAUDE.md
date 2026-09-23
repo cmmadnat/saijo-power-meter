@@ -30,7 +30,7 @@ scaling question, and live mode is verified end to end against a local broker re
 | `ci/` | What the Cloud Build steps run: `step.sh`, `image.sh`, `migrate.sh`, `pulumi.sh`, `report.sh`. |
 | `packages/domain` | Entities and rules. Imports nothing. |
 | `packages/application` | Use cases and the port interfaces they need. Imports domain only. |
-| `packages/infrastructure` | Adapters: the MQTT payload decoder, the scale-factor table, the warehouse, the ingester's `/latest` client, the replay's file store. Fixtures only via its second entry, `@power-meter/infrastructure/fixtures`. |
+| `packages/infrastructure` | Adapters: the MQTT payload decoder, the scale-factor table, the warehouse and the stream that writes to it, the Firestore restart state, the ingester's `/latest` client, the replay's file store. Fixtures only via its second entry, `@power-meter/infrastructure/fixtures`. |
 | `apps/web` | Next.js + shadcn/ui frontend. Deployed to Cloud Run. |
 | `apps/ingester` | The MQTT ingester. Always-on, singleton, serves the hot state over HTTP. Declared but not deployed. |
 | `scripts/check-boundaries.mjs` | Enforces the dependency rule. Runs first in CI. |
@@ -38,7 +38,7 @@ scaling question, and live mode is verified end to end against a local broker re
 | `.github/workflows/logs.yml` | Reads the Cloud Run service's logs, on dispatch or a `/logs` comment. Runs no Pulumi and holds a read-only identity. |
 | `.github/workflows/build-logs.yml` | Reads a Cloud Build run's status and log, on dispatch or a `/buildlog` comment. Same identity. |
 | `docs/architecture/delivery-pipeline.md` | Why builds run on Cloud Build, and what that cost. |
-| `docs/architecture/warehouse.md` | The three BigQuery tables, the migration rules, and what has been run against the project. |
+| `docs/architecture/warehouse.md` | The two BigQuery tables, the migration rules, the per-table daily limit that moved the write path, and what has been run against the project. |
 | `docs/architecture/ingester.md` | The ingester: why it is a singleton, what a failure costs, and what is still unproven. |
 | `docs/architecture/data-modes.md` | `DATA_MODE`: the switch, the gate, the badge, which table each screen reads, and what the strip costs. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
@@ -196,6 +196,8 @@ npm run replay    -w @power-meter/ingester -- --minutes 7 --drop-at 120 --drop-f
 npm start         -w @power-meter/ingester      # needs MQTT_URL; docs/architecture/ingester.md
 npm run reconcile -w @power-meter/ingester -- --dir .ingester
 npm run warehouse -w @power-meter/infrastructure -- cost --runs 20      # what live mode's reads bill and take
+npm run warehouse -w @power-meter/infrastructure -- soak --dataset X    # the write path past the old daily cap; refuses power_meter
+npm run hotstate  -w @power-meter/ingester -- --database X              # the Firestore restart state, round-tripped
 
 npm test -w @power-meter/web                    # the screens' sources against both adapter sets
 DATA_MODE=live INGESTER_URL=http://127.0.0.1:8099 WAREHOUSE=file WAREHOUSE_DIR=.ingester \
@@ -271,8 +273,9 @@ rather than as an empty shell, which was the point of leaving it out until now.
 - **Database migrations** are versioned, ordered, idempotent, and applied by an automated step
   *before* a new revision is promoted — never by hand against a deployed database, and
   forward-compatible so rolling back the app never requires rolling back the schema. They live in
-  `packages/infrastructure/src/warehouse/migrations.ts`, and nothing in the pipeline runs them yet;
-  that wiring belongs with step 7, where something first depends on the tables existing.
+  `packages/infrastructure/src/warehouse/migrations.ts`, and the pipeline's `migrate` step applies
+  them. They are also **forward-only**: `0002` drops a table `0001` creates, because editing an
+  applied migration changes its checksum and stops the runner dead.
 - **Cloud Storage** for blobs, buckets IaC-declared with explicit access policies. Nothing is
   world-readable by default.
 
@@ -330,7 +333,7 @@ Working in `apps/web` has these traps, each hit once already:
 - **`instrumentation.ts` exits the process** when the data-mode gate refuses. That is the boot
   refusal, not a crash to debug — read the line above it.
 
-Steps 0–8 are done: the spec is frozen into `docs/requirements/` (including all four screens, in
+Steps 0–8c are done: the spec is frozen into `docs/requirements/` (including all four screens, in
 `power-meter-ui.md`), the shell is deployed, the domain model, decoder and fixtures are in place with
 tests, the Real time route carries screens 1–3 — the 55-meter table and the kW and kWh charts — and
 History carries screen 4, all on those fixtures. Step 6 added the warehouse behind those same ports —
@@ -339,8 +342,11 @@ schema, migrations and a fixture loader. Step 7 added the ingester — `apps/ing
 local broker, gated on the customer, and deployed nowhere. Step 8 put the screens on either data
 mode — the live adapters beside the fixture ones, one switch between them — and verified live mode
 against the replay. Its SQL has been parsed and timed against BigQuery by `warehouse cost`, over
-step 6's fixture rows; no web process has read the warehouse yet. Remaining: step 8c (the
-ingester's writes, below) and the passcode gate.
+step 6's fixture rows; no web process has read the warehouse yet. Step 8c changed how the ingester
+writes: `latest` is gone from BigQuery and is one Firestore document, and raw and rollup go through
+the Storage Write API instead of load jobs — because load jobs are capped per table per day and the
+ingester's writes are a daily rate. Nothing of 8c has run against a project; the two commands that
+would are in `docs/architecture/warehouse.md`. Remaining: the passcode gate.
 
 **The screens read their data through three files, `apps/web/lib/realtime-source.ts`,
 `apps/web/lib/series-source.ts` and `apps/web/lib/history-source.ts`, and none of them knows the
@@ -453,7 +459,7 @@ silent. `unconfirmedScales()` is what step 7's startup check uses to refuse a li
 remain. Do not quietly settle one from inference; it takes a captured payload.
 
 **The warehouse dataset is a Pulumi resource and its tables are not.** `infra/index.ts` declares the
-`power_meter` dataset; the three tables arrive through the migration runner in
+`power_meter` dataset; its tables arrive through the migration runner in
 `packages/infrastructure/src/warehouse`. That line is the same one `bootstrap.sh` draws for the state
 bucket — a container that must exist before anything can run is infrastructure, what goes inside it
 is the application's own shape. Retention is a table setting (a 14-day partition expiry), so it lives
@@ -472,12 +478,12 @@ against GoogleSQL's reserved list. Treat any DDL change the same way: the creden
 the code is consistent, never that the SQL is legal.
 
 **`warehouse reset` exists because a fixture row and a real row are indistinguishable.** `load`
-writes synthetic readings into the same three tables the ingester writes real ones into, and no
+writes synthetic readings into the same two tables the ingester writes real ones into, and no
 column says which is which — a 14-day partition keeps them for a fortnight either way. So the
 dataset is dropped and re-migrated before the first real reading is written, and `reset --yes` is
 that command. It refuses without `--yes`, it takes the ledger with the tables (a dropped table with
-its migration still recorded is exactly the drift the runner stops on), and after go-live it
-destroys history that exists nowhere else.
+its migration still recorded is exactly the drift the runner stops on) and the retired `latest`
+with them, and after go-live it destroys history that exists nowhere else.
 
 **The History aggregation did not move into SQL, and must not.** `consumptionFrom()`'s reset rule and
 the three-minute running-hours cap have one implementation, in `packages/application`. The warehouse
@@ -493,8 +499,34 @@ reproduces what the chart plots. One difference is deliberate: **rollup buckets 
 time**, where the charts align to the window's `from` — a stored row cannot align to a window,
 because the ingester writing it has none.
 
-**`latest` is not the real-time screen's data source.** The ingester serves that from memory; the
-table exists so a restart does not begin blind, and is replaced wholesale rather than upserted.
+**The restart state is not the real-time screen's data source.** The ingester serves that from
+memory; the durable copy exists so a restart does not begin blind, and is replaced wholesale rather
+than merged. Since step 8c it is **one Firestore document** holding all 55 readings, in the
+project's `(default)` database — not 55 documents (~158 000 writes a day), and not the `latest`
+BigQuery table it used to be (2 880 table modifications a day against a standard table's cap of
+1 500, which cannot be raised). Migration `0002` drops that table. The web app has no Firestore
+access at all, because it never read `latest`.
+
+**The ingester's repeating writes may never go back to load jobs, and the reason is a number.**
+A load job counts as a table modification, a **standard** table takes 1 500 of those a day — a
+limit that cannot be raised, that failed jobs count against, and that 55 rows every 30 s blew
+through by lunchtime. A **column-partitioned** table takes 30 000, which `readings` and
+`readings_1m` were probably inside; what the quotas page does not settle is which of the two
+governs a load job into a partitioned table, and a steady state that depends on how you read the
+documentation is the defect. Streaming is excluded from every one of those counters, so the
+ingester appends through the Storage Write API's default stream
+(`packages/infrastructure/src/warehouse/stream.ts`) and `warehouse load` keeps the load jobs,
+because one bulk write by hand is what they are for. Two things ride with it: **a TIMESTAMP crosses
+as a `Date`, never a string** — the JSON writer encodes to int64 microseconds from a `Date`, and a
+string fails inside the protobuf encoder naming nothing — and the default stream is
+**at-least-once**, so a retried flush can land a row twice, as it could with load jobs.
+`docs/architecture/warehouse.md` has the figures and their sources.
+
+**Firestore's free quota covers exactly one database per project, the default one.** That is why
+the restart state is in `(default)` rather than a tidier named database — a named one is billed
+from its first write. The cost of the choice is that Pulumi creates rather than adopts, so a
+project that already has a default database fails the apply; `gcloud firestore databases list`
+says in advance, and `pulumi import` is the remedy.
 
 **The ingester is built and is not connected to anything.** The scaling divisors for active power
 and energy are not documented anywhere in the workbook, and its sample payload is filler that does
@@ -504,10 +536,8 @@ refuses to run while `unconfirmedScales()` names anything, and the Cloud Run ser
 `saijo-power-meter:deployIngester: "false"` in `Pulumi.dev.yaml` — a crash-looping revision would
 fail every apply from then on. Its service account, the three broker secrets and its warehouse
 access apply regardless, because none of them ingests anything. Flipping the flag belongs in the
-same change that confirms the divisors and adds a version to each secret — **and not before step 8c
-lands.** The ingester writes with BigQuery load jobs, which are capped per table per day; at its
-45 s and 30 s flush rates it would exceed that cap every afternoon. Step 8c in the plan moves
-`latest` to one Firestore document and the readings to the Storage Write API.
+same change that confirms the divisors and adds a version to each secret. **Step 8c has landed, so
+the quota blocker is gone and the scaling one is all that is left.**
 
 **The only way past that gate is a broker on loopback writing nowhere near BigQuery.**
 `WAREHOUSE=memory` or `WAREHOUSE=file` with an `mqtt://127.0.0.1` URL is the replay harness;

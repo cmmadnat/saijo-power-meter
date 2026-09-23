@@ -8,17 +8,20 @@
  * talk to BigQuery is `client.ts`, and it is deliberately thin enough that a
  * fake standing in for it in a test is not a lie.
  *
- * Three tables, three different cost shapes:
+ * Two tables, two different cost shapes:
  *
  * - `readings` — every reading, day-partitioned, 14-day partition expiry.
  *   ~9.7 M rows in steady state and about a gigabyte that never grows.
  * - `readings_1m` — the 1-minute rollup, written in the same batch as raw.
  *   A 14-day chart is ~20 k points per meter here against ~134 k raw.
- * - `latest` — 55 rows, one per commissioned meter, unpartitioned and never
- *   expired. This is *not* the real-time screen's data source: the ingester
- *   holds that in memory and serves it, because paying per write for a value
- *   obsolete a second later costs more per month than all the history. This
- *   table exists so that a restart does not begin blind.
+ *
+ * There was a third, `latest`, holding one row per commissioned meter so that
+ * a restarting ingester did not begin blind. It is gone as of step 8c: 55 rows
+ * rewritten every 30 s is 2 880 table modifications a day against a standard
+ * table's hard cap of 1 500, so the restart state moved to a single Firestore
+ * document (`src/firestore/latest-store.ts`). `RETIRED_TABLES` below is what is
+ * left of it — the name, so a dataset that still carries the table can be
+ * cleaned up. Migration 0002 drops it.
  */
 
 import type { RollupBucket } from "@power-meter/application";
@@ -33,9 +36,18 @@ export const RETENTION_DAYS = 14;
 export const TABLES = {
   readings: "readings",
   rollup: "readings_1m",
-  latest: "latest",
   migrations: "schema_migrations",
 } as const;
+
+/**
+ * Tables this code used to own and no longer creates.
+ *
+ * Migration 0002 drops `latest` on every dataset that has it, which covers the
+ * deployed project. This list is for `reset`, which drops what it knows about
+ * before `migrate` recreates it: without the name here, a reset of a dataset
+ * migrated before 0002 would leave the retired table standing.
+ */
+export const RETIRED_TABLES = ["latest"] as const;
 
 export type TableName = (typeof TABLES)[keyof typeof TABLES];
 
@@ -135,11 +147,6 @@ export interface RollupRow {
   readonly reading_count: number;
   readonly active_power_kw: number;
   readonly energy_kwh: number;
-}
-
-/** A row of `latest`: a reading, plus when this table last heard about it. */
-export interface LatestRow extends ReadingRow {
-  readonly updated_at: string;
 }
 
 /**
@@ -262,6 +269,39 @@ export function bucketToRow(bucket: RollupBucket): RollupRow {
   };
 }
 
-export function latestToRow(reading: Reading, updatedAt: Date): LatestRow {
-  return { ...readingToRow(reading, updatedAt), updated_at: toTimestamp(updatedAt) };
+/**
+ * A row as the Storage Write API wants it, rather than as a load job wants it.
+ *
+ * The one difference is timestamps. A load job is fed newline-delimited JSON,
+ * where a TIMESTAMP is an ISO string; the Storage Write API encodes each row
+ * into protobuf against the table's schema, where a TIMESTAMP is an int64 of
+ * microseconds — and the JSON writer's encoder produces that from a `Date`.
+ * Hand it the string instead and protobuf tries to read "2026-09-23T..." as a
+ * number, which fails deep inside the encoder with nothing naming the column.
+ *
+ * So the two mappings are one mapping with the timestamps swapped, and the
+ * tests assert exactly that rather than restating every field.
+ */
+export type StreamRow = Record<string, string | number | Date>;
+
+function withDateTimestamps(row: ReadingRow | RollupRow): StreamRow {
+  const out: StreamRow = {};
+  for (const [column, value] of Object.entries(row) as [string, string | number][]) {
+    out[column] =
+      typeof value === "string" && TIMESTAMP_COLUMNS.has(column)
+        ? new Date(value)
+        : value;
+  }
+  return out;
+}
+
+/** The TIMESTAMP columns of the two written tables. */
+const TIMESTAMP_COLUMNS = new Set(["reading_at", "ingested_at", "minute"]);
+
+export function readingToStreamRow(reading: Reading, ingestedAt: Date): StreamRow {
+  return withDateTimestamps(readingToRow(reading, ingestedAt));
+}
+
+export function bucketToStreamRow(bucket: RollupBucket): StreamRow {
+  return withDateTimestamps(bucketToRow(bucket));
 }

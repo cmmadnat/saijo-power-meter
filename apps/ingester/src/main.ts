@@ -8,10 +8,11 @@
  */
 import process from "node:process";
 import {
-  bigQueryClient,
   FileLatestReadingStore,
   FileReadingWriter,
-  WarehouseLatestReadingStore,
+  FirestoreLatestStore,
+  firestoreDocumentStore,
+  storageWriteStream,
   WarehouseReadingWriter,
 } from "@power-meter/infrastructure";
 import type {
@@ -44,12 +45,17 @@ class MemoryWriter implements ReadingWriter {
   async replaceLatest(_readings: readonly Reading[]): Promise<void> {}
 }
 
-async function warehouse(
-  config: Config,
-): Promise<{ writer: ReadingWriter; latest: LatestReadingStore | undefined }> {
+interface WritePath {
+  readonly writer: ReadingWriter;
+  readonly latest: LatestReadingStore | undefined;
+  /** Release whatever the write path holds open. Called once, on the way out. */
+  close(): Promise<void>;
+}
+
+async function warehouse(config: Config): Promise<WritePath> {
   if (config.warehouse === "memory") {
     log("WAREHOUSE=memory — nothing is written and nothing is read back.");
-    return { writer: new MemoryWriter(), latest: undefined };
+    return { writer: new MemoryWriter(), latest: undefined, close: async () => {} };
   }
   if (config.warehouse === "file") {
     // The replay harness. Same rows, written to a directory instead of to
@@ -58,23 +64,46 @@ async function warehouse(
     log(`WAREHOUSE=file — rows are written under ${config.warehouseDir}.`);
     const writer = new FileReadingWriter(config.warehouseDir);
     await writer.prepare();
-    return { writer, latest: new FileLatestReadingStore(config.warehouseDir) };
+    return {
+      writer,
+      latest: new FileLatestReadingStore(config.warehouseDir),
+      close: async () => {},
+    };
   }
-  const target = {
-    ...(config.projectId === undefined ? {} : { projectId: config.projectId }),
+
+  // The deployment path, and since step 8c it is two stores rather than one.
+  // Raw and rollup stream into BigQuery; the restart state is one Firestore
+  // document. Both are per-flush writes that used to be load jobs, which
+  // BigQuery caps per table per day — see docs/architecture/warehouse.md.
+  if (config.projectId === undefined) {
+    throw new Error(
+      "GOOGLE_PROJECT is required with WAREHOUSE=bigquery: a write stream is named " +
+        "by a full projects/.../datasets/.../tables/... path, so there is no default " +
+        "to fall back on. The Cloud Run service sets it; see infra/index.ts.",
+    );
+  }
+  const rows = await storageWriteStream({
+    projectId: config.projectId,
     dataset: config.dataset,
-  };
-  const client = await bigQueryClient({ ...target, location: config.location });
-  return {
-    writer: new WarehouseReadingWriter(client, target),
-    latest: new WarehouseLatestReadingStore(client, target),
-  };
+  });
+  const latest = new FirestoreLatestStore(
+    await firestoreDocumentStore({
+      projectId: config.projectId,
+      databaseId: config.firestoreDatabase,
+    }),
+    config.latestDocument,
+  );
+  log(
+    `writing ${config.projectId}:${config.dataset} through the storage write API, ` +
+      `restart state in firestore ${config.firestoreDatabase}/${config.latestDocument}`,
+  );
+  return { writer: new WarehouseReadingWriter(rows, latest), latest, close: () => rows.close() };
 }
 
 const config = readConfig();
 assertSafeToStart(config);
 
-const { writer, latest } = await warehouse(config);
+const { writer, latest, close } = await warehouse(config);
 const service = await startService({
   config,
   writer,
@@ -93,13 +122,25 @@ const service = await startService({
   }),
 });
 
+/** Stop, write what is buffered, then let go of the connections. In that order. */
+async function shutdown(reason: string): Promise<never> {
+  await service.stop(reason);
+  await close();
+  process.exit(0);
+}
+
 for (const signal of ["SIGTERM", "SIGINT"] as const) {
   process.on(signal, () => {
-    void service.stop(`received ${signal}`).then(() => process.exit(0));
+    void shutdown(`received ${signal}`);
   });
 }
 
 // A takeover is the service shutting itself down, and the process goes with it:
 // staying up would leave a container serving a hot state nothing is feeding,
-// which a readiness probe would report as healthy for as long as it ran.
-void service.stopped.then(() => process.exit(0));
+// which a readiness probe would report as healthy for as long as it ran. The
+// service has already flushed by the time this resolves; only the connections
+// are left to release.
+void service.stopped.then(async () => {
+  await close();
+  process.exit(0);
+});

@@ -32,7 +32,6 @@ import {
   type Migration,
 } from "./migrations.ts";
 import {
-  WarehouseLatestReadingStore,
   WarehouseReadingRepository,
   WarehouseRollupRepository,
   metersPerQuery,
@@ -42,14 +41,26 @@ import { billedBytes, measureCost, percentile } from "./cost.ts";
 import { FixtureReadingRepository } from "../fixtures/repository.ts";
 import { partitionSettings, resetWarehouse, runMigrations } from "./runner.ts";
 import { WarehouseReadingWriter } from "./writer.ts";
+import { soak } from "./soak.ts";
+import type { RowStream } from "./stream.ts";
+import {
+  FirestoreLatestStore,
+  fromLatestDocument,
+  toLatestDocument,
+  type DocumentStore,
+} from "../firestore/latest-store.ts";
 import {
   bucketToRow,
+  bucketToStreamRow,
   readingToRow,
+  readingToStreamRow,
   rowToReading,
   RETENTION_DAYS,
+  RETIRED_TABLES,
   TABLES,
   tableRef,
   toDate,
+  type StreamRow,
   type WarehouseTarget,
 } from "./schema.ts";
 
@@ -72,9 +83,6 @@ class FakeWarehouse implements WarehouseClient {
     if (sql.startsWith("INSERT INTO")) {
       ledger.push({ ...params });
       return [] as Row[];
-    }
-    if (sql.includes(tableRef(TARGET, TABLES.latest))) {
-      return this.rows(TABLES.latest).map((row) => wrap(row)) as Row[];
     }
     return [] as Row[];
   }
@@ -129,11 +137,6 @@ class FakeWarehouse implements WarehouseClient {
     return written;
   }
 
-  async replace(table: string, rows: AsyncIterable<object>): Promise<number> {
-    this.tables.set(table, []);
-    return this.load(table, rows);
-  }
-
   rows(table: string): Record<string, unknown>[] {
     const existing = this.tables.get(table);
     if (existing) return existing;
@@ -156,6 +159,49 @@ function wrap(row: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
+/**
+ * The two halves of the ingester's write path, faked.
+ *
+ * `FakeRowStream` stores what the Storage Write API would have been handed —
+ * with the timestamps still as `Date`s, because that is exactly the difference
+ * from a load job's row and the thing most likely to be got wrong again.
+ * `FakeDocuments` is one map standing in for one Firestore document.
+ */
+class FakeRowStream implements RowStream {
+  readonly appends: { table: string; rows: readonly StreamRow[] }[] = [];
+  closed = false;
+  /** Set to fail the next append to this table, the way a quota error would. */
+  failing: string | undefined;
+
+  async append(table: string, rows: readonly StreamRow[]): Promise<void> {
+    if (table === this.failing) throw new Error(`${table}: rejected`);
+    if (rows.length === 0) return;
+    this.appends.push({ table, rows });
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+  }
+
+  rows(table: string): StreamRow[] {
+    return this.appends.filter((append) => append.table === table).flatMap((a) => [...a.rows]);
+  }
+}
+
+class FakeDocuments implements DocumentStore {
+  readonly documents = new Map<string, Record<string, unknown>>();
+  writes = 0;
+
+  async get(path: string): Promise<Record<string, unknown> | undefined> {
+    return this.documents.get(path);
+  }
+
+  async set(path: string, data: Record<string, unknown>): Promise<void> {
+    this.writes += 1;
+    this.documents.set(path, data);
+  }
+}
+
 // --- the migration list ------------------------------------------------------
 
 test("the shipped migrations are contiguous, unique and non-empty", () => {
@@ -175,7 +221,7 @@ test("every statement is idempotent, so a half-finished run is safe to repeat", 
     for (const statement of migration.statements) {
       assert.match(
         statement,
-        /^CREATE (TABLE|VIEW|OR REPLACE VIEW) IF NOT EXISTS|^CREATE OR REPLACE /,
+        /^CREATE (TABLE|VIEW|OR REPLACE VIEW) IF NOT EXISTS|^CREATE OR REPLACE |^DROP TABLE IF EXISTS /,
         `${migration.version}: ${statement.slice(0, 60)}`,
       );
     }
@@ -190,10 +236,20 @@ test("raw and rollup carry the retention policy and the partition filter", () =>
     assert.match(statement, new RegExp(`partition_expiration_days = ${RETENTION_DAYS}`));
     assert.match(statement, /require_partition_filter = TRUE/);
   }
-  // `latest` is 55 rows that must never expire, and is not partitioned at all.
-  const latest = ddl.find((sql) => sql.includes(`{{dataset}}.${TABLES.latest}`));
-  assert.ok(latest);
-  assert.doesNotMatch(latest, /partition_expiration_days|PARTITION BY/);
+});
+
+test("every retired table is dropped by a migration, not just forgotten", () => {
+  // Removing a table from TABLES stops this code writing to it. Only a
+  // migration stops it existing — and a dataset that still has `latest` is a
+  // dataset holding readings nothing will ever update and nothing can tell
+  // from measurement.
+  const ddl = MIGRATIONS.flatMap((migration) => migration.statements);
+  for (const table of RETIRED_TABLES) {
+    assert.ok(
+      ddl.some((sql) => sql === `DROP TABLE IF EXISTS {{dataset}}.${table}`),
+      `no migration drops ${table}`,
+    );
+  }
 });
 
 /**
@@ -220,6 +276,21 @@ const RESERVED = new Set(
 
 /** `  <name> <TYPE>` at the start of a column definition line. */
 const COLUMN = /^\s+([A-Za-z_][A-Za-z0-9_]*)\s+(STRING|TIMESTAMP|DATE|DATETIME|TIME|FLOAT64|INT64|NUMERIC|BIGNUMERIC|BOOL|BYTES|JSON)\b/gm;
+
+test("the migration applied to the real project still checksums the same", () => {
+  // 0001 was applied to saijo-power-meter on 2026-09-22, so its checksum is in
+  // that dataset's ledger and the runner refuses to go on if the code's copy
+  // disagrees. Step 8c edited the file around it — the `latest` table's name
+  // became a literal when the constant went — and the checksum is what says the
+  // statements themselves did not move. A future edit that changes this number
+  // fails here, in a unit test, rather than against the one project that has it.
+  const [first] = MIGRATIONS;
+  assert.ok(first);
+  assert.equal(
+    checksum(first),
+    "83f76e95de9473d61ab6fc015d52260a9aeca5d78cc4d7548890bb025538eec2",
+  );
+});
 
 test("no column is named for a reserved keyword", () => {
   const columns = new Set<string>();
@@ -342,24 +413,23 @@ test("a dry run records nothing", async () => {
 });
 
 test("settings reports a table that carries neither option", async () => {
-  // The join returns a row with both option columns null for `latest`. It has
-  // to come back as a table with no expiry, not vanish from the report.
+  // The join returns a row with both option columns null for the ledger. It
+  // has to come back as a table with no expiry, not vanish from the report.
   const client: WarehouseClient = {
     async query<Row>() {
       return [
         { table_name: "readings", option_name: "partition_expiration_days", option_value: "14" },
         { table_name: "readings", option_name: "require_partition_filter", option_value: "true" },
-        { table_name: "latest", option_name: null, option_value: null },
+        { table_name: "schema_migrations", option_name: null, option_value: null },
       ] as Row[];
     },
     async *stream<Row>(): AsyncIterable<Row> {},
     async load() { return 0; },
-    async replace() { return 0; },
   };
 
   assert.deepEqual(await partitionSettings(client, TARGET), [
-    { table: "latest", expirationDays: null, requirePartitionFilter: false },
     { table: "readings", expirationDays: 14, requirePartitionFilter: true },
+    { table: "schema_migrations", expirationDays: null, requirePartitionFilter: false },
   ]);
 });
 
@@ -446,7 +516,7 @@ const WINDOW = {
   to: new Date("2025-09-21T03:00:00.000Z"),
 };
 
-test("the loader writes raw, rollup and one latest row per meter", async () => {
+test("the loader writes raw and rollup, and no longer a latest row", async () => {
   const client = new FakeWarehouse();
   const report = await loadFixtures(client, TARGET, {
     ...WINDOW,
@@ -454,18 +524,14 @@ test("the loader writes raw, rollup and one latest row per meter", async () => {
     ingestedAt: new Date("2025-09-21T03:00:01.000Z"),
   });
 
-  assert.equal(report.latestRows, registry.commissioned().length);
   assert.ok(report.readings > 0);
   // One reading a minute for two hours, so raw and rollup are the same size —
   // which is the cheapest way to see that the rollup covers the whole window.
   assert.equal(report.rollupRows, report.readings);
 
-  const latest = await new WarehouseLatestReadingStore(client, TARGET).latest();
-  assert.equal(latest.size, registry.commissioned().length);
-
-  // A second load replaces `latest` rather than doubling it.
-  await loadFixtures(client, TARGET, { ...WINDOW, intervalMs: 60_000 });
-  assert.equal(client.rows(TABLES.latest).length, registry.commissioned().length);
+  // The restart state is a Firestore document since step 8c, so a fixture load
+  // writes two tables and nothing else.
+  assert.deepEqual([...client.tables.keys()].sort(), [TABLES.readings, TABLES.rollup].sort());
 });
 
 test("History over the warehouse matches History over the fixtures, row for row", async () => {
@@ -478,51 +544,170 @@ test("History over the warehouse matches History over the fixtures, row for row"
   assert.deepEqual(verification.mismatches, []);
 });
 
-test("the ingester's writer puts raw and rollup in one batch, and rewrites latest", async () => {
-  const client = new FakeWarehouse();
-  const writer = new WarehouseReadingWriter(client, TARGET);
+test("the ingester's writer puts raw and rollup in one batch", async () => {
+  const stream = new FakeRowStream();
+  const documents = new FakeDocuments();
+  const writer = new WarehouseReadingWriter(stream, new FirestoreLatestStore(documents));
   const fixtures = generateFixtures({ ...WINDOW, intervalMs: 60_000 });
   const readings = fixtures.readings.slice(0, 120);
   const ingestedAt = new Date("2026-09-22T02:00:00Z");
 
-  await writer.append({
-    readings,
-    rollup: rollupReadings(readings),
-    ingestedAt,
-  });
+  await writer.append({ readings, rollup: rollupReadings(readings), ingestedAt });
 
-  assert.equal(client.rows(TABLES.readings).length, readings.length);
-  assert.equal(
-    client.rows(TABLES.rollup).length,
-    rollupReadings(readings).length,
-  );
+  assert.equal(stream.rows(TABLES.readings).length, readings.length);
+  assert.equal(stream.rows(TABLES.rollup).length, rollupReadings(readings).length);
+  assert.equal(stream.appends.length, 2, "one append per table, one flush");
+
   // `ingested_at` is the flush, `reading_at` is the reading: the gap between
   // them is how a replayed or late batch is told from a live one after the
   // fact. (`reading_at`, not `at` — AT is reserved in GoogleSQL.)
-  const [row] = client.rows(TABLES.readings);
-  assert.equal(row?.["ingested_at"], ingestedAt.toISOString());
-  assert.equal(row?.["reading_at"], readings[0]?.at.toISOString());
-  assert.notEqual(row?.["reading_at"], row?.["ingested_at"]);
-
-  await writer.replaceLatest(readings.slice(0, 3));
-  assert.equal(client.rows(TABLES.latest).length, 3);
-  await writer.replaceLatest(readings.slice(0, 2));
-  assert.equal(client.rows(TABLES.latest).length, 2, "replaced, not appended");
+  const [row] = stream.rows(TABLES.readings);
+  assert.deepEqual(row?.["ingested_at"], ingestedAt);
+  assert.deepEqual(row?.["reading_at"], readings[0]?.at);
+  assert.notDeepEqual(row?.["reading_at"], row?.["ingested_at"]);
 });
 
-test("an empty flush never blanks the table a restart rehydrates from", async () => {
-  const client = new FakeWarehouse();
-  const writer = new WarehouseReadingWriter(client, TARGET);
-  const fixtures = generateFixtures({ ...WINDOW, intervalMs: 60_000 });
+test("a rejected table fails the whole flush, so the batch is retried whole", async () => {
+  const stream = new FakeRowStream();
+  const writer = new WarehouseReadingWriter(stream, new FirestoreLatestStore(new FakeDocuments()));
+  const readings = generateFixtures({ ...WINDOW, intervalMs: 60_000 }).readings.slice(0, 10);
+  stream.failing = TABLES.rollup;
 
-  await writer.replaceLatest(fixtures.readings.slice(0, 5));
+  await assert.rejects(
+    () => writer.append({ readings, rollup: rollupReadings(readings), ingestedAt: new Date() }),
+    /readings_1m: rejected/,
+  );
+  // And the other half was still attempted rather than abandoned: the ingester
+  // holds the batch and writes it again, which is at-least-once by design.
+  assert.equal(stream.rows(TABLES.readings).length, readings.length);
+});
+
+test("the restart state is one document holding every meter", async () => {
+  const documents = new FakeDocuments();
+  const store = new FirestoreLatestStore(documents);
+  const readings = generateFixtures({ ...WINDOW, intervalMs: 60_000 }).readings;
+  const newest = [...new Map(readings.map((r) => [r.meterId, r])).values()];
+
+  await store.replaceLatest(newest);
+  assert.equal(documents.documents.size, 1, "one document, not one per meter");
+
+  const read = await store.latest();
+  assert.equal(read.size, newest.length);
+  const first = newest[0];
+  assert.ok(first);
+  assert.deepEqual(read.get(first.meterId), first);
+});
+
+test("an empty flush never blanks the document a restart rehydrates from", async () => {
+  const documents = new FakeDocuments();
+  const writer = new WarehouseReadingWriter(
+    new FakeRowStream(),
+    new FirestoreLatestStore(documents),
+  );
+  const all = generateFixtures({ ...WINDOW, intervalMs: 60_000 }).readings;
+  const readings = [...new Map(all.map((r) => [r.meterId, r])).values()].slice(0, 5);
+
+  await writer.replaceLatest(readings);
   await writer.replaceLatest([]);
 
   assert.equal(
-    client.rows(TABLES.latest).length,
-    5,
+    documents.writes,
+    1,
     "a broker outage at flush time must not cost the next restart its rehydration",
   );
+  assert.equal((await new FirestoreLatestStore(documents).latest()).size, 5);
+});
+
+test("a missing or empty document reads as no meters, not as an error", async () => {
+  assert.equal((await new FirestoreLatestStore(new FakeDocuments()).latest()).size, 0);
+  assert.equal(fromLatestDocument(undefined).size, 0);
+  assert.equal(fromLatestDocument({ updated_at: "2026-09-22T00:00:00.000Z" }).size, 0);
+});
+
+test("the document survives its own round trip, and is nowhere near 1 MiB", () => {
+  const readings = generateFixtures({ ...WINDOW, intervalMs: 60_000 }).readings;
+  const newest = [...new Map(readings.map((r) => [r.meterId, r])).values()];
+  const document = toLatestDocument(newest, new Date("2026-09-22T02:00:00.000Z"));
+
+  // Through JSON, the way Firestore's own encoding would take it.
+  const restored = fromLatestDocument(
+    JSON.parse(JSON.stringify(document)) as Record<string, unknown>,
+  );
+  assert.equal(restored.size, registry.commissioned().length);
+  for (const reading of newest) {
+    assert.deepEqual(restored.get(reading.meterId), reading);
+  }
+
+  const bytes = Buffer.byteLength(JSON.stringify(document));
+  assert.ok(bytes < 1_048_576 / 4, `${bytes} bytes leaves no margin under the 1 MiB limit`);
+});
+
+test("a stream row is a load-job row with Dates where the timestamps are", () => {
+  // The Storage Write API encodes into protobuf against the table's schema,
+  // where a TIMESTAMP is an int64 of microseconds — which its JSON writer
+  // produces from a `Date` and not from a string. This is the whole difference
+  // between the two mappings, and asserting it here is cheaper than finding it
+  // in a protobuf encoder's stack trace.
+  const reading = generateFixtures({ ...WINDOW, intervalMs: 60_000 }).readings[0];
+  assert.ok(reading);
+  const ingestedAt = new Date("2026-09-22T02:00:00.000Z");
+  const loadRow = readingToRow(reading, ingestedAt);
+  const streamRow = readingToStreamRow(reading, ingestedAt);
+
+  assert.deepEqual(Object.keys(streamRow), Object.keys(loadRow));
+  for (const [column, value] of Object.entries(streamRow)) {
+    const expected = (loadRow as unknown as Record<string, unknown>)[column];
+    if (value instanceof Date) {
+      assert.equal(value.toISOString(), expected);
+    } else {
+      assert.equal(value, expected);
+    }
+  }
+  assert.ok(streamRow["reading_at"] instanceof Date);
+  assert.ok(streamRow["ingested_at"] instanceof Date);
+
+  const bucket = rollupReadings([reading])[0];
+  assert.ok(bucket);
+  const streamBucket = bucketToStreamRow(bucket);
+  assert.deepEqual(Object.keys(streamBucket), Object.keys(bucketToRow(bucket)));
+  assert.ok(streamBucket["minute"] instanceof Date);
+});
+
+test("the soak writes one flush-shaped batch per cycle and never repeats a minute", async () => {
+  const stream = new FakeRowStream();
+  const at = new Date("2026-09-22T02:00:30.000Z");
+  const outcome = await soak({
+    stream,
+    cycles: 5,
+    intervalMs: 45_000,
+    wait: async () => {},
+    now: () => at,
+  });
+
+  assert.equal(outcome.appends, 5);
+  assert.deepEqual([...outcome.failures], []);
+  assert.equal(stream.appends.length, 10, "two tables per cycle");
+  assert.ok(stream.closed, "the connections are released when it finishes");
+
+  const minutes = stream
+    .rows(TABLES.rollup)
+    .map((row) => `${String(row["meter_id"])} ${(row["minute"] as Date).toISOString()}`);
+  assert.equal(new Set(minutes).size, minutes.length, "no (meter, minute) written twice");
+  // Every rollup minute is a closed one: strictly before the minute the clock
+  // is in, which is the rule the ingester's flush obeys.
+  for (const row of stream.rows(TABLES.rollup)) {
+    assert.ok((row["minute"] as Date).getTime() < at.getTime() - 30_000);
+  }
+});
+
+test("the soak reports a rejection rather than throwing it", async () => {
+  const stream = new FakeRowStream();
+  stream.failing = TABLES.readings;
+  const outcome = await soak({ stream, cycles: 3, intervalMs: 0, wait: async () => {} });
+
+  assert.equal(outcome.appends, 0);
+  assert.equal(outcome.failures.length, 3);
+  assert.match(outcome.failures[0] ?? "", /readings: rejected/);
 });
 
 test("reset drops every table this code owns, ledger included", async () => {
@@ -534,7 +719,7 @@ test("reset drops every table this code owns, ledger included", async () => {
   assert.deepEqual([...dropped], [
     TABLES.readings,
     TABLES.rollup,
-    TABLES.latest,
+    ...RETIRED_TABLES,
     TABLES.migrations,
   ]);
   for (const table of dropped) {

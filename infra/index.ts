@@ -29,6 +29,12 @@ const services = [
     // are added out of band, because a secret value in a Pulumi program is a
     // secret value in the state bucket.
     "secretmanager.googleapis.com",
+    // The ingester's restart state, since step 8c: one document holding the
+    // newest reading per meter. It is not the real-time screen's source — the
+    // ingester serves that from memory — and it is here rather than in
+    // BigQuery because 55 rows rewritten every 30 s is 2 880 table
+    // modifications a day against a cap of 1 500.
+    "firestore.googleapis.com",
     // On by default in every project, declared anyway: the logs workflows are
     // useless without it, and a project where someone turned it off should fail
     // here rather than in a job that reads zero entries and looks healthy.
@@ -205,14 +211,56 @@ new gcp.bigquery.DatasetIamMember("ingester-warehouse-writer", {
     member: pulumi.interpolate`serviceAccount:${ingesterIdentity.email}`,
 });
 
-// A load job is a job, and starting one is a project-level permission. It
-// grants the right to run a job and bill it here, not the right to read
-// anything: what this account can touch is still only the dataset above.
-new gcp.projects.IAMMember("ingester-warehouse-jobs", {
-    project: warehouse.project,
-    role: "roles/bigquery.jobUser",
+// No jobUser. The ingester ran load jobs until step 8c and needed the
+// project-level right to start one; it writes through the Storage Write API
+// now, which is a data-plane call covered by dataEditor above. A streaming
+// write also cannot run a query, so the account lost the ability to read
+// anything at all outside that one dataset, which is the right shape for a
+// process whose whole job is to append.
+
+// The restart state: one document holding the newest reading per meter, read
+// once at startup and overwritten every 30 s — 2 880 writes a day.
+//
+// `(default)`, and that is a pricing decision rather than a default. Firestore
+// gives free quota to **exactly one database per project, the default one**;
+// a named database is billed from its first write. The difference here is about
+// ten cents a month, so it is not the money — it is that "the restart state is
+// free" stays true without anyone having to check, and the alternative traded
+// that for tidiness.
+//
+// What it costs: a project that already has a default database — one console
+// click, one `gcloud app create` — fails this apply with "already exists",
+// because Pulumi creates rather than adopts. The remedy is `pulumi import`, and
+// `gcloud firestore databases list` says in advance whether it is needed.
+//
+// Regional, in the same region as everything else: this is restart state for a
+// single-instance service beside it, and a multi-region would buy nothing but
+// latency and a bigger bill.
+const restartState = new gcp.firestore.Database(
+    "restart-state",
+    {
+        name: "(default)",
+        locationId: region,
+        type: "FIRESTORE_NATIVE",
+        // Matches the Cloud Run services: this stack is destroyed as a whole or
+        // not at all, and a protected database would fail that destroy. What is
+        // in here is a copy of something the ingester rebuilds in seconds.
+        deleteProtectionState: "DELETE_PROTECTION_DISABLED",
+    },
+    { dependsOn: services },
+);
+
+// Read and write documents, and nothing else. datastore.user is the
+// data-plane role: it cannot create, delete or configure a database, and the
+// web app has no Firestore role at all because it never reads this document —
+// the real-time screen reads the ingester's memory over HTTP.
+new gcp.projects.IAMMember("ingester-restart-state", {
+    project: restartState.project,
+    role: "roles/datastore.user",
     member: pulumi.interpolate`serviceAccount:${ingesterIdentity.email}`,
 });
+
+export const restartStateDatabase = restartState.name;
 
 for (const { secretId, secret } of brokerSecrets) {
     new gcp.secretmanager.SecretIamMember(`ingester-${secretId}`, {
@@ -267,6 +315,11 @@ function deployTheIngester(): gcp.cloudrunv2.Service {
                             { name: "GOOGLE_PROJECT", value: warehouse.project },
                             { name: "WAREHOUSE_DATASET", value: warehouse.datasetId },
                             { name: "WAREHOUSE_LOCATION", value: region },
+                            // The restart state. Its default in the app is this
+                            // same name; it is passed anyway, because a
+                            // deployment reading a database the program did not
+                            // declare is the failure worth making impossible.
+                            { name: "FIRESTORE_DATABASE", value: restartState.name },
                             // Fixed, so the broker evicts the old connection
                             // when a new revision attaches.
                             { name: "MQTT_CLIENT_ID", value: "power-meter-ingester" },
@@ -303,7 +356,7 @@ function deployTheIngester(): gcp.cloudrunv2.Service {
                 ],
             },
         },
-        { dependsOn: [images, warehouse, ...services] },
+        { dependsOn: [images, warehouse, restartState, ...services] },
     );
 
     // The web app, and nothing else. Deliberately not allUsers: this endpoint

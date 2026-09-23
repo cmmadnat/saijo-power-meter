@@ -602,41 +602,65 @@ badge is present on every route in demo mode and absent in live; `DATA_MODE=live
 `assumed` scales fails to boot, with both field names in the message; no fixture module is reachable
 from a live-mode render path, asserted the way `check-boundaries.mjs` asserts the dependency rule.
 
-### Step 8c — Fit the ingester's writes inside BigQuery's per-table limit — **planned, next**
-**Must land before `deployIngester` is flipped.** Found after step 8, and not a cost problem —
-a correctness one. The ingester writes with **load jobs**, and BigQuery caps load jobs (all table
-modifications, failures included) **per table per day** at a fixed number — Google's *Optimize
-load jobs* page confirms the limit exists and that load jobs count against it; the figure is 1,500
-from memory and an older copy of the quotas page, and confirming it is this step's first task. At
-the rates step 7 chose it is overrun every day:
+### Step 8c — Fit the ingester's writes inside BigQuery's per-table limit — **done, unproven against a project**
+**Had to land before `deployIngester` is flipped, and has.** Found after step 8, and not a cost
+problem — a correctness one. The ingester wrote with **load jobs**, and BigQuery caps table
+modifications per table per day.
 
-| Table | Written every | Jobs / day | Fails after |
-| --- | --- | --- | --- |
-| `latest` | 30 s | 2 880 | ~12.5 h |
-| `readings`, `readings_1m` | 45 s (one job each) | 1 920 each | ~19 h |
+**The quota figures, confirmed against the quotas page on 2026-09-23** (the entry that planned this
+step had 1 500 from memory, and was partly wrong):
 
-The replay harness writes files, never BigQuery, which is why nothing caught it. Nothing is
-deployed, so nothing is broken yet.
+| Quota | Default | Applies to |
+| --- | --- | --- |
+| Load jobs per table per day | **1 500** | Counts toward the destination table's operations limit; failed jobs included. |
+| Table modifications per day | **1 500** | A **standard** table. Cannot be raised. |
+| Partition modifications per column-partitioned table per day | **30 000** | A table partitioned on a column, which both readings tables are. |
+| Partition modifications during ingestion-time per partitioned table per day | **11 000** | Not used here. |
 
-**Decided (option A):**
+DML and **streaming are excluded from all of them**. Against the rates step 7 chose:
 
-- **`latest` moves to Firestore, as one document** holding all 55 readings (~15 KB, far under the
-  1 MiB document limit), overwritten every 30 s — 2 880 writes a day, inside Firestore's free tier.
-  It is restart state, not analytics, and never belonged in the warehouse. One document rather than
-  55: per-meter documents would be ~158 000 writes a day, ~$8 a month for nothing.
+| Table | Written every | Jobs / day | Limit that applied | Verdict |
+| --- | --- | --- | --- | --- |
+| `latest` | 30 s | 2 880 | 1 500, standard table | **Over.** Would have stopped at ~12:30 daily. |
+| `readings` | 45 s | 1 920 | 30 000, column-partitioned | Under — on one reading of the docs. |
+| `readings_1m` | 45 s | 1 920 | 30 000, column-partitioned | Same. |
+
+So the original table in this entry was **right about `latest` and wrong about the other two**: a
+partitioned table has its own, higher limit which replaces the standard one. What the docs do not
+settle is which limit governs a *load job* into a partitioned table, because the load section
+states its own 1 500 and then refers to both table sections. That ambiguity was the real defect —
+the ingester's steady state sat 28% over one candidate limit and 94% under the other, and nobody
+could say which. Streaming removes the question rather than answering it. The replay harness writes
+files, never BigQuery, which is why nothing caught any of it.
+
+**What shipped (option A, as decided):**
+
+- **`latest` is one Firestore document**, `ingester/latest`, holding all 55 readings at ~15 KB
+  against the 1 MiB limit, overwritten every 30 s — 2 880 writes a day, inside the free quota of
+  20 000. Not 55 documents: that would be ~158 000 writes a day and real money for a value obsolete
+  a second later.
+  **One correction to the decision as written:** the free quota covers *exactly one database per
+  project, the default one* — named databases get none. So this is the `(default)` database rather
+  than a named one, which keeps "the restart state is free" true. The cost of that choice is that a
+  project which already has a default database fails the apply with *already exists*, since Pulumi
+  creates rather than adopts; `gcloud firestore databases list` says in advance and `pulumi import`
+  is the remedy.
 - **`readings` and `readings_1m` stay in BigQuery**, written through the **Storage Write API**
-  (default stream) instead of load jobs. Streaming has no per-table job count, the first 2 TiB a
-  month are free, and this project writes ~1 GB a fortnight. The ingester's batch shape does not
-  change: raw and rollup still go out together in one flush, and only closed minutes are rolled up.
-- `ReadingWriter` keeps its interface. The change is adapters: a Firestore `LatestReadingStore` and
-  the `replaceLatest` half of the writer, and a streaming `append`. The screens do not change —
-  `latest` was never their source.
-- A migration drops `latest` (forward-only: nothing reads it once the ingester rehydrates from
-  Firestore). `infra/index.ts` gains the Firestore database, the API, and the ingester account's
-  `roles/datastore.user`; the web account needs nothing, since the web app never reads `latest`.
+  default stream. No per-day cap, 20 MB per request against a flush of a few tens of KB, and
+  $0.025/GiB with the first 2 TiB a month free against ~1 GB a fortnight. `warehouse load` keeps
+  using load jobs, which is what they are for: one bulk write, run by hand.
+- **`ReadingWriter` is unchanged**, as required. `WarehouseReadingWriter` now takes a `RowStream`
+  and a latest-writer, so the split is visible in its constructor. Raw and rollup still go out in
+  one call — two `AppendRows` requests issued and awaited together, the API having no way to make
+  them one — and only closed minutes are still rolled up.
+- **Migration `0002` drops `latest`**, forward-only. `infra/index.ts` gains the Firestore API, the
+  `(default)` database and `roles/datastore.user` for the ingester account; the web app gets
+  nothing, because it never read `latest`. The ingester account **lost** `roles/bigquery.jobUser`,
+  which only a load job needed.
+- Nothing in `ci/` changed, so nothing had to survive a trigger it does not know about yet.
 
-**Rough cost:** about $0 a month either way — load jobs were free too. The gain is that the ingester
-keeps working after lunchtime.
+**Rough cost:** about $0 a month either way — load jobs were free too. The gain is that the
+ingester keeps working after lunchtime.
 
 **Rejected (option B): keep load jobs, write less often** — raw every 90 s, `latest` every 2 min,
 under 1 000 jobs a day. No new service and two numbers to change, but a crash loses up to 90 s of
@@ -649,11 +673,30 @@ BigQuery entirely — strip 1.3–1.6 s p95 per cache miss down to milliseconds,
 per extra warm web instance. More logic in the singleton, and a restart reloads the day with one
 query. Worth doing for speed if the strip's cache miss is noticed; not for money.
 
-*Verify:* the quota figure confirmed against the current quotas page and written here; a replay run
-against a real dataset (a scratch one, not `power_meter`) through the streaming writer at the real
-rate for longer than the old failure point, with `/stats` showing no failed flushes; the Firestore
-document read back on restart with 55 meters; `reconcile` over what BigQuery holds; the `latest`
-drop migration applied by the pipeline; `npm run verify` green.
+*Verified:* `npm run verify` green — 83 tests in `packages/infrastructure` including the new row
+mapping, the two-store writer, the document round trip and the soak's own arithmetic. The replay
+harness runs unchanged end to end: 737 raw readings over five flushes with `failedFlushes: 0`, a
+restart rehydrating 55 meters from `latest.json`, and `reconcile` clean over 110 buckets. The web
+build is unchanged at 60 MB standalone and contains neither new SDK — grepped for, with
+`@google-cloud/bigquery` found in the same grep as a control.
+
+*Still unproven, and this is the part that needs a project:*
+
+| Unproven | What settles it |
+| --- | --- |
+| The Storage Write API accepts these rows against a real table schema | `warehouse soak --dataset <scratch>` |
+| More than 1 500 appends a day per table actually go through | the same run at `--cycles 2000` |
+| `0002` is legal DDL and `0001` still applies before it | `warehouse migrate --dataset <scratch>` on a fresh dataset |
+| The Firestore document round-trips with 55 meters | `npm run hotstate -w @power-meter/ingester -- --database <scratch>` |
+| The pipeline applies `0002` to `power_meter`, and Pulumi creates the database | the next merge to `main` |
+| The ingester process itself writing to either store | blocked by the scaling gate, as everything else about it is |
+
+The plan's own verify list asked for `/stats` showing `failedFlushes: 0` against a real dataset.
+**That cannot be done without breaking the startup gate** — `WAREHOUSE=bigquery` is refused while
+the divisors are guesses, and no new exemption was added. `warehouse soak` is the honest substitute:
+the same writer, the same batch shape, the same two tables, driven by a tool that has no broker
+behind it. It runs faster than real time on purpose, because the limit being disproved is per *day*
+and crossing it in an hour is a stronger result than crossing it in thirteen.
 
 ### Step 9 — Passcode gate
 A single shared passcode, checked server-side against Secret Manager, httpOnly + secure session

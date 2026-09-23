@@ -16,6 +16,8 @@
   },
   "dependencies": {
     "@google-cloud/bigquery": "^9.1.0",
+    "@google-cloud/bigquery-storage": "^6.1.0",
+    "@google-cloud/firestore": "^9.2.0",
     "@power-meter/application": "*",
     "@power-meter/domain": "*"
   },

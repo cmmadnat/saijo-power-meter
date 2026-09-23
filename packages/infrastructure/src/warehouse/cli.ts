@@ -9,6 +9,7 @@
  *     npm run warehouse --workspace @power-meter/infrastructure -- settings
  *     npm run warehouse --workspace @power-meter/infrastructure -- reset --yes
  *     npm run warehouse --workspace @power-meter/infrastructure -- cost --runs 20
+ *     npm run warehouse --workspace @power-meter/infrastructure -- soak --dataset scratch
  *
  * `sql` renders the migrations and prints them, touching nothing — it is the
  * one command that runs without credentials, and this session has none by
@@ -23,6 +24,8 @@ import { measureCost } from "./cost.ts";
 import { loadFixtures, verifyAgainstFixtures } from "./loader.ts";
 import { MIGRATIONS, render } from "./migrations.ts";
 import { partitionSettings, resetWarehouse, runMigrations } from "./runner.ts";
+import { soak } from "./soak.ts";
+import { storageWriteStream } from "./stream.ts";
 import { DEFAULT_DATASET, RETENTION_DAYS, type WarehouseTarget } from "./schema.ts";
 
 function flag(name: string): string | undefined {
@@ -143,10 +146,7 @@ switch (command) {
       ...window(),
       onProgress: log,
     });
-    log(
-      `loaded ${report.readings} readings, ${report.rollupRows} rollup rows, ` +
-        `${report.latestRows} latest rows`,
-    );
+    log(`loaded ${report.readings} readings and ${report.rollupRows} rollup rows`);
     // The window, in the form verify needs it back. Anything else compares this
     // table against fixtures generated for a different window.
     log(
@@ -203,6 +203,49 @@ switch (command) {
     break;
   }
 
+  case "soak": {
+    // Step 8c's verification, and the one thing about the new write path that
+    // no test on this machine can show: that a table takes far more writes a
+    // day through the Storage Write API than the 1 500 modifications a load job
+    // would have been counted against.
+    //
+    // It writes the ingester's own batch shape through the ingester's own
+    // writer — same rows, same two tables, same one call — as fast as
+    // `--interval` says, because the limit being disproved is per *day* and
+    // crossing it in an hour is a stronger result than crossing it in
+    // thirteen. Nothing here touches a broker, and the rows are fixtures.
+    //
+    // It refuses to run against the production dataset. `power_meter` holds
+    // real readings after go-live and step 6's fixtures before it; a soak's
+    // rows would be indistinguishable from both.
+    if (target.dataset === DEFAULT_DATASET) {
+      log(
+        `refusing to soak ${DEFAULT_DATASET}: its rows are indistinguishable from ` +
+          "the ingester's. Make a scratch dataset and pass --dataset.",
+      );
+      process.exitCode = 1;
+      break;
+    }
+    if (projectId === undefined) {
+      log("soak needs --project or GOOGLE_PROJECT: a write stream is named by a full path");
+      process.exitCode = 1;
+      break;
+    }
+    const outcome = await soak({
+      stream: await storageWriteStream({ projectId, dataset: target.dataset }),
+      cycles: Number(flag("cycles") ?? "2000"),
+      intervalMs: Number(flag("interval") ?? "1000"),
+      log,
+    });
+    log(
+      `${outcome.appends} append(s) per table, ${outcome.rows} rows, ` +
+        `${outcome.failures.length} failure(s)`,
+    );
+    for (const failure of outcome.failures.slice(0, 5)) log(failure);
+    if (outcome.failures.length > 0) process.exitCode = 1;
+    break;
+  }
+
   case "cost": {
     // Step 8's measurement: what the live screens' queries read, what they
     // bill, and how long each takes end to end through the same adapters and
@@ -219,14 +262,16 @@ switch (command) {
 
   default:
     log(
-      "usage: warehouse <sql|migrate|load|verify|settings|reset|cost>\n" +
+      "usage: warehouse <sql|migrate|load|verify|settings|reset|cost|soak>\n" +
         "  --project P  --dataset D  --location L\n" +
         "  --hours N          window ending now; load prints the exact one it used\n" +
         "  --from T --to T    an exact window; verify needs the one load printed\n" +
         "  --dry-run          migrate only: connect, read the ledger, apply nothing\n" +
         "  --skip-if-no-dataset  migrate only: exit clean when the dataset is absent\n" +
         "  --yes              reset only: confirm dropping every table\n" +
-        "  --runs N           cost only: timed runs per query (default 10)",
+        "  --runs N           cost only: timed runs per query (default 10)\n" +
+        "  --cycles N --interval MS  soak only: flush-shaped writes, and how fast\n" +
+        "                     (default 2000 every 1000 ms; refuses the real dataset)",
     );
     process.exitCode = 1;
 }

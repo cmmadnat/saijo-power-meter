@@ -23,6 +23,7 @@ import {
 } from "./migrations.ts";
 import {
   informationSchemaRef,
+  RETIRED_TABLES,
   TABLES,
   tableRef,
   type WarehouseTarget,
@@ -220,10 +221,14 @@ export async function resetWarehouse(
 ): Promise<readonly string[]> {
   const report = options.onProgress ?? (() => {});
   const dropped: string[] = [];
+  // Retired tables go too. A dataset migrated before 0002 still carries
+  // `latest`, and a reset that left it standing would leave the one thing a
+  // reset exists to remove: a table full of rows nobody can tell from
+  // measurement.
   for (const table of [
     TABLES.readings,
     TABLES.rollup,
-    TABLES.latest,
+    ...RETIRED_TABLES,
     TABLES.migrations,
   ]) {
     report(`dropping ${table}`);

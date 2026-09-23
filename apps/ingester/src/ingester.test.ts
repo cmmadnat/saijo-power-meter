@@ -365,7 +365,7 @@ describe("the ingester", () => {
     assert.equal(stats.metersSeen, COMMISSIONED_ON_STATION_01, "the hot state is unaffected");
   });
 
-  it("rehydrates the hot state from the latest table", async () => {
+  it("rehydrates the hot state from the restart state", async () => {
     const writer = new FakeWriter();
     const stored = new Map<MeterId, Reading>();
     const [message] = stationMessages(
@@ -392,7 +392,7 @@ describe("the ingester", () => {
     assert.equal(restarted.stats().rehydratedMeters, COMMISSIONED_ON_STATION_01);
   });
 
-  it("starts blind rather than refusing to start when the latest table cannot be read", async () => {
+  it("starts blind rather than refusing to start when the restart state cannot be read", async () => {
     const writer = new FakeWriter();
     const latestStore: LatestReadingStore = {
       latest: async () => {

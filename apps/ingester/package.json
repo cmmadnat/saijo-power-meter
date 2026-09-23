@@ -9,6 +9,7 @@
     "test": "node --test --experimental-strip-types \"src/**/*.test.ts\"",
     "replay": "node --experimental-strip-types tools/replay.ts",
     "reconcile": "node --experimental-strip-types tools/reconcile.ts",
+    "hotstate": "node --experimental-strip-types tools/hotstate.ts",
     "capture": "node --experimental-strip-types tools/capture.ts",
     "takeover": "node --experimental-strip-types tools/takeover.ts"
   },

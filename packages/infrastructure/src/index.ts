@@ -2,8 +2,9 @@
  * The infrastructure layer's public entry point.
  *
  * Adapters, not rules: the MQTT payload decoder with the scale factors it
- * applies, the warehouse, the ingester's hot state over HTTP, and the file
- * store the local replay writes. Reach in through here, never through a deep
+ * applies, the warehouse and the stream that writes to it, the Firestore
+ * document the ingester rehydrates from, the ingester's hot state over HTTP,
+ * and the file store the local replay writes. Reach in through here, never through a deep
  * path - the dependency check fails the build on one.
  *
  * **Nothing synthetic is exported from here.** The fixture generator, the
@@ -28,6 +29,18 @@ export {
   type ScaleTable,
 } from "./mqtt/scaling.ts";
 export { bigQueryClient } from "./warehouse/client.ts";
+export { storageWriteStream } from "./warehouse/stream.ts";
+export type { RowStream, StorageWriteOptions } from "./warehouse/stream.ts";
+export {
+  DEFAULT_LATEST_DOCUMENT,
+  FirestoreLatestStore,
+  firestoreDocumentStore,
+  fromLatestDocument,
+  toLatestDocument,
+  type DocumentStore,
+  type FirestoreOptions,
+  type LatestDocument,
+} from "./firestore/latest-store.ts";
 export type {
   BigQueryClientOptions,
   QueryParams,
@@ -41,13 +54,12 @@ export {
   type Migration,
 } from "./warehouse/migrations.ts";
 export {
-  WarehouseLatestReadingStore,
   WarehouseReadingRepository,
   WarehouseRollupRepository,
   type WarehouseRepositoryOptions,
 } from "./warehouse/repository.ts";
 export { CachedRollupRepository, type CacheOptions } from "./warehouse/cache.ts";
-export { WarehouseReadingWriter } from "./warehouse/writer.ts";
+export { WarehouseReadingWriter, type LatestWriter } from "./warehouse/writer.ts";
 export {
   partitionSettings,
   resetWarehouse,
@@ -58,6 +70,7 @@ export {
 export {
   DEFAULT_DATASET,
   RETENTION_DAYS,
+  RETIRED_TABLES,
   TABLES,
   tableRef,
   type WarehouseTarget,

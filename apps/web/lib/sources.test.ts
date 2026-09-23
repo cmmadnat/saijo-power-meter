@@ -172,9 +172,6 @@ test("a minute of ten-second refreshes costs the warehouse two queries, not eigh
     async load() {
       return 0;
     },
-    async replace() {
-      return 0;
-    },
   };
   const config = readDataMode({
     DATA_MODE: "live",
