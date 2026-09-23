@@ -23,7 +23,10 @@ this page and it is not a technical one.
 | `apps/ingester/tools/capture.ts` | Reads the real broker, prints raw payloads, writes nothing. |
 | `apps/ingester/tools/takeover.ts` | Two connections, one id: does HiveMQ send reason code 142? |
 | `apps/ingester/tools/broker-config.ts` | Where both of those read the address and credentials. |
-| `packages/infrastructure/src/warehouse/writer.ts` | The `ReadingWriter` port, backed by load jobs. |
+| `apps/ingester/tools/hotstate.ts` | Writes the restart-state document to a scratch database and reads it back. |
+| `packages/infrastructure/src/warehouse/writer.ts` | The `ReadingWriter` port: BigQuery for rows, Firestore for restart state. |
+| `packages/infrastructure/src/warehouse/stream.ts` | The Storage Write API default stream, one connection per table. |
+| `packages/infrastructure/src/firestore/latest-store.ts` | The restart state: one document holding all 55 meters. |
 
 The decoder is **not** in this app. `StationDecoder` is imported from
 `@power-meter/infrastructure`, the same object the fixtures and the tests use, which is what the
@@ -61,7 +64,12 @@ itself against HiveMQ, because it has never been allowed to connect.
 
 ## The batch, and the one rule about minutes
 
-Raw readings and their rollup are written **in the same call**, because they are one flush of one
+Raw readings and their rollup are written **in the same call**, through the Storage Write API's
+default stream — two `AppendRows` requests, one per table, issued together and awaited together,
+because the API has no way to make them one. They were load jobs until step 8c; see
+`docs/architecture/warehouse.md` for the per-table daily cap that changed it.
+
+They are one call because they are one flush of one
 buffer. A crash between two separate writes would leave a minute present in `readings` and absent
 from `readings_1m`, and no reader is built to notice: the chart would fall back to raw and agree,
 and the rollup would under-report that minute forever.
@@ -83,7 +91,7 @@ drift from the one the screen draws.
 | | |
 | --- | --- |
 | The process dies | Up to one flush interval of readings — they were in memory and nowhere else. |
-| A flush fails | Nothing. The batch is held and goes out with the next one, rollup rows included. |
+| A flush fails | Nothing. The batch is held and goes out with the next one, rollup rows included. A request BigQuery accepted but did not acknowledge can land twice: the default stream is at-least-once, as load jobs were. |
 | The warehouse is down for a long time | The buffer is capped at 20 000 readings (~an hour); past that the oldest are dropped, and counted in `/stats`. |
 | The broker drops briefly | Nothing. `clean: false` with QoS 1 means the broker queues while the subscriber is away. |
 | The broker is away a long time | Everything past the broker's queue depth. HiveMQ Cloud's free plan holds 1000 messages per client — about **16 minutes** at 60 a minute — and then drops the oldest, silently. |
@@ -91,7 +99,7 @@ drift from the one the screen draws.
 
 The acknowledgement is sent when the message is handed to the decoder, not when the batch is
 written, so the crash case above loses a flush rather than replaying it. The alternative —
-deferring the ack until the load job returns — turns that loss into duplicate raw rows after a
+deferring the ack until the write returns — turns that loss into duplicate raw rows after a
 redelivery, and duplicates are the failure this design spends most of its effort avoiding.
 
 ## The hot state
@@ -106,10 +114,34 @@ The wire shape — `LatestResponse` and `toLatestDto` — lives in
 client for it. Both deployables import the one definition, the way they share the decoder. The web
 app calls it with an ID token minted for this service's URL, because the service is private.
 
-It is mirrored to the `latest` table every ~30 s. That table is not the screen's data source; it is
-what a restarted ingester rehydrates from, so a deploy does not begin blind. A failure to read it
-is logged and the service starts anyway: an empty hot state costs a few seconds of blank rows,
-refusing to start costs everything.
+It is mirrored every ~30 s to **one Firestore document**, `ingester/latest`, holding all 55
+readings at about 15 KB against the 1 MiB document limit. That document is not the screen's data
+source; it is what a restarted ingester rehydrates from, so a deploy does not begin blind. A
+failure to read it is logged and the service starts anyway: an empty hot state costs a few seconds
+of blank rows, refusing to start costs everything.
+
+**It was a BigQuery table called `latest` until step 8c, and it could not stay one.** 55 rows
+rewritten every 30 s is 2 880 table modifications a day, against a standard table's cap of 1 500 —
+a limit that cannot be raised and that failed writes count against too. The mirror would have
+stopped at about half past twelve every afternoon, and the only symptom anyone would have seen is a
+restart rehydrating from the morning. The rest of that arithmetic, and what it meant for `readings`
+and `readings_1m`, is in `docs/architecture/warehouse.md`.
+
+Two things about the Firestore side are decisions rather than defaults:
+
+- **One document, not 55.** A document per meter would be 55 writes every 30 s — about 158 000 a
+  day, and real money for a value obsolete a second later. One document is 2 880 writes a day,
+  inside the free quota of 20 000 and well inside the single-document sustained write limit of one
+  per second.
+- **The `(default)` database.** Firestore gives free quota to exactly one database per project, and
+  that is the one; a named database is billed from its first write. The cost of the alternative is
+  about ten cents a month, so this is not really about money — it is that "the restart state is
+  free" stays true without anyone having to check. What it costs is that a project which already
+  has a default database fails the apply with *already exists*, because Pulumi creates rather than
+  adopts; `gcloud firestore databases list` says in advance, and `pulumi import` is the remedy.
+
+The web app has **no Firestore access at all**, because it never reads this document: the real-time
+screen reads the ingester's memory over HTTP, as it always did.
 
 ## The startup gate
 
@@ -179,7 +211,7 @@ npm run reconcile -w @power-meter/ingester -- --dir .ingester
 ```
 
 `WAREHOUSE=file` writes the rows the warehouse adapter would write, as JSONL, plus `latest.json`
-in the shape the `latest` table holds. Since step 8 the web app reads the same directory back: run it
+in the shape the restart-state document holds. Since step 8 the web app reads the same directory back: run it
 with `DATA_MODE=live INGESTER_URL=http://127.0.0.1:8099 WAREHOUSE=file WAREHOUSE_DIR=.ingester` and
 every screen is on the live code path, badged *Local replay*. That is what makes two of the plan's verification items
 answerable without a project: *restart and the hot state rehydrates from `latest`*, and *the rollup
@@ -188,14 +220,19 @@ reconciles against raw*.
 ## Deployment, and the flag that is off
 
 `infra/index.ts` declares the ingester's service account, the three broker secrets
-(`mqtt-broker-url`, `mqtt-broker-username`, `mqtt-broker-password`), the warehouse write access
-and the secret access. Those apply now and ingest nothing.
+(`mqtt-broker-url`, `mqtt-broker-username`, `mqtt-broker-password`), the warehouse write access,
+the secret access and — since step 8c — the Firestore database and `roles/datastore.user` on it.
+Those apply now and ingest nothing.
+
+The account lost a role at step 8c: it no longer holds `roles/bigquery.jobUser`. It needed that to
+start a load job; a Storage Write API append is a data-plane call covered by `dataEditor` on the
+dataset. It cannot run a query at all now, which is the right shape for a process whose whole job
+is to append.
 
 The Cloud Run **service** is behind `saijo-power-meter:deployIngester`, which is `"false"`. A
 deployed revision would refuse to start — that is the gate doing its job — and a crash-looping
-revision fails every apply from then on. **Step 8c of the plan comes first:** the writes below go
-through BigQuery load jobs, which are capped per table per day, and at a 45 s flush and a 30 s
-`latest` mirror the ingester would exceed that cap every afternoon. Flipping it to `"true"`
+revision fails every apply from then on. **Step 8c is done, so the quota blocker is gone**; what
+is left is the scaling one. Flipping the flag to `"true"`
 belongs in the same change that confirms the divisors and adds a version to each secret:
 
 ```bash
@@ -221,3 +258,17 @@ rotated before go-live; a rotation is a new secret version plus a restart, not a
   its plan ever changes.
 - **Nothing has measured cost per day**, which the plan asks for and which needs the service
   running.
+- **Neither of step 8c's two stores has been written to from this process.** The composition in
+  `main.ts` — a Storage Write API stream plus a Firestore document behind one `ReadingWriter` — is
+  exercised in tests against fakes and by the replay against files, never against a project,
+  because the startup gate still refuses `WAREHOUSE=bigquery`. What *can* be checked without
+  running the ingester is checked by two tools instead, both against scratch resources:
+
+```bash
+# The write path, past the old per-table daily cap. Needs a scratch dataset.
+npm run warehouse -w @power-meter/infrastructure -- migrate --dataset <scratch>
+npm run warehouse -w @power-meter/infrastructure -- soak --dataset <scratch> --cycles 2000
+
+# The restart state. Needs a scratch Firestore database, which is billed — delete it after.
+npm run hotstate -w @power-meter/ingester -- --database <scratch>
+```

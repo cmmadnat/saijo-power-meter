@@ -23,7 +23,7 @@ COPY packages/domain/package.json packages/domain/
 COPY packages/application/package.json packages/application/
 COPY packages/infrastructure/package.json packages/infrastructure/
 # Scoped to this workspace: the web app's dependencies — Next, React and their
-# trees — have no business in an image whose job is a socket and a load job.
+# trees — have no business in an image whose job is a socket and a row stream.
 RUN npm ci --workspace @power-meter/ingester --include-workspace-root --omit=dev
 
 FROM node:22-alpine AS runner

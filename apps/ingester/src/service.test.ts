@@ -83,6 +83,8 @@ const config: Config = {
   projectId: undefined,
   dataset: "power_meter",
   location: "asia-southeast1",
+  firestoreDatabase: "(default)",
+  latestDocument: "ingester/latest",
   port: 0,
 };
 
@@ -127,7 +129,7 @@ describe("the service", () => {
     assert.equal(writer.appended, 10, "five meters on each of two stations");
   });
 
-  it("writes the last buffer and the latest table on shutdown", async () => {
+  it("writes the last buffer and the restart state on shutdown", async () => {
     const broker = new FakeBroker();
     const writer = new CountingWriter();
     const started = await service(broker, writer);

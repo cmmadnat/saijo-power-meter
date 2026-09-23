@@ -8,10 +8,15 @@
  * repository turns "the adapter is faithful" from a claim into a comparison,
  * and `verifyAgainstFixtures` below is that comparison.
  *
- * Raw, rollup and latest are written from the same generated set, and the
- * rollup is produced by `rollupReadings` — the application-layer function the
- * charts bucket with — rather than by a SQL `GROUP BY` that would be a second
- * definition of a minute.
+ * Raw and rollup are written from the same generated set, and the rollup is
+ * produced by `rollupReadings` — the application-layer function the charts
+ * bucket with — rather than by a SQL `GROUP BY` that would be a second
+ * definition of a minute. There is no third write: step 8c moved the restart
+ * state out of the warehouse, and a fixture run has no restart to seed.
+ *
+ * These go through load jobs, which is what load jobs are for — one bulk write
+ * of a whole window, run by hand. It is the ingester's *repeating* writes that
+ * could not stay on them; see `stream.ts`.
  */
 import {
   historyTable,
@@ -19,7 +24,7 @@ import {
   type HistoryRow,
   type TimeRange,
 } from "@power-meter/application";
-import { MeterRegistry, type MeterId, type Reading } from "@power-meter/domain";
+import { MeterRegistry, type MeterId } from "@power-meter/domain";
 import type { WarehouseClient } from "./client.ts";
 import {
   generateFixtures,
@@ -29,7 +34,6 @@ import { FixtureReadingRepository } from "../fixtures/repository.ts";
 import { WarehouseReadingRepository } from "./repository.ts";
 import {
   bucketToRow,
-  latestToRow,
   readingToRow,
   TABLES,
   type WarehouseTarget,
@@ -38,7 +42,6 @@ import {
 export interface LoadReport {
   readonly readings: number;
   readonly rollupRows: number;
-  readonly latestRows: number;
   readonly from: Date;
   readonly to: Date;
 }
@@ -72,34 +75,12 @@ export async function loadFixtures(
   );
   report(`loaded ${rollupRows} rows into ${TABLES.rollup}`);
 
-  const latestRows = await client.replace(
-    TABLES.latest,
-    iterate(
-      latestPerMeter(fixtures.readings).map((reading) =>
-        latestToRow(reading, ingestedAt),
-      ),
-    ),
-  );
-  report(`replaced ${TABLES.latest} with ${latestRows} rows`);
-
   return {
     readings,
     rollupRows,
-    latestRows,
     from: fixtures.from,
     to: fixtures.to,
   };
-}
-
-function latestPerMeter(readings: readonly Reading[]): Reading[] {
-  const latest = new Map<MeterId, Reading>();
-  for (const reading of readings) {
-    const current = latest.get(reading.meterId);
-    if (current === undefined || reading.at.getTime() > current.at.getTime()) {
-      latest.set(reading.meterId, reading);
-    }
-  }
-  return [...latest.values()];
 }
 
 async function* iterate<T>(items: Iterable<T>): AsyncIterable<T> {

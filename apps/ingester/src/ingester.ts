@@ -30,9 +30,12 @@
  * always on. It is a map keyed by meter, so it is 55 entries whatever the
  * message rate, which is what makes a soak's memory line flat.
  *
- * It is mirrored to the `latest` table every ~30 s, not on every reading: that
- * table exists so a restart does not begin blind, and paying per write for a
+ * It is mirrored to the durable copy every ~30 s, not on every reading: that
+ * copy exists so a restart does not begin blind, and paying per write for a
  * value obsolete a second later would cost more per month than all the history.
+ * Since step 8c the copy is one Firestore document rather than a BigQuery
+ * table — nothing here knows which, because it goes out through `ReadingWriter`
+ * like everything else.
  */
 import {
   rollupReadings,
@@ -140,11 +143,11 @@ export class Ingester {
   }
 
   /**
-   * Read the hot state back from the `latest` table.
+   * Read the hot state back from the durable copy.
    *
    * A failure here is logged and not thrown. Starting with an empty hot state
    * means the real-time screen shows nothing for the few seconds until the
-   * first message of each station arrives; refusing to start because a table
+   * first message of each station arrives; refusing to start because the copy
    * could not be read means it shows nothing at all.
    */
   async rehydrate(): Promise<number> {
@@ -156,11 +159,11 @@ export class Ingester {
         this.#hot.set(meterId, reading);
       }
       this.#rehydratedMeters = this.#hot.size;
-      this.#log(`rehydrated ${this.#hot.size} meter(s) from the latest table`);
+      this.#log(`rehydrated ${this.#hot.size} meter(s) from the restart state`);
       return this.#hot.size;
     } catch (error) {
       this.#log(
-        `could not rehydrate from the latest table, starting blind: ${describe(error)}`,
+        `could not rehydrate from the restart state, starting blind: ${describe(error)}`,
       );
       return 0;
     }
@@ -274,7 +277,7 @@ export class Ingester {
       await this.#writer.replaceLatest(this.snapshot());
       this.#latestFlushes += 1;
     } catch (error) {
-      this.#log(`could not write the latest table: ${describe(error)}`);
+      this.#log(`could not write the restart state: ${describe(error)}`);
     }
   }
 

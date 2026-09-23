@@ -31,6 +31,8 @@ function config(overrides: Partial<Config> = {}): Config {
     projectId: "saijo-power-meter",
     dataset: "power_meter",
     location: "asia-southeast1",
+    firestoreDatabase: "(default)",
+    latestDocument: "ingester/latest",
     port: 8080,
     ...overrides,
   };

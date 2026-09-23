@@ -2,7 +2,7 @@
  * The two ports, backed by the warehouse.
  *
  * This is the swap the plan has been building toward since step 2: the same
- * `ReadingRepository` and `LatestReadingStore` the fixtures implement, so the
+ * `ReadingRepository` and `RollupRepository` the fixtures implement, so the
  * History and chart aggregations move server-side by being handed a different
  * object rather than by being rewritten. There is deliberately no SQL here that
  * sums energy or running hours. Those rules — the counter-reset walk and the
@@ -11,7 +11,6 @@
  * cases nobody checks.
  */
 import type {
-  LatestReadingStore,
   ReadingRepository,
   RollupBucket,
   RollupRepository,
@@ -165,35 +164,5 @@ export class WarehouseRollupRepository implements RollupRepository {
     })) {
       yield rowToBucket(row);
     }
-  }
-}
-
-/**
- * The newest reading per meter, from the durable copy.
- *
- * Reading the real-time screen off this table is the fallback, not the design:
- * the ingester holds the 55 rows in memory and serves them, and this is what it
- * rehydrates from after a restart. 55 rows, unpartitioned, so the query is a
- * full scan of a few kilobytes.
- */
-export class WarehouseLatestReadingStore implements LatestReadingStore {
-  readonly #client: WarehouseClient;
-  readonly #target: WarehouseTarget;
-
-  constructor(client: WarehouseClient, target: WarehouseTarget) {
-    this.#client = client;
-    this.#target = target;
-  }
-
-  async latest(): Promise<ReadonlyMap<MeterId, Reading>> {
-    const rows = await this.#client.query<Record<string, unknown>>(
-      `SELECT ${READING_COLUMNS.join(", ")} FROM ${tableRef(this.#target, TABLES.latest)}`,
-    );
-    return new Map(
-      rows.map((row) => {
-        const reading = rowToReading(row);
-        return [reading.meterId, reading] as const;
-      }),
-    );
   }
 }

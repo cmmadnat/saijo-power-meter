@@ -1,16 +1,19 @@
 /**
  * The narrow surface the warehouse code needs from BigQuery.
  *
- * Four methods, and that is the point: everything above this file — the
+ * Three methods, and that is the point: everything above this file — the
  * migration runner, the repositories, the fixture loader — is written against
  * the interface, so all of it is exercised by tests on a machine that has never
  * authenticated to Google. The SDK-backed implementation is the only part that
  * cannot be, and it is kept small enough that what it does is readable.
  *
- * `load` and `replace` go through a load job rather than the streaming insert
- * API for two reasons: load jobs are free where streaming is billed per
- * megabyte, and rows arrive in the table immediately rather than sitting in a
- * streaming buffer that DML cannot see.
+ * `load` goes through a load job, and after step 8c it is the only thing that
+ * does. A load job counts against a per-table-per-day modification limit, which
+ * is fine for what is left of it — `warehouse load` is a hand-run command that
+ * writes a fixture window once — and was not fine for the ingester, which
+ * writes every 45 s and now uses the Storage Write API instead (`stream.ts`).
+ * The disposition is always append: the one truncating caller was the `latest`
+ * table, and that table is gone.
  */
 
 /** Named query parameters. `@name` in the SQL. */
@@ -29,11 +32,8 @@ export interface WarehouseClient {
     params?: QueryParams,
   ): AsyncIterable<Row>;
 
-  /** Append rows to a table. Returns how many were written. */
+  /** Append rows to a table through a load job. Returns how many were written. */
   load(table: string, rows: AsyncIterable<object>): Promise<number>;
-
-  /** Replace a table's contents with these rows, atomically. */
-  replace(table: string, rows: AsyncIterable<object>): Promise<number>;
 }
 
 export interface BigQueryClientOptions {
@@ -69,11 +69,10 @@ export async function bigQueryClient(
   async function writeRows(
     table: string,
     rows: AsyncIterable<object>,
-    writeDisposition: "WRITE_APPEND" | "WRITE_TRUNCATE",
   ): Promise<number> {
     const stream = dataset.table(table).createWriteStream({
       sourceFormat: "NEWLINE_DELIMITED_JSON",
-      writeDisposition,
+      writeDisposition: "WRITE_APPEND",
       // The table already exists — a migration made it. CREATE_NEVER is what
       // stops a load job from inventing one from whatever rows happen to be in
       // the first batch, which is how a typo in a column name becomes a second
@@ -120,8 +119,7 @@ export async function bigQueryClient(
       for await (const row of stream) yield row as Row;
     },
 
-    load: (table, rows) => writeRows(table, rows, "WRITE_APPEND"),
-    replace: (table, rows) => writeRows(table, rows, "WRITE_TRUNCATE"),
+    load: (table, rows) => writeRows(table, rows),
   };
 }
 

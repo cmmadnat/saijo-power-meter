@@ -1,74 +1,85 @@
 /**
- * The write side of the warehouse: the `ReadingWriter` port, backed by load
- * jobs.
+ * The write side of the ingester: the `ReadingWriter` port.
  *
- * Raw and the 1-minute rollup are written from one call, because they are one
- * flush of one buffer. Writing them separately would allow a crash between the
- * two to leave a minute present in `readings` and absent from `readings_1m`,
- * which no reader is built to notice: the chart would fall back to raw and
- * agree, and the rollup would quietly under-report that minute forever.
+ * The port is one interface and the implementation is two stores, which is the
+ * shape step 8c gave it:
  *
- * `latest` is replaced rather than appended, which is the one place a load job's
- * `WRITE_TRUNCATE` is the right disposition: 55 rows, rewritten every half
- * minute, read only by an ingester rehydrating after a restart.
+ * - **Raw and the 1-minute rollup** go to BigQuery through the Storage Write
+ *   API (`stream.ts`), in the same call, because they are one flush of one
+ *   buffer. Writing them separately would allow a crash between the two to
+ *   leave a minute present in `readings` and absent from `readings_1m`, which
+ *   no reader is built to notice: the chart would fall back to raw and agree,
+ *   and the rollup would quietly under-report that minute forever.
+ * - **The latest reading per meter** goes to one Firestore document
+ *   (`../firestore/latest-store.ts`). It used to be a third BigQuery table,
+ *   rewritten whole every 30 s; that is 2 880 table modifications a day against
+ *   a cap of 1 500, so it stopped being a table. It was never analytics — it is
+ *   restart state, and it never belonged in the warehouse.
  *
- * Rows go through load jobs rather than the streaming insert API for the reason
- * `client.ts` gives: load jobs are free where streaming is billed per megabyte,
- * and rows land immediately instead of sitting in a buffer DML cannot see.
+ * The split is visible in the constructor rather than hidden behind a flag,
+ * because it is the thing about this class worth knowing.
  */
 import type { ReadingBatch, ReadingWriter } from "@power-meter/application";
 import type { Reading } from "@power-meter/domain";
-import type { WarehouseClient } from "./client.ts";
+import type { RowStream } from "./stream.ts";
 import {
-  bucketToRow,
-  latestToRow,
-  readingToRow,
+  bucketToStreamRow,
+  readingToStreamRow,
   TABLES,
-  type WarehouseTarget,
 } from "./schema.ts";
 
+/** The half of `ReadingWriter` that the Firestore store implements. */
+export interface LatestWriter {
+  replaceLatest(readings: readonly Reading[]): Promise<void>;
+}
+
 export class WarehouseReadingWriter implements ReadingWriter {
-  readonly #client: WarehouseClient;
-  readonly #target: WarehouseTarget;
+  readonly #rows: RowStream;
+  readonly #latest: LatestWriter;
 
-  constructor(client: WarehouseClient, target: WarehouseTarget) {
-    this.#client = client;
-    this.#target = target;
-  }
-
-  /** The target, exposed so a caller can log where it is writing. */
-  get target(): WarehouseTarget {
-    return this.#target;
+  constructor(rows: RowStream, latest: LatestWriter) {
+    this.#rows = rows;
+    this.#latest = latest;
   }
 
   async append(batch: ReadingBatch): Promise<void> {
-    if (batch.readings.length > 0) {
-      await this.#client.load(
+    // Both appends are issued before either is awaited, so the gap between the
+    // two tables is a few milliseconds of network rather than a round trip.
+    // They are still two requests — the API has no way to make them one — so
+    // the failure they are guarding against is narrowed, not removed.
+    const writes = [
+      this.#rows.append(
         TABLES.readings,
-        iterate(
-          batch.readings.map((reading) => readingToRow(reading, batch.ingestedAt)),
-        ),
+        batch.readings.map((reading) => readingToStreamRow(reading, batch.ingestedAt)),
+      ),
+      this.#rows.append(TABLES.rollup, batch.rollup.map(bucketToStreamRow)),
+    ];
+
+    // allSettled, not all: a rejection from the first must not leave the second
+    // running unobserved into an unhandled rejection after the flush has
+    // already been reported as failed.
+    const results = await Promise.allSettled(writes);
+    const failures = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (failures.length > 0) {
+      throw new Error(
+        failures.map((failure) => describe(failure.reason)).join("; "),
       );
-    }
-    if (batch.rollup.length > 0) {
-      await this.#client.load(TABLES.rollup, iterate(batch.rollup.map(bucketToRow)));
     }
   }
 
   async replaceLatest(readings: readonly Reading[]): Promise<void> {
-    // An empty flush is never a truncation. A `WRITE_TRUNCATE` with no rows
-    // would empty the one table a restarting ingester reads, so a broker that
-    // is down at the moment the timer fires would cost the next restart its
-    // rehydration as well.
+    // An empty flush is never a truncation. Overwriting with no rows would
+    // empty the one document a restarting ingester reads, so a broker that is
+    // down at the moment the timer fires would cost the next restart its
+    // rehydration as well. The store checks this too; it is cheap, and this is
+    // the layer a future second store would be plugged into.
     if (readings.length === 0) return;
-    const updatedAt = new Date();
-    await this.#client.replace(
-      TABLES.latest,
-      iterate(readings.map((reading) => latestToRow(reading, updatedAt))),
-    );
+    await this.#latest.replaceLatest(readings);
   }
 }
 
-async function* iterate<T>(items: Iterable<T>): AsyncIterable<T> {
-  for (const item of items) yield item;
+function describe(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

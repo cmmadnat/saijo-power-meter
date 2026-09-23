@@ -8,7 +8,7 @@
  * them in. So `WAREHOUSE=file` writes what the warehouse adapter would write —
  * the same rows, from the same batch — as newline-delimited JSON in a
  * directory, and reads `latest.json` back the way a restarted ingester reads
- * the `latest` table.
+ * its Firestore document.
  *
  * Step 8 added the read side, and moved the file here from `apps/ingester` so
  * both ends share one definition of the format: the web app's live mode reads
@@ -125,8 +125,8 @@ export class FileLatestReadingStore implements LatestReadingStore {
     try {
       text = await readFile(under(this.#dir, FILES.latest), "utf8");
     } catch {
-      // Nothing written yet: the same case as an empty `latest` table on a
-      // project that has never ingested, and handled the same way.
+      // Nothing written yet: the same case as a missing restart-state document
+      // on a project that has never ingested, and handled the same way.
       return new Map();
     }
     const rows = JSON.parse(text) as StoredReading[];
