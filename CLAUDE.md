@@ -267,7 +267,8 @@ rather than as an empty shell, which was the point of leaving it out until now.
   the next run.
 - **The GCP project is not pinned in `Pulumi.dev.yaml`** — CI passes it as `GOOGLE_PROJECT` from the
   `GCP_PROJECT_ID` variable, so the program can target another project without a code change.
-- **Region `asia-southeast1`** throughout.
+- **Region `asia-southeast1`** throughout, with one exception: the ingester's free-tier e2-micro
+  is in `us-central1-a`, because that VM is free only in three US regions (step 9).
 - **Application: Cloud Run**, from an image in the `app` Artifact Registry repository that `infra/`
   creates — it exists, at `asia-southeast1-docker.pkg.dev/saijo-power-meter/app`. Stateless;
   configuration arrives as environment variables and secrets wired by Pulumi.
@@ -365,8 +366,9 @@ database exists, and the ingester's `roles/bigquery.jobUser` is gone. **Steps 9�
 2026-09-23**: the ingester in *observe* mode against the customer's simulated feed, writing
 nothing (9), then a viewer toggle between Demo and that Incoming feed (10), then go-live (11).
 **Step 9's code is in** — `WAREHOUSE=none`, `/recent`, the observed publish interval — and verified
-against the replay; `deployIngester` is `"true"`, so it reaches Cloud Run on that change's merge,
-and its four checks against HiveMQ are in `docs/runbooks/cloud-shell.md`. The
+against the replay; `deployIngester` is `"true"`, so it deploys on that change's merge — to a
+free-tier **Compute Engine e2-micro**, not Cloud Run (`ingesterHost`, below) — and its checks
+against HiveMQ are in `docs/runbooks/cloud-shell.md`. The
 passcode gate, the rollback rehearsal and the alerts are in the plan's Backlog, and the gate is due
 before go-live. The rules below about exemptions and the one `DATA_MODE` still hold until the step
 that changes each of them lands.
@@ -572,6 +574,15 @@ the service runs whatever `saijo-power-meter:ingesterMode` says — `"observe"` 
 first versions from `reference doc/mqtt` (already committed, so state exposes nothing new;
 `deletionPolicy: ABANDON`, so dropping them at rotation destroys nothing). The program refuses
 `dataMode: "live"` unless `ingesterMode` is `"record"`.
+
+**The ingester runs on a VM because always-on Cloud Run is not free.** `saijo-power-meter:ingesterHost`
+is `"vm"` by default: one e2-micro, Container-Optimized OS, a 10 GB *standard* disk (the default
+disk type is not free), in `us-central1-a`, private behind an IAP-only SSH rule, replaced whole on
+every code merge because the commit-pinned image is in its startup script — `deleteBeforeReplace`,
+so never two. The Cloud Run service is still in the program as `"cloudrun"`, ~$45–70 a month.
+**The web app cannot reach the VM**: nothing like `run.invoker` fronts it, so step 10's Incoming
+source needs a route of its own, and the program refuses live mode on a VM. `/logs` does not see
+it either; its output is under `gce_instance`. `docs/architecture/ingester.md` has the rest.
 
 **There are two ways past that gate, and both write nowhere near BigQuery.** `WAREHOUSE=memory`
 or `WAREHOUSE=file` with an `mqtt://127.0.0.1` URL is the replay harness — both halves checked,

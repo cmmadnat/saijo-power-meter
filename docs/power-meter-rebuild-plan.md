@@ -773,7 +773,9 @@ evicted by it.
 ingester no writer at all, `/recent` serves the rolling hour, `/latest` carries `recording` and the
 measured `publishIntervalMs`, and `freshnessForInterval()` derives thresholds from it by the
 default's own rule. `deployIngester` is `"true"` in the same change, so its merge deploys the
-observer; the four checks above are in `docs/runbooks/cloud-shell.md` with one correction —
+observer — on a free-tier Compute Engine e2-micro in `us-central1-a` rather than Cloud Run, whose
+always-on vCPU would bill ~$45–70 a month. That leaves step 10 one more job: the web app has no
+route to a VM, so the Incoming source needs one. The four checks above are in `docs/runbooks/cloud-shell.md` with one correction —
 the Storage Write API creates no jobs, so "no job in BigQuery's history" proves nothing, and the
 runbook reads `MAX(ingested_at)` and the rollup's row count instead.
 

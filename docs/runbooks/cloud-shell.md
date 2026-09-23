@@ -23,46 +23,73 @@ node --version          # must be >= 22.6 for --experimental-strip-types; nvm in
 
 ## Outstanding: step 9's checks, once the observe ingester is applied
 
-Step 9 deploys the ingester in **observe mode** — the customer's broker, `WAREHOUSE=none`, client
-id `power-meter-observer` — and nothing about it can be checked from a Claude session, which holds
-no credentials and cannot reach the broker. It goes live on the merge that sets
-`saijo-power-meter:deployIngester: "true"`; the apply creates the three broker secrets' first
-versions from `reference doc/mqtt` and then the service. These are the plan's four checks.
+Step 9 runs the ingester in **observe mode** — the customer's broker, `WAREHOUSE=none`, client id
+`power-meter-observer` — on **Compute Engine's free e2-micro in `us-central1-a`**, not on Cloud
+Run, which would bill ~$45–70 a month for the same always-on vCPU. Nothing about it can be
+checked from a Claude session, which holds no credentials and cannot reach the broker.
+
+**Before the merge**, the deployer needs three compute roles it did not hold. Granted on
+2026-09-23; `bootstrap.sh` carries them for a new project.
 
 ```bash
-URL=$(gcloud run services describe power-meter-ingester --region asia-southeast1 \
-  --project saijo-power-meter --format 'value(status.url)')
-auth=(-H "Authorization: Bearer $(gcloud auth print-identity-token)")
+for role in roles/compute.instanceAdmin.v1 roles/compute.networkAdmin roles/compute.securityAdmin; do
+  gcloud projects add-iam-policy-binding saijo-power-meter \
+    --member "serviceAccount:pulumi-deployer@saijo-power-meter.iam.gserviceaccount.com" \
+    --role "$role" --condition None
+done
+```
+
+The merge creates the three broker secrets' first versions from `reference doc/mqtt`, a network,
+one IAP-only SSH rule, and the VM. The VM is private — no port but 22, and that only from IAP — so
+every check goes through the tunnel. The first `gcloud compute ssh` creates an OS Login key.
+
+```bash
+vm() { gcloud compute ssh power-meter-ingester --zone us-central1-a --project saijo-power-meter \
+         --tunnel-through-iap --command "$1"; }
+
+# 0. It booted: the container is up, and its log says observe mode.
+vm 'docker ps --format "{{.Names}} {{.Status}} {{.Image}}"; docker logs --tail 20 ingester'
 
 # 1. Every station's commissioned slots, and nothing else: expect 5 5 8 7 7 6 7 6 4, recording false,
 #    and the interval the feed actually publishes at (the test publisher: ~60000).
-curl -s "${auth[@]}" "$URL/latest" | jq -r \
+vm 'curl -s localhost:8080/latest' | jq -r \
   '"recording=\(.recording) interval=\(.publishIntervalMs)",
    ([.readings[].meterId[1:3]] | group_by(.) | map(length) | join(" "))'
-curl -s "${auth[@]}" "$URL/stats"  | jq '{recording, messages, readings, flushes, latestFlushes, rowsWritten}'
+vm 'curl -s localhost:8080/stats' | jq '{recording, messages, readings, flushes, latestFlushes, rowsWritten}'
 
-# 2. Writes nothing. Note the three values, leave it running an hour, read them again: all unchanged.
+# 2. Writes nothing. Note the values, leave it running an hour, read them again: all unchanged.
 bq query --nouse_legacy_sql --project_id saijo-power-meter \
   'SELECT (SELECT MAX(ingested_at) FROM power_meter.readings) AS raw,
           (SELECT COUNT(*) FROM power_meter.readings_1m) AS rollup_rows'
 gcloud firestore documents describe ingester/latest --project saijo-power-meter \
   --format 'value(updateTime)' 2>&1 | tail -1     # NOT_FOUND is also a pass
 
-# 3. A restart begins empty and fills within one publish. Roll a revision, then watch it fill.
-gcloud run services update power-meter-ingester --region asia-southeast1 \
-  --project saijo-power-meter --update-labels restarted="$(date +%s)"
-for i in $(seq 1 15); do curl -s "${auth[@]}" "$URL/latest" | jq '.readings | length'; sleep 5; done
+# 3. A restart begins empty and fills within one publish.
+vm 'sudo docker restart ingester'
+for i in $(seq 1 15); do vm 'curl -s localhost:8080/latest' | jq '.readings | length'; sleep 5; done
 
 # 4. A connection on the go-live id is not evicted by the observer, and does not evict it.
 #    Read-only, clean session, writes nothing. Expect nine messages and no "DISCONNECT, reason code 142".
 npm run capture -w @power-meter/ingester -- --messages 9 --client-id power-meter-ingester
+vm 'docker logs --tail 5 ingester'                 # and no "shutting down" here either
 ```
 
 `bq ls -j` is *not* the check for 2: the Storage Write API creates no jobs, so an ingester that was
 writing would leave job history empty too. `ingested_at` and the rollup's row count move when
-anything appends. For 4, the observer's own log (`/logs`) must not say *shutting down* either.
-`--client-id power-meter-ingester` is safe only **before go-live** — once the writing ingester
-runs on that id, the same command evicts it.
+anything appends. `--client-id power-meter-ingester` is safe only **before go-live** — once the
+writing ingester runs on that id, the same command evicts it.
+
+`/logs` reads the Cloud Run service's logs and does not see the VM. Its container output is in
+Cloud Logging under `resource.type="gce_instance"`, or `vm 'docker logs ingester'`.
+
+**If check 0 shows no container**, the startup script failed; its output is in the serial console:
+`gcloud compute instances get-serial-port-output power-meter-ingester --zone us-central1-a
+--project saijo-power-meter | grep startup-script`.
+
+**What it costs**, per the free tier: the e2-micro, its 10 GB standard disk and the first 1 GB a
+month of egress from North America are free. The in-use external IPv4 address may be billed at
+about $3.65 a month — check the first invoice. The free e2-micro is one per billing account, so
+another e2-micro anywhere on that account uses it up.
 
 ---
 

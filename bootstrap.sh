@@ -124,6 +124,9 @@ ROLES=(
   roles/cloudbuild.builds.editor         # declare the pipeline's own triggers
   roles/monitoring.editor                # the alert that emails on a failed build
   roles/logging.configWriter             # ...and its Logging notification rule
+  roles/compute.instanceAdmin.v1         # the ingester's free-tier VM (step 9)
+  roles/compute.networkAdmin             # ...its network and subnet
+  roles/compute.securityAdmin            # ...and its one firewall rule
 )
 log "Granting project roles"
 for role in "${ROLES[@]}"; do

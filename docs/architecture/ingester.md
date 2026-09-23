@@ -290,9 +290,29 @@ printf '%s' "$VALUE" | gcloud secrets versions add mqtt-broker-password \
 then delete the `SecretVersion` resources from the program — ABANDON leaves the old versions in
 place to be disabled, rather than destroying one the service might still be reading.
 
+**It runs on a VM, not on Cloud Run** — `saijo-power-meter:ingesterHost`, `"vm"` by default.
+Cloud Run holding one always-on vCPU bills ~$45–70 a month; Compute Engine's free tier covers one
+e2-micro, which an ingester decoding nine messages a minute does not strain. What that changes:
+
+| | |
+| --- | --- |
+| Region | `us-central1-a`: the free e2-micro exists only in three US regions. Nothing else moved. At go-live, rows cross to the dataset in `asia-southeast1` — a few MB a day. |
+| One instance | No instance group, and `deleteBeforeReplace`: the old VM is deleted before the new one boots. The client id and exit-on-takeover still hold. |
+| Deploys | The commit-pinned image is in the startup script, which cannot change in place, so a code merge *replaces* the VM — a minute or two without an observer. |
+| Secrets | Fetched at boot by the ingester's own image, as its own account, into tmpfs, and passed as `--env-file`. |
+| Access | Private. One firewall rule: SSH from IAP's range. `/latest` is read through `gcloud compute ssh --tunnel-through-iap`. The external IP is outbound only; Cloud NAT would cost more than the rest together. |
+| Health | `docker --restart always`. There is no readiness gate as Cloud Run had; a boot that fails shows in the serial console. |
+| Logs | Cloud Logging under `gce_instance`, not the Cloud Run resource `/logs` reads. |
+| The web app | **Has no route to it.** Cloud Run's `run.invoker` has no VM equivalent, so step 10 must give the Incoming source one; the program refuses `dataMode: "live"` on a VM until then. |
+
+`"cloudrun"` keeps the service above, unchanged, for whoever decides the bill is worth the managed
+probes.
+
 The deployer's role list was checked for this change, per the rule step 8c's red `main` taught:
 `roles/secretmanager.admin` covers adding a version, `roles/run.admin` the service and its invoker
-binding, and `roles/iam.serviceAccountUser` acting as the ingester's account. Nothing new is needed.
+binding, and `roles/iam.serviceAccountUser` acting as the ingester's account. The VM needed three it did
+not hold — `compute.instanceAdmin.v1`, `compute.networkAdmin`, `compute.securityAdmin` — granted by
+hand before the merge and added to `bootstrap.sh`.
 
 ## What has not been run
 

@@ -39,6 +39,10 @@ const services = [
     // BigQuery because 55 rows rewritten every 30 s is 2 880 table
     // modifications a day against a cap of 1 500.
     "firestore.googleapis.com",
+    // The ingester's free-tier VM, since step 9, and the IAP tunnel that is
+    // the only way into it.
+    "compute.googleapis.com",
+    "iap.googleapis.com",
     // On by default in every project, declared anyway: the logs workflows are
     // useless without it, and a project where someone turned it off should fail
     // here rather than in a job that reads zero entries and looks healthy.
@@ -475,7 +479,199 @@ function deployTheIngester(): gcp.cloudrunv2.Service {
     return ingester;
 }
 
-const ingesterService = deployIngester ? deployTheIngester() : undefined;
+// --- Where the ingester runs: a free-tier VM, or Cloud Run -------------------
+//
+// `ingesterHost` is "vm" by default, since step 9. The Cloud Run service above
+// holds one always-on vCPU, ~$45–70 a month; Compute Engine's free tier covers
+// one e2-micro a month, 30 GB of standard disk and 1 GB of egress from North
+// America. The ingester decodes nine small messages a minute, which an
+// e2-micro's shared quarter-vCPU does without noticing.
+//
+// **The free e2-micro exists only in us-west1, us-central1 and us-east1**, so
+// this is the one resource outside asia-southeast1. That costs nothing in
+// observe mode, which writes nothing. At go-live it means rows cross from
+// us-central1 to the dataset in asia-southeast1 — a few MB a day — and the web
+// app has no route to the VM yet: Cloud Run's run.invoker has no VM
+// equivalent, so reading it from the web app is step 10's problem, and the
+// program refuses live mode on a VM until then.
+//
+// What the VM keeps from the Cloud Run design, and how:
+// - **Exactly one.** One instance, no group, and `deleteBeforeReplace`, so the
+//   old VM is gone before the new one boots: never two subscriptions, even
+//   briefly. The client id and the exit-on-takeover still hold regardless.
+// - **Commit-pinned image.** The image reference is in the startup script,
+//   which Compute Engine cannot change in place, so a new image *replaces* the
+//   VM — a minute or two with no observer per code merge, and nothing lost that
+//   observe mode would have kept.
+// - **Secrets from Secret Manager**, fetched at boot as the ingester's own
+//   account into tmpfs (/run) and handed to the container as its environment.
+// - **Private.** The only ingress rule is SSH from IAP's range, so /latest is
+//   read over `gcloud compute ssh --tunnel-through-iap`. The external IP is
+//   outbound only — to HiveMQ and the registry — because Cloud NAT, the
+//   alternative, costs more than everything else here put together.
+//
+// The deployer needs three compute roles for this that it did not hold before
+// step 9 — instanceAdmin.v1, networkAdmin, securityAdmin. They are in
+// bootstrap.sh, and were granted by hand before this merged, because a preview
+// passes over a missing role and the apply would have failed 403.
+
+const ingesterHost = new pulumi.Config().get("ingesterHost") ?? "vm";
+if (ingesterHost !== "vm" && ingesterHost !== "cloudrun") {
+    throw new Error(
+        `saijo-power-meter:ingesterHost must be "vm" or "cloudrun", not ${ingesterHost}.`,
+    );
+}
+const ingesterZone = "us-central1-a";
+
+function deployTheIngesterVm(): gcp.compute.Instance {
+    if (!ingesterImage) {
+        throw new Error(
+            "INGESTER_IMAGE is not set but deployIngester is true. The pipeline " +
+                "builds and pushes the ingester image, then passes its commit-pinned " +
+                "reference here; see ci/pulumi.sh.",
+        );
+    }
+
+    const network = new gcp.compute.Network(
+        "ingester",
+        { name: "ingester", autoCreateSubnetworks: false },
+        { dependsOn: services },
+    );
+    const subnet = new gcp.compute.Subnetwork("ingester-us-central1", {
+        name: "ingester-us-central1",
+        network: network.id,
+        region: "us-central1",
+        ipCidrRange: "10.10.0.0/24",
+    });
+    // SSH from Identity-Aware Proxy's forwarding range, and nothing else. There
+    // is no rule for 8080: the HTTP surface is reachable only from the VM.
+    new gcp.compute.Firewall("ingester-iap-ssh", {
+        name: "ingester-iap-ssh",
+        network: network.id,
+        direction: "INGRESS",
+        sourceRanges: ["35.235.240.0/20"],
+        targetTags: ["ingester"],
+        allows: [{ protocol: "tcp", ports: ["22"] }],
+    });
+
+    // What Cloud Run granted implicitly, a VM has to be given: pulling the
+    // image, and writing the container's output to Cloud Logging.
+    const pull = new gcp.artifactregistry.RepositoryIamMember("ingester-image-pull", {
+        repository: images.name,
+        location: images.location,
+        role: "roles/artifactregistry.reader",
+        member: pulumi.interpolate`serviceAccount:${ingesterIdentity.email}`,
+    });
+    const logs = new gcp.projects.IAMMember("ingester-log-writer", {
+        project: warehouse.project,
+        role: "roles/logging.logWriter",
+        member: pulumi.interpolate`serviceAccount:${ingesterIdentity.email}`,
+    });
+
+    const registryHost = ingesterImage.split("/")[0];
+    const secretEnv = brokerSecrets
+        .map(({ secretId, env }) => `["${secretId}", "${env}"]`)
+        .join(", ");
+    // Runs on every boot. Container-Optimized OS has docker and curl and a
+    // read-only root; /var is writable and /run is tmpfs, which is where the
+    // credentials go so they never reach the disk as a file of their own.
+    const startupScript = pulumi.interpolate`#!/bin/bash
+set -euo pipefail
+IMAGE='${ingesterImage}'
+PROJECT='${warehouse.project}'
+export DOCKER_CONFIG=/var/lib/ingester/docker
+mkdir -p "$DOCKER_CONFIG" /run/ingester
+chmod 755 /run/ingester
+
+curl -sf -H 'Metadata-Flavor: Google' \\
+  'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' \\
+  | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p' \\
+  | docker login -u oauth2accesstoken --password-stdin 'https://${registryHost}'
+docker pull "$IMAGE"
+
+# The broker's address and credentials, read as the ingester's own account by
+# the ingester's own image: Node has fetch, and COS has no gcloud and no jq.
+cat > /run/ingester/secrets.mjs <<'JS'
+const md = "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token";
+const { access_token } = await (await fetch(md, { headers: { "Metadata-Flavor": "Google" } })).json();
+for (const [id, env] of [${secretEnv}]) {
+  const url = "https://secretmanager.googleapis.com/v1/projects/" + process.argv[2] +
+    "/secrets/" + id + "/versions/latest:access";
+  const response = await fetch(url, { headers: { authorization: "Bearer " + access_token } });
+  if (!response.ok) throw new Error(id + ": HTTP " + response.status);
+  const body = await response.json();
+  console.log(env + "=" + Buffer.from(body.payload.data, "base64").toString("utf8"));
+}
+JS
+chmod 644 /run/ingester/secrets.mjs
+(umask 077 && docker run --rm --network host -v /run/ingester:/w:ro --entrypoint node "$IMAGE" \\
+  /w/secrets.mjs "$PROJECT" > /run/ingester/env)
+
+docker rm -f ingester >/dev/null 2>&1 || true
+docker run -d --name ingester --restart always --network host \\
+  --log-opt max-size=10m --log-opt max-file=3 \\
+  --env-file /run/ingester/env \\
+  -e PORT=8080 \\
+  -e WAREHOUSE='${ingesterMode === "record" ? "bigquery" : "none"}' \\
+  -e MQTT_CLIENT_ID='${ingesterClientId}' \\
+  -e GOOGLE_PROJECT="$PROJECT" \\
+  -e WAREHOUSE_DATASET='${warehouse.datasetId}' \\
+  -e WAREHOUSE_LOCATION='${region}' \\
+  -e FIRESTORE_DATABASE='${restartState.name}' \\
+  "$IMAGE"
+`;
+
+    return new gcp.compute.Instance(
+        "ingester",
+        {
+            name: "power-meter-ingester",
+            zone: ingesterZone,
+            // The free-tier shape, exactly: e2-micro, *standard* persistent
+            // disk (the default, pd-balanced, is not free), in a free region.
+            machineType: "e2-micro",
+            bootDisk: {
+                initializeParams: {
+                    image: "cos-cloud/cos-stable",
+                    size: 10,
+                    type: "pd-standard",
+                },
+            },
+            networkInterfaces: [
+                {
+                    subnetwork: subnet.id,
+                    // Ephemeral external IP, outbound only; see the note above.
+                    accessConfigs: [{}],
+                },
+            ],
+            serviceAccount: {
+                email: ingesterIdentity.email,
+                scopes: ["cloud-platform"],
+            },
+            tags: ["ingester"],
+            metadata: {
+                // COS ships container stdout to Cloud Logging with this set.
+                "google-logging-enabled": "true",
+                "enable-oslogin": "TRUE",
+            },
+            metadataStartupScript: startupScript,
+            allowStoppingForUpdate: true,
+        },
+        {
+            deleteBeforeReplace: true,
+            dependsOn: [
+                pull,
+                logs,
+                ...brokerSecretAccess,
+                ...brokerSecretVersions,
+                ...services,
+            ],
+        },
+    );
+}
+
+const ingesterService =
+    deployIngester && ingesterHost === "cloudrun" ? deployTheIngester() : undefined;
+const ingesterVm = deployIngester && ingesterHost === "vm" ? deployTheIngesterVm() : undefined;
 
 // --- The web service ---------------------------------------------------------
 //
@@ -497,6 +693,12 @@ if (dataMode === "live" && ingesterService === undefined) {
     throw new Error(
         "saijo-power-meter:dataMode is \"live\" but deployIngester is false. Live mode " +
             "reads the real-time table from the ingester; flip both in the same change.",
+    );
+}
+if (dataMode === "live" && ingesterHost === "vm") {
+    throw new Error(
+        "saijo-power-meter:dataMode is \"live\" but the ingester runs on a VM, which the web " +
+            "app has no route to yet. Give it one (step 10) or set ingesterHost to \"cloudrun\".",
     );
 }
 if (dataMode === "live" && ingesterMode !== "record") {
@@ -566,6 +768,9 @@ export const ingesterServiceAccount = ingesterIdentity.email;
 export const ingesterDeployed = deployIngester;
 export const ingesterRunsAs = deployIngester ? ingesterMode : undefined;
 export const ingesterUrl = ingesterService?.uri;
+export const ingesterHostedOn = deployIngester ? ingesterHost : undefined;
+export const ingesterInstance = ingesterVm?.name;
+export const ingesterInstanceZone = ingesterVm ? ingesterZone : undefined;
 
 // --- Reading the application's logs from CI ----------------------------------
 //
