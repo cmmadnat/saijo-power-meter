@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, test } from "node:test";
 import { DEFAULT_FRESHNESS, rollupReadings } from "@power-meter/application";
-import { MeterRegistry, type MeterId } from "@power-meter/domain";
+import { machineLabel, MeterRegistry, type MeterId } from "@power-meter/domain";
 import {
   fileDocumentStore,
   ObserverSnapshotStore,
@@ -242,6 +242,50 @@ describe("views", () => {
       assert.equal(reads, afterWrite + 1);
     } finally {
       await rm(labelled, { recursive: true, force: true });
+    }
+  });
+
+  test("no workbook or demo name reaches any Incoming screen", async () => {
+    // Everything the workbook calls a meter or a department: the names the
+    // demo shows, and the ones Incoming must never print.
+    const workbookNames = new Set<string>();
+    for (const meter of registry.all()) {
+      const label = machineLabel(meter);
+      for (const name of [meter.department, meter.machineName, label.name, label.number]) {
+        if (name !== null) workbookNames.add(name);
+      }
+    }
+    const leaked = (value: string | null | undefined) =>
+      value !== null && value !== undefined && workbookNames.has(value);
+
+    const empty = await mkdtemp(join(tmpdir(), "incoming-unlabelled-"));
+    try {
+      const source = await createIncomingSource(config(empty));
+      const incomingRegistry = await registryFor(source);
+      for (const meter of incomingRegistry.all()) {
+        assert.ok(!leaked(meter.department) && !leaked(meter.machineName), meter.meterId);
+      }
+      const table = await realtimeSnapshot(source);
+      for (const row of table.rows) {
+        assert.ok(
+          !leaked(row.department) && !leaked(row.machineName) && !leaked(row.machineNumber),
+          `${row.meterId}: ${row.department} / ${row.machineName}`,
+        );
+      }
+      assert.ok(table.byDepartment.every((band) => !leaked(band.department)));
+      const everyMeter = incomingRegistry.commissioned().slice(0, 8).map((m) => m.meterId).join(",");
+      const charts = await chartSeries(
+        incomingRegistry,
+        parseSelection(everyMeter, incomingRegistry),
+        "1h",
+        source,
+      );
+      assert.ok(charts.view.series.length > 0);
+      for (const series of charts.view.series) {
+        assert.ok(!leaked(series.machineName) && !leaked(series.machineNumber), series.meterId);
+      }
+    } finally {
+      await rm(empty, { recursive: true, force: true });
     }
   });
 });

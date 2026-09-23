@@ -59,9 +59,6 @@ export default async function HistoryPage(props: PageProps<"/history">) {
             history would be indistinguishable from a measurement later. History begins at
             go-live, when the scaling is confirmed and the ingester starts recording.
           </p>
-          <p className="text-sm text-muted-foreground">
-            Switch to Demo in the header to see what this screen will show.
-          </p>
         </section>
       </div>
     );

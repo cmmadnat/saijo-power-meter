@@ -35,27 +35,23 @@ export async function chooseView(form: FormData): Promise<void> {
  *
  * Only meters on the station the form was for, and only commissioned ones: the
  * form is an untrusted request, and a field naming anything else is ignored
- * rather than stored. An empty field removes that meter's label. `fill=workbook`
- * puts the workbook's machine name into every field left empty — a starting
- * point, stored as a label like any other, so it can be corrected.
+ * rather than stored. An empty field removes that meter's label.
  */
 export async function saveStationLabels(form: FormData): Promise<void> {
   const store = await labelStore();
   if (store === null) return;
 
-  const workbook = MeterRegistry.fromWorkbook();
+  const slots = MeterRegistry.fromWorkbook();
   const topic = form.get("topic");
   if (typeof topic !== "string") return;
-  const meters = workbook.forTopic(topic).filter((meter) => meter.commissioned);
+  const meters = slots.forTopic(topic).filter((meter) => meter.commissioned);
   if (meters.length === 0) return;
-  const fill = form.get("fill") === "workbook";
 
   const changes = new Map<MeterId, string | null>();
   for (const meter of meters) {
     const raw = form.get(`${LABEL_FIELD}${meter.meterId}`);
     if (typeof raw !== "string") continue;
-    const typed = raw.trim();
-    changes.set(meter.meterId, typed === "" && fill ? meter.machineName : typed);
+    changes.set(meter.meterId, raw);
   }
   await store.setLabels(changes);
 

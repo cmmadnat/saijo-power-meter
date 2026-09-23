@@ -84,9 +84,14 @@ and names each one by the label a viewer gave it on the **Meters** page (`/meter
 the table prints its number and an *add label* link. Labels are one Firestore document,
 `labels/meters`, edited a station at a time so two people on different stations do not overwrite
 each other, read at most once per 30 s per instance and forgotten on a local write. A label with
-` : CODE` on the end splits into machine number and name exactly as a workbook name does. *Fill
-empty from workbook* seeds a station's empty fields with the workbook's names, as labels that can
-then be corrected. Anyone who can open the app can edit them until the passcode gate lands.
+` : CODE` on the end splits into machine number and name exactly as a workbook name does. Anyone
+who can open the app can edit them until the passcode gate lands.
+
+**No workbook or demo name reaches an Incoming screen, and a test says so.** The Meters page offers
+no workbook hints and no fill-from-workbook, History in Incoming does not point at Demo, and
+`incoming.test.ts` checks every department, machine name and machine number the table, the bands
+and the charts produce in Incoming against every name in the workbook. The workbook still supplies
+which slots exist on which topic — the feed publishes exactly those — and nothing else.
 
 **Incoming is the default view, and carries no badge.** A demo deployment that offers it lists it
 first, so a first visit lands on the feed; the cookie still remembers a choice of Demo. The badge

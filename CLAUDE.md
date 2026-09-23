@@ -599,7 +599,8 @@ does in it.
 **Incoming names a meter by label, never by the workbook.** The feed identifies a meter by topic
 and slot only, so `lib/registry-source.ts` hands the Incoming screens `labelledRegistry()` —
 grouped by station, named by what a viewer typed on `/meters` (the `labels/meters` document), or
-unnamed. Incoming is also the default view where offered, and carries no badge; its header line
+unnamed. No workbook or demo name may reach an Incoming screen — `incoming.test.ts` checks every
+name the table, bands and charts print there against the workbook's. Incoming is also the default view where offered, and carries no badge; its header line
 still says the scaling is unconfirmed. Demo keeps the workbook's names and its badge.
 
 **There are two ways past that gate, and both write nowhere near BigQuery.** `WAREHOUSE=memory`

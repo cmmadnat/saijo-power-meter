@@ -5,9 +5,11 @@
  * nothing more, so this is where a meter gets a name people recognise. One
  * form per station, posting to a server action, so it works without
  * JavaScript and two people labelling different stations do not overwrite
- * each other. Beside each field: the slot's wire key, what it is reading now
- * — switch a machine on and watch which meter moves — and the machine the
- * workbook puts in that slot, which is a suggestion and not a fact.
+ * each other. Beside each field: the slot's wire key and what it is reading
+ * now — switch a machine on and watch which meter moves.
+ *
+ * Nothing from the workbook or the demo is shown or offered here: a name on
+ * this page is one a person gave the meter, and nothing else.
  */
 import { meterNumber, MeterRegistry, type Meter } from "@power-meter/domain";
 import { stationName } from "@power-meter/application";
@@ -30,7 +32,9 @@ export default async function MetersPage(props: PageProps<"/meters">) {
   const saved = typeof params.saved === "string" ? params.saved : null;
 
   const store = await labelStore();
-  const workbook = MeterRegistry.fromWorkbook();
+  // Only which slots exist on which topic — the same slots the feed publishes.
+  // Nothing else of the workbook reaches this page.
+  const slots = MeterRegistry.fromWorkbook();
 
   const header = (
     <header className="flex flex-col gap-1 border-b border-border pb-4">
@@ -63,9 +67,9 @@ export default async function MetersPage(props: PageProps<"/meters">) {
   ]);
   const rowFor = new Map(table.rows.map((row) => [row.meterId, row]));
 
-  const stations = workbook.topics().map((topic) => ({
+  const stations = slots.topics().map((topic) => ({
     topic,
-    meters: workbook.forTopic(topic).filter((meter) => meter.commissioned),
+    meters: slots.forTopic(topic).filter((meter) => meter.commissioned),
   }));
   const labelled = labels.size;
   const total = stations.reduce((sum, s) => sum + s.meters.length, 0);
@@ -113,15 +117,6 @@ export default async function MetersPage(props: PageProps<"/meters">) {
                 >
                   Save {stationName(station)}
                 </button>
-                <button
-                  type="submit"
-                  name="fill"
-                  value="workbook"
-                  className="border border-border px-3 py-1.5 font-mono text-xs uppercase tracking-wider text-muted-foreground hover:border-accent-strong hover:text-foreground"
-                  title="Save, filling every empty field with the machine the workbook lists for that slot"
-                >
-                  Fill empty from workbook
-                </button>
                 {saved === topic && (
                   <span role="status" className="font-mono text-2xs uppercase tracking-wider text-accent-strong">
                     Saved
@@ -166,11 +161,6 @@ function MeterField({
           autoComplete="off"
           className="w-full border border-input bg-background px-2 py-1.5 text-sm outline-none focus-visible:border-accent-strong focus-visible:ring-1 focus-visible:ring-accent-strong"
         />
-        {meter.machineName !== null && (
-          <span className="truncate text-2xs text-muted-foreground" title={meter.machineName}>
-            Workbook: {meter.machineName}
-          </span>
-        )}
       </div>
       <span
         className="ms-17 flex items-center gap-2 font-mono text-2xs text-muted-foreground sm:ms-0 sm:w-28 sm:shrink-0 sm:justify-end sm:pt-2"
