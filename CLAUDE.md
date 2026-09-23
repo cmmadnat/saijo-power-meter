@@ -361,7 +361,12 @@ the Storage Write API instead of load jobs — because load jobs are capped per 
 ingester's writes are a daily rate. That is measured, not argued: 1 600 appends to each table in
 eight minutes against a scratch dataset, zero failures, where a load job is refused at 1 500 — see
 `docs/architecture/warehouse.md`. **It is applied**: `0002` is in, the `(default)` Firestore
-database exists, and the ingester's `roles/bigquery.jobUser` is gone. Remaining: the passcode gate.
+database exists, and the ingester's `roles/bigquery.jobUser` is gone. **Steps 9–11 were revised on
+2026-09-23**: next is the ingester in *observe* mode against the customer's simulated feed, writing
+nothing (9), then a viewer toggle between Demo and that Incoming feed (10), then go-live (11). The
+passcode gate, the rollback rehearsal and the alerts are in the plan's Backlog, and the gate is due
+before go-live. The rules below about exemptions and the one `DATA_MODE` still hold until the step
+that changes each of them lands.
 
 **The screens read their data through three files, `apps/web/lib/realtime-source.ts`,
 `apps/web/lib/series-source.ts` and `apps/web/lib/history-source.ts`, and none of them knows the
