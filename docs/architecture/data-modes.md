@@ -70,6 +70,7 @@ and a recording ingester refuses to write it at all.
 
 | | |
 | --- | --- |
+| Feed banner | Above everything, the feed's own state, from `feedCondition()` in `lib/feed-condition.ts`, first match wins: *no observer*, *observer not reporting since …* (its snapshot is over 90 s old), *cannot reach the broker* (with the broker's last complaint), *no power-meter data received yet* (connected, nothing published), *feed silent since …*, *receiving*. Beside it, the last 20 problems in received payloads — malformed JSON, missing fields, out-of-range values — with time, topic and key. Incoming shows real data, failures included; without this every failure looked like 55 offline meters. |
 | Table | The snapshot's readings. Freshness from the measured interval via `freshnessForInterval()` — three missed publishes stale, twenty offline — so a once-a-minute feed does not flicker live → stale. The footer says which interval. **Show raw** swaps every value for the wire integer under its key (`M1VL1`, `M1P`, …), recovered exactly by `rawFieldsOf()`, to compare with the broker's console. |
 | kW chart, strip load line | The snapshot's hour, through a `RollupRepository`. Only the 1-hour window is offered; a link asking for more gets the hour. |
 | kWh chart, energy today, History | *Not recorded yet.* `DataSource.records` is false, and the screens say so rather than fall back to fixtures or draw an hour under a label that claims a day. |

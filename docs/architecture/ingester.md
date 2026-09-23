@@ -201,6 +201,16 @@ It is written even before the first message, so the view can tell an observer th
 hearing nothing (fresh "observer as of", no readings) from one that is gone (a stale one). A failed
 write is logged once per outage.
 
+It also carries the feed's **health**: whether the broker connection is up and since when, the
+broker's last complaint, messages received since start, and issue counts with the last 20 issues —
+time, topic, kind, key, detail. That is what the Incoming view's banner reads.
+
+**A payload that is not JSON used to throw** inside the MQTT message handler — the decoder parses
+before it validates, and nothing caught it. It is now caught in `Ingester.accept` and counted as
+`malformed-payload`, like any decoder issue; the rest of the feed is unaffected. A replay of the
+customer's captured payloads with a garbled message and a missing field in the stream confirmed it:
+both counted, both shown, every other message decoded.
+
 The gate draws its edges: `OBSERVER_SNAPSHOT` is refused outside `WAREHOUSE=none`, and refused at
 the restart state's path. So "observe mode writes nothing" became "observe mode writes one throwaway
 document, never history" — the argument is unchanged, because nothing a guessed divisor produces

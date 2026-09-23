@@ -226,6 +226,16 @@ describe("subscribing", () => {
     assert.ok(last);
     assert.equal(last.latest.length, 5);
     assert.ok(last.rollup.length >= 5, "the rolling hour, as minute rows");
+    assert.equal(last.health?.connected, true);
+    assert.ok(last.health?.connectedSince instanceof Date);
+    assert.equal(last.health?.messages, 1);
+    assert.equal(written[0]?.health?.messages, 0, "the first write: up, and hearing nothing");
+
+    broker.handlers?.onDisconnect("connection closed");
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    const after = written.at(-1)?.health;
+    assert.equal(after?.connected, false);
+    assert.equal(after?.lastBrokerProblem?.message, "connection closed");
 
     await started.stop("test over");
     const count = written.length;

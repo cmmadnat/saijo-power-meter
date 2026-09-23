@@ -54,6 +54,11 @@ export async function startService(options: ServiceOptions): Promise<Service> {
   });
 
   let connected = false;
+  let connectedSince: Date | null = null;
+  let lastBrokerProblem: { at: Date; message: string } | null = null;
+  const problem = (message: string) => {
+    lastBrokerProblem = { at: new Date(), message };
+  };
   let rehydrated = false;
   let stopping: Promise<void> | undefined;
   let announceStopped: (reason: string) => void = () => {};
@@ -87,7 +92,9 @@ export async function startService(options: ServiceOptions): Promise<Service> {
   let snapshotFailing = false;
   const publishSnapshot = async (): Promise<void> => {
     try {
-      await options.snapshotStore?.write(ingester.observerSnapshot());
+      await options.snapshotStore?.write(
+        ingester.observerSnapshot({ connected, connectedSince, lastBrokerProblem }),
+      );
       if (snapshotFailing) log("observer snapshot written again");
       snapshotFailing = false;
     } catch (error) {
@@ -121,6 +128,7 @@ export async function startService(options: ServiceOptions): Promise<Service> {
   broker.connect({
     onConnect: ({ sessionPresent }) => {
       connected = true;
+      connectedSince = new Date();
       log(
         `connected to the broker as ${config.clientId} ` +
           `(session ${sessionPresent ? "resumed" : "new"}), ` +
@@ -129,8 +137,10 @@ export async function startService(options: ServiceOptions): Promise<Service> {
     },
     onMessage: (message) => ingester.accept(message),
     onDisconnect: (reason) => {
+      problem(reason);
       if (!connected) return;
       connected = false;
+      connectedSince = null;
       log(`disconnected: ${reason}. Reconnecting; the buffer is kept.`);
     },
     onTakeover: (reason) => {
@@ -141,7 +151,10 @@ export async function startService(options: ServiceOptions): Promise<Service> {
       connected = false;
       void stop(`${reason}. Exiting so only one instance ingests.`);
     },
-    onError: (error) => log(`broker error: ${error.message}`),
+    onError: (error) => {
+      problem(error.message);
+      log(`broker error: ${error.message}`);
+    },
   });
 
   ingester.start();

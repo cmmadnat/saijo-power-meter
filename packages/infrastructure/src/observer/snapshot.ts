@@ -34,6 +34,39 @@ import type { DocumentStore } from "../firestore/latest-store.ts";
 /** Never `ingester/latest`: that is the writing ingester's restart state. */
 export const DEFAULT_OBSERVER_DOCUMENT = "observer/latest";
 
+/** One thing that went wrong with one message, as the observer saw it. */
+export interface FeedIssue {
+  readonly at: Date;
+  readonly topic: string;
+  /** A decoder issue kind, or `malformed-payload` for one that is not JSON at all. */
+  readonly kind: string;
+  readonly meterId?: string;
+  readonly key?: string;
+  readonly detail: string;
+}
+
+/**
+ * How the feed itself is doing, so the Incoming view can show a failure as a
+ * failure — a broker it cannot reach, a feed gone quiet, payloads it cannot
+ * read — rather than as 55 meters that happen to be offline.
+ */
+export interface FeedHealth {
+  /** When this observer process started. */
+  readonly startedAt: Date;
+  readonly connected: boolean;
+  /** When the current connection was made; null while disconnected. */
+  readonly connectedSince: Date | null;
+  /** The last thing the broker connection reported going wrong, if anything. */
+  readonly lastBrokerProblem: { readonly at: Date; readonly message: string } | null;
+  /** Messages received since `startedAt`, on any of the nine topics. */
+  readonly messages: number;
+  readonly lastMessageAt: Date | null;
+  /** Issues by kind since `startedAt`. */
+  readonly issueCounts: Readonly<Record<string, number>>;
+  /** The most recent issues, newest last. A few, not a log. */
+  readonly recentIssues: readonly FeedIssue[];
+}
+
 export interface ObserverSnapshot {
   /** When the observer wrote it. The Incoming view's "as of". */
   readonly updatedAt: Date;
@@ -43,6 +76,26 @@ export interface ObserverSnapshot {
   readonly windowMs: number;
   readonly latest: readonly Reading[];
   readonly rollup: readonly RollupBucket[];
+  /** Absent from a document written before the observer reported its health. */
+  readonly health?: FeedHealth;
+}
+
+interface StoredHealth {
+  readonly started_at: string;
+  readonly connected: boolean;
+  readonly connected_since: string | null;
+  readonly last_broker_problem: { readonly at: string; readonly message: string } | null;
+  readonly messages: number;
+  readonly last_message_at: string | null;
+  readonly issue_counts: Readonly<Record<string, number>>;
+  readonly recent_issues: readonly {
+    readonly at: string;
+    readonly topic: string;
+    readonly kind: string;
+    readonly meterId?: string;
+    readonly key?: string;
+    readonly detail: string;
+  }[];
 }
 
 interface StoredReading {
@@ -71,6 +124,7 @@ export interface SnapshotDocument {
   readonly window_ms: number;
   readonly latest: readonly StoredReading[];
   readonly series: readonly StoredSeries[];
+  readonly health?: StoredHealth;
 }
 
 export function toSnapshotDocument(snapshot: ObserverSnapshot): SnapshotDocument {
@@ -100,6 +154,68 @@ export function toSnapshotDocument(snapshot: ObserverSnapshot): SnapshotDocument
       energyKwh: reading.energyKwh,
     })),
     series: [...byMeter.entries()].map(([meterId, columns]) => ({ meterId, ...columns })),
+    ...(snapshot.health === undefined ? {} : { health: toStoredHealth(snapshot.health) }),
+  };
+}
+
+function toStoredHealth(health: FeedHealth): StoredHealth {
+  return {
+    started_at: health.startedAt.toISOString(),
+    connected: health.connected,
+    connected_since: health.connectedSince?.toISOString() ?? null,
+    last_broker_problem:
+      health.lastBrokerProblem === null
+        ? null
+        : { at: health.lastBrokerProblem.at.toISOString(), message: health.lastBrokerProblem.message },
+    messages: health.messages,
+    last_message_at: health.lastMessageAt?.toISOString() ?? null,
+    issue_counts: { ...health.issueCounts },
+    // Firestore rejects `undefined`, so optional fields are left out, not nulled.
+    recent_issues: health.recentIssues.map((issue) => ({
+      at: issue.at.toISOString(),
+      topic: issue.topic,
+      kind: issue.kind,
+      ...(issue.meterId === undefined ? {} : { meterId: issue.meterId }),
+      ...(issue.key === undefined ? {} : { key: issue.key }),
+      detail: issue.detail,
+    })),
+  };
+}
+
+/** Health back out of a document; undefined when the observer did not write any. */
+function fromStoredHealth(raw: unknown): FeedHealth | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  const stored = raw as StoredHealth;
+  const when = (value: unknown, where: string): Date => {
+    const at = new Date(String(value));
+    if (Number.isNaN(at.getTime())) throw new TypeError(`observer snapshot: health.${where} is not a timestamp`);
+    return at;
+  };
+  const counts: Record<string, number> = {};
+  for (const [kind, count] of Object.entries(stored.issue_counts ?? {})) {
+    counts[kind] = finite(count, `health.issue_counts.${kind}`);
+  }
+  return {
+    startedAt: when(stored.started_at, "started_at"),
+    connected: stored.connected === true,
+    connectedSince: stored.connected_since ? when(stored.connected_since, "connected_since") : null,
+    lastBrokerProblem: stored.last_broker_problem
+      ? {
+          at: when(stored.last_broker_problem.at, "last_broker_problem.at"),
+          message: String(stored.last_broker_problem.message),
+        }
+      : null,
+    messages: finite(stored.messages, "health.messages"),
+    lastMessageAt: stored.last_message_at ? when(stored.last_message_at, "last_message_at") : null,
+    issueCounts: counts,
+    recentIssues: (Array.isArray(stored.recent_issues) ? stored.recent_issues : []).map((issue, index) => ({
+      at: when(issue.at, `recent_issues[${index}].at`),
+      topic: String(issue.topic),
+      kind: String(issue.kind),
+      ...(typeof issue.meterId === "string" ? { meterId: issue.meterId } : {}),
+      ...(typeof issue.key === "string" ? { key: issue.key } : {}),
+      detail: String(issue.detail),
+    })),
   };
 }
 
@@ -145,7 +261,9 @@ export function fromSnapshotDocument(
     }
   }
 
+  const health = fromStoredHealth(document["health"]);
   return {
+    ...(health === undefined ? {} : { health }),
     updatedAt,
     publishIntervalMs: typeof interval === "number" && interval > 0 ? interval : null,
     windowMs: typeof windowMs === "number" && windowMs > 0 ? windowMs : 60 * 60_000,

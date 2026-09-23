@@ -146,6 +146,7 @@ export async function createIncomingSource(
         publishIntervalMs,
         observedAt: found?.updatedAt ?? null,
         thresholds: freshnessForInterval(publishIntervalMs),
+        ...(found?.health === undefined ? {} : { health: found.health }),
       };
     },
 

@@ -5,6 +5,8 @@ import {
   type SelectableMeter,
 } from "@/components/realtime-charts";
 import { FleetStrip } from "@/components/fleet-strip";
+import { FeedBanner } from "@/components/feed-banner";
+import { feedCondition } from "@/lib/feed-condition";
 import {
   RealtimeTable,
   type RealtimeTableRow,
@@ -126,6 +128,20 @@ export default async function RealTimePage(props: PageProps<"/">) {
           {feed.observedAt !== null && ` · observer as of ${formatClock(feed.observedAt)}`}
         </p>
       </header>
+
+      {view === "incoming" && (
+        <FeedBanner
+          condition={feedCondition(feed, table.at)}
+          issues={[...(feed.health?.recentIssues ?? [])].reverse().map((issue) => ({
+            at: formatClock(issue.at),
+            topic: issue.topic,
+            kind: issue.kind,
+            where: issue.key ?? issue.meterId ?? null,
+            detail: issue.detail,
+          }))}
+          issueCounts={feed.health?.issueCounts ?? {}}
+        />
+      )}
 
       <FleetStrip
         counts={table.counts}
