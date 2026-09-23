@@ -353,11 +353,29 @@ begin with. Nothing in the ingester shares that code — its closed-minute rule 
 `apps/ingester/src/ingester.ts` and was not involved — but a tool that claims a property and does
 not have it is worse than one that claims nothing.
 
+**The merge half-applied, and what landed is worth stating exactly.** The step 8c merge ran on
+2026-09-23 and its `migrate` step passed: **`0002` is applied to `power_meter`, so `latest` is
+dropped in production.** The `pulumi` step then failed creating the Firestore database — the
+deployer did not hold `roles/datastore.owner`, and a preview plans rather than creates, so it had
+gone green. See `docs/architecture/delivery-pipeline.md`. What that leaves:
+
+| | |
+| --- | --- |
+| `0002` applied, `latest` dropped | ✅ |
+| `firestore.googleapis.com` enabled | ✅ |
+| Web service on the new image | ✅ (still `DATA_MODE=demo`) |
+| The Firestore `(default)` database | ✗ — the 403 |
+| `roles/datastore.user` for the ingester | ✗ — never reached |
+| `roles/bigquery.jobUser` **removed** | ✗ — never reached, the binding is still there |
+
+Nothing is broken by that split, because nothing reads either store yet: the ingester is not
+deployed and the web app never read `latest`. It re-applies whole once the deployer has the role.
+
 What is still unproven, and what settles it:
 
 | Unproven | The command |
 | --- | --- |
-| The pipeline applies `0002` to `power_meter`, and Pulumi creates the Firestore database | the next merge to `main` |
+| Pulumi creates the Firestore database | the apply after the deployer is granted `roles/datastore.owner` |
 | The ingester process itself writing to either store | blocked by the scaling gate, as everything else about it is |
 
 `gcloud firestore databases list` on 2026-09-23 returned nothing, so the project has no `(default)`

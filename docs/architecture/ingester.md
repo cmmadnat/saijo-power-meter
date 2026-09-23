@@ -224,6 +224,12 @@ reconciles against raw*.
 the secret access and — since step 8c — the Firestore database and `roles/datastore.user` on it.
 Those apply now and ingest nothing.
 
+**Creating that database takes a role the deployer did not have.** `datastore.databases.create`
+lives in `roles/datastore.owner`; the step 8c apply failed 403 on it while its preview had gone
+green, because a preview plans rather than creates. The role is in `bootstrap.sh` now. The
+ingester's own grant is `roles/datastore.user`, which deliberately cannot create a database — it
+reads and writes one document.
+
 The account lost a role at step 8c: it no longer holds `roles/bigquery.jobUser`. It needed that to
 start a load job; a Storage Write API append is a data-plane call covered by `dataEditor` on the
 dataset. It cannot run a query at all now, which is the right shape for a process whose whole job

@@ -116,6 +116,7 @@ ROLES=(
   roles/storage.admin                    # app buckets + Pulumi state
   roles/cloudsql.admin                   # database instances
   roles/bigquery.admin                   # the warehouse dataset, and the migrations against it
+  roles/datastore.owner                  # create the Firestore database the ingester rehydrates from
   roles/secretmanager.admin              # runtime secrets
   roles/iam.serviceAccountAdmin          # create the app's runtime identity
   roles/iam.serviceAccountUser           # actAs, to deploy Run as that identity
