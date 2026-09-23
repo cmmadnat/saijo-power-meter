@@ -42,6 +42,7 @@ scaling question, and live mode is verified end to end against a local broker re
 | `docs/architecture/ingester.md` | The ingester: why it is a singleton, what a failure costs, and what is still unproven. |
 | `docs/architecture/data-modes.md` | `DATA_MODE`: the switch, the gate, the badge, which table each screen reads, and what the strip costs. |
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
+| `docs/runbooks/cloud-shell.md` | Every command a human runs in Cloud Shell, and what is outstanding now. |
 | `docs/requirements/` | The frozen spec: the MQTT protocol, the meter registry, and the four screens. |
 | `reference doc/`, root `.xlsx` | Customer specifications — the source those requirements were read from. |
 | `reference/` | Old implementation. Look, never copy. |
