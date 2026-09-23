@@ -251,5 +251,18 @@ great deal at invocation.** "The trigger was created" is not evidence that it wo
 `pulumi preview` is weaker still — it plans rather than creates, so it passes over missing
 roles and missing secrets alike.
 
+**That cost a red `main` again on the step 8c merge**, and it is worth reading as the second
+instance of one rule rather than as a new problem. The preview printed `+ gcp:firestore/database:
+Database (create)` and went green; the apply answered `Error creating Database: googleapi: Error
+403: The caller does not have permission`. Creating a Firestore database takes
+`datastore.databases.create`, which lives in `roles/datastore.owner`, and the deployer held
+thirteen roles of which none was that one. The role is in `bootstrap.sh` now, and on an existing
+project it is one `gcloud projects add-iam-policy-binding`.
+
+So: **when a change adds a kind of resource the stack has never created before, check the
+deployer's role list in `bootstrap.sh` in the same edit.** A green preview says nothing about
+whether the apply is allowed to do it. The cost is one failed apply and a partial one — which is
+its own hazard, since the steps before the failure have already run.
+
 If the App connection ever has to go, the webhook path is recoverable from this table plus
 the git history — but budget for the unknown fifth defect.

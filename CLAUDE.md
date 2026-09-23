@@ -530,6 +530,15 @@ from its first write. The cost of the choice is that Pulumi creates rather than 
 project that already has a default database fails the apply; `gcloud firestore databases list`
 says in advance, and `pulumi import` is the remedy.
 
+**Creating it takes `roles/datastore.owner` on the deployer, and that cost a red `main`.** The
+step 8c merge previewed green and applied 403 — `datastore.databases.create` is in that role and
+the deployer held thirteen others. It is in `bootstrap.sh` now. The general rule, and this is its
+second instance after the step 7 one: **a change that adds a kind of resource the stack has never
+created before checks the deployer's role list in the same edit**, because a preview plans rather
+than creates and passes over a missing role. The apply that failed had already run `migrate`, so
+a failure there leaves a *partly* applied merge — see `docs/architecture/warehouse.md` for which
+half.
+
 **The ingester is built and is not connected to anything.** The scaling divisors for active power
 and energy are not documented anywhere in the workbook, and its sample payload is filler that does
 not reconcile — see `docs/requirements/power-meter-mqtt.md`. Wrong scaling silently corrupts every
