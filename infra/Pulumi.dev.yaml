@@ -30,20 +30,21 @@ config:
   # is created happily and delivers nothing, so the first alert is the wrong
   # time to find out.
   saijo-power-meter:alertEmail: cmmadnat@gmail.com
-  # Whether the MQTT ingester's Cloud Run service is deployed. False, and it
-  # stays false until the customer answers the scaling question.
+  # Whether the MQTT ingester's Cloud Run service is deployed. True since
+  # step 9, in observe mode: ingesterMode defaults to "observe" in index.ts,
+  # which runs WAREHOUSE=none on the client id power-meter-observer — the
+  # customer's broker read into memory and served over HTTP, nothing written to
+  # BigQuery or Firestore.
   #
-  # The service refuses to start against a real broker while the divisors for
-  # active power and energy are guesses — that refusal is the whole point of the
-  # gate in apps/ingester/src/config.ts — so a deployed revision would crash-loop
-  # and fail every apply from here on. Everything else the ingester needs is
-  # declared and applied regardless: its service account, the three broker
-  # secrets, and the warehouse and secret access it will use.
+  # Turning it on also declares the three mqtt-broker-* secrets' first versions,
+  # read from `reference doc/mqtt` at apply time — values the customer already
+  # committed. See brokerSecretValues in index.ts, and rotate before go-live.
   #
-  # Flipping this to "true" belongs in the same change that confirms the
-  # divisors in packages/infrastructure/src/mqtt/scaling.ts and adds a version
-  # to each of the three secrets.
-  saijo-power-meter:deployIngester: "false"
+  # "record" (saijo-power-meter:ingesterMode) is go-live: the same change that
+  # confirms the divisors in packages/infrastructure/src/mqtt/scaling.ts,
+  # rotates the credentials and resets the warehouse. A recording revision
+  # refuses to start while the divisors are guesses.
+  saijo-power-meter:deployIngester: "true"
   # The web app's data mode: "demo" (fixtures, badged on every screen) or
   # "live" (the ingester's hot state and the warehouse). Demo until the same
   # change that flips deployIngester above: the program refuses "live" without

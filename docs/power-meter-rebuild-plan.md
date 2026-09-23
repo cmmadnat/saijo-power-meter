@@ -772,8 +772,8 @@ evicted by it.
 *Status, 2026-09-23:* built and verified against the replay broker — `WAREHOUSE=none` hands the
 ingester no writer at all, `/recent` serves the rolling hour, `/latest` carries `recording` and the
 measured `publishIntervalMs`, and `freshnessForInterval()` derives thresholds from it by the
-default's own rule. `deployIngester` is still `"false"`; the merge that flips it deploys the
-observer, and the four checks above are in `docs/runbooks/cloud-shell.md` with one correction —
+default's own rule. `deployIngester` is `"true"` in the same change, so its merge deploys the
+observer; the four checks above are in `docs/runbooks/cloud-shell.md` with one correction —
 the Storage Write API creates no jobs, so "no job in BigQuery's history" proves nothing, and the
 runbook reads `MAX(ingested_at)` and the rollup's row count instead.
 
