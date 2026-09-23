@@ -62,8 +62,9 @@ vm 'curl -s localhost:8080/stats' | jq '{recording, messages, readings, flushes,
 bq query --nouse_legacy_sql --project_id saijo-power-meter \
   'SELECT (SELECT MAX(ingested_at) FROM power_meter.readings) AS raw,
           (SELECT COUNT(*) FROM power_meter.readings_1m) AS rollup_rows'
-gcloud firestore documents describe ingester/latest --project saijo-power-meter \
-  --format 'value(updateTime)' 2>&1 | tail -1     # NOT_FOUND is also a pass
+doc() { curl -s -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  "https://firestore.googleapis.com/v1/projects/saijo-power-meter/databases/(default)/documents/$1"; }
+doc ingester/latest | jq -r '.updateTime // .error.status'    # NOT_FOUND is also a pass
 
 # 3. A restart begins empty and fills within one publish.
 vm 'sudo docker restart ingester'
@@ -74,6 +75,8 @@ for i in $(seq 1 15); do vm 'curl -s localhost:8080/latest' | jq '.readings | le
 npm run capture -w @power-meter/ingester -- --messages 9 --client-id power-meter-ingester
 vm 'sudo docker logs --tail 5 ingester'                 # and no "shutting down" here either
 ```
+
+(gcloud has no command that reads a Firestore document, so `doc` uses the REST API as you.)
 
 `bq ls -j` is *not* the check for 2: the Storage Write API creates no jobs, so an ingester that was
 writing would leave job history empty too. `ingested_at` and the rollup's row count move when
@@ -91,6 +94,33 @@ Cloud Logging under `resource.type="gce_instance"`, or `vm 'sudo docker logs ing
 month of egress from North America are free. The in-use external IPv4 address may be billed at
 about $3.65 a month — check the first invoice. The free e2-micro is one per billing account, so
 another e2-micro anywhere on that account uses it up.
+
+---
+
+## Outstanding: step 10's checks, once it is applied
+
+The merge replaces the VM (its startup script gains `OBSERVER_SNAPSHOT=firestore`) and gives the
+web service `INCOMING=firestore` and `roles/datastore.viewer`. `vm` and `doc` are defined above.
+
+```bash
+# The observer writes its one document, every ~30 s: run twice, 30 s apart, updateTime moves.
+doc observer/latest | jq '{updateTime, interval: .fields.publish_interval_ms, meters: (.fields.latest.arrayValue.values // [] | length)}'
+
+# ...and still nothing else: ingester/latest and the warehouse unchanged, as in step 9's check 2.
+doc ingester/latest | jq -r '.updateTime // .error.status'
+```
+
+Then in a browser, on the web service's URL:
+
+1. The header shows **Demo | Incoming**. Pick Incoming: the badge reads *Incoming · unconfirmed*,
+   on Real time, History and a made-up path like `/nope`. Pick Demo: *Demo data* everywhere again.
+2. In Incoming, History says *Not recorded yet*, the kWh chart and "energy today" likewise, and the
+   only window offered is **1 hour**.
+3. While the power-meter publisher is silent: 55 rows, all offline, "observer as of" a few seconds
+   old. That is the correct display of a silent feed.
+4. Once the publisher is back: rows go live within a minute, the footer names the measured interval,
+   and **show raw** prints integers. Run `npm run capture -w @power-meter/ingester -- --messages 9`
+   in the same minute and check a few values match (`M1VL1`, `M1P`, `M1E` against the columns).
 
 ---
 

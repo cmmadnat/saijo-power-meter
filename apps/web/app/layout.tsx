@@ -4,7 +4,8 @@ import { Inter, JetBrains_Mono } from "next/font/google";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AppShell } from "@/components/app-shell";
 import { MeterRegistry } from "@power-meter/domain";
-import { provenance } from "@/lib/data-mode";
+import { availableViews, provenance, VIEW_LABELS } from "@/lib/data-mode";
+import { currentView } from "@/lib/view";
 import "./globals.css";
 
 // The Light Green theme names Inter (sans) and JetBrains Mono (mono) without
@@ -36,6 +37,11 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
   await connection();
 
   // Read on the server so the registry never reaches the client bundle.
+  // The viewer's view, from the toggle's cookie — so the badge is right on
+  // every route, the not-found page included.
+  const view = await currentView();
+  const views = availableViews().map((id) => ({ id, label: VIEW_LABELS[id] }));
+
   const registry = MeterRegistry.fromWorkbook();
   const commissioned = registry.commissioned();
   const standby = commissioned[0]?.standbyPowerKw ?? null;
@@ -55,7 +61,7 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
     >
       <body className="min-h-full flex flex-col bg-background text-foreground">
         <ThemeProvider>
-          <AppShell fleet={fleet} badge={provenance().badge}>
+          <AppShell fleet={fleet} badge={provenance(view).badge} views={views} view={view}>
             {children}
           </AppShell>
         </ThemeProvider>

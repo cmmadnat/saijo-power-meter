@@ -10,6 +10,8 @@ stopped being fixture-only.
 | `apps/web/lib/data-source.ts` | The `DataSource` interface: the ports each screen needs, asked for by window. |
 | `apps/web/lib/demo-adapters.ts` | Demo: the fixture generator. Loaded only in demo mode. |
 | `apps/web/lib/live-adapters.ts` | Live: the ingester's `/latest`, the warehouse's rollup and raw readings. |
+| `apps/web/lib/incoming-adapters.ts` | Incoming (step 10): the observer's one Firestore document. Stores nothing. |
+| `apps/web/lib/view.ts`, `app/actions.ts` | The viewer's choice of view: the cookie, and the toggle's server action. |
 | `apps/web/lib/{realtime,series,history}-source.ts` | Parse the URL, ask for a port, call a use case. Mode-blind. |
 | `apps/web/instrumentation.ts`, `lib/boot-check.ts` | Runs the gate at boot and exits non-zero if it refuses. |
 | `apps/web/app/error.tsx` | What a screen shows when its source did not answer; retries every 10 s. |
@@ -36,6 +38,45 @@ The ports come back window-shaped (`DataSource.series(…)` returns a range *and
 because the two modes disagree about windows in ways that belong to them. Demo generates readings
 per request and samples a long window coarsely, which obliges it to widen History's gap cap. Live
 reads stored minutes, which obliges it to start a chart's window on a whole minute.
+
+## Views: Demo and Incoming, since step 10
+
+`DATA_MODE` keeps its meaning — the deployment's mode, and the default view. A deployment that
+also sets `INCOMING=firestore` offers a second view, and a toggle in the header switches between
+them, remembered in a cookie (`pm-view`, a year, httpOnly). Two rules carry over unchanged:
+
+- **The whole app at once.** Every page resolves one view per request and hands the same source to
+  every source function, so "no half-live app" still holds; it is the viewer's choice now, not the
+  deployment's. A stale cookie naming a view the deployment no longer offers is ignored.
+- **The fixtures stay behind `demo-adapters.ts`.** The toggle picks between loaded sources; it
+  opens no new path to them, and `npm run boundaries` walks `incoming-adapters.ts` with the rest of
+  the live path.
+
+**Incoming is not a weaker live mode and does not go through the gate.** Its numbers are decoded
+through the guessed divisors — which is exactly why nothing of it is stored — and it says so on
+every route, not-found included: badge *Incoming · unconfirmed*, and a provenance line naming the
+test publisher.
+
+**Where its data comes from.** The observer (`WAREHOUSE=none`) overwrites one Firestore document,
+`observer/latest`, every ~30 s: the newest reading per meter, the last hour as 1-minute rollup rows
+(the same `rollupReadings()` the warehouse's `readings_1m` is written with), and the publish interval
+it measured. The web app reads that document, at most once per 10 s per instance. **No network path
+joins the two** — the observer is a private VM in `us-central1`, and routing Cloud Run to it was the
+alternative this replaced. The document is overwritten whole and holds an hour at most, so nothing
+accumulates for go-live to undo; the observer's gate refuses to write it anywhere but its own path,
+and a recording ingester refuses to write it at all.
+
+**What each screen does in Incoming.**
+
+| | |
+| --- | --- |
+| Table | The snapshot's readings. Freshness from the measured interval via `freshnessForInterval()` — three missed publishes stale, twenty offline — so a once-a-minute feed does not flicker live → stale. The footer says which interval. **Show raw** swaps every value for the wire integer under its key (`M1VL1`, `M1P`, …), recovered exactly by `rawFieldsOf()`, to compare with the broker's console. |
+| kW chart, strip load line | The snapshot's hour, through a `RollupRepository`. Only the 1-hour window is offered; a link asking for more gets the hour. |
+| kWh chart, energy today, History | *Not recorded yet.* `DataSource.records` is false, and the screens say so rather than fall back to fixtures or draw an hour under a label that claims a day. |
+
+It costs nothing: 2 880 document writes a day and at most 8 640 reads per web instance, inside
+Firestore's free 20 000 and 50 000. The web service gained `roles/datastore.viewer`, which reads
+documents and writes none; it had no Firestore access before.
 
 ## The gate
 

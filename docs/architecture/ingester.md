@@ -144,8 +144,9 @@ Two things about the Firestore side are decisions rather than defaults:
   has a default database fails the apply with *already exists*, because Pulumi creates rather than
   adopts; `gcloud firestore databases list` says in advance, and `pulumi import` is the remedy.
 
-The web app has **no Firestore access at all**, because it never reads this document: the real-time
-screen reads the ingester's memory over HTTP, as it always did.
+The web app never reads this document: in live mode the real-time screen reads the ingester's
+memory over HTTP, as it always did. Since step 10 it does hold `roles/datastore.viewer`, for the
+observer's **separate** document — see *The observer snapshot* below.
 
 ## The startup gate
 
@@ -186,6 +187,25 @@ as `power-meter-observer` with `recording: false`, 55 meters on `/latest`, a mea
 9 011 ms against the replay's 9 s, 240 readings on `/recent`, zero flushes, and no `.ingester`
 directory created. Against HiveMQ it has not run; the checks for that are in
 `docs/runbooks/cloud-shell.md`.
+
+## The observer snapshot (step 10)
+
+Observe mode writes exactly one thing: `observer/latest` in the `(default)` Firestore database,
+overwritten every `LATEST_FLUSH_INTERVAL_MS` (30 s), when `OBSERVER_SNAPSHOT=firestore`. It holds
+the hot state, the rolling hour as 1-minute rollup rows, and the measured publish interval — about
+70 KB for the whole fleet at the spec's rate, as columns per meter rather than objects, against a
+1 MiB document limit. The web app's Incoming view reads it, which is how a private VM in another
+region reaches a Cloud Run service without a network path between them.
+
+It is written even before the first message, so the view can tell an observer that is up and
+hearing nothing (fresh "observer as of", no readings) from one that is gone (a stale one). A failed
+write is logged once per outage.
+
+The gate draws its edges: `OBSERVER_SNAPSHOT` is refused outside `WAREHOUSE=none`, and refused at
+the restart state's path. So "observe mode writes nothing" became "observe mode writes one throwaway
+document, never history" — the argument is unchanged, because nothing a guessed divisor produces
+outlives an hour, and nothing that is kept can be confused with it. `OBSERVER_SNAPSHOT=file` writes
+the same document as `<WAREHOUSE_DIR>/observer__latest.json`, for the replay.
 
 ## Capturing a real payload
 

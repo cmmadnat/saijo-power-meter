@@ -92,6 +92,7 @@ export async function createLiveSource(
   const cachedRollup = new CachedRollupRepository(rollup);
 
   return {
+    records: true,
     latest: () => hotState,
 
     series({ spanMs, now }: SeriesRequest) {

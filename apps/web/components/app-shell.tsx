@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { ThemeToggle } from "@/components/theme-toggle";
+import { chooseView } from "@/app/actions";
 
 const NAV = [
   { href: "/", label: "Real time" },
@@ -19,8 +20,16 @@ export function AppShell({
   children,
   fleet,
   badge,
+  views,
+  view,
 }: {
   children: React.ReactNode;
+  /**
+   * The views this deployment offers, and the one being shown. The toggle
+   * appears only when there is a choice; it switches the whole app at once.
+   */
+  views: readonly { readonly id: string; readonly label: string }[];
+  view: string;
   fleet: { stations: number; meters: number; standbyKw: number | null };
   /**
    * "Demo data", "Local replay", or null in live mode. Present on every route
@@ -68,6 +77,33 @@ export function AppShell({
               );
             })}
           </nav>
+
+          {views.length > 1 && (
+            // A plain form posting to a server action: it works before
+            // hydration, and the cookie it sets re-renders every route.
+            <form action={chooseView} className="flex items-center" aria-label="Data source">
+              {views.map((option) => {
+                const active = option.id === view;
+                return (
+                  <button
+                    key={option.id}
+                    type="submit"
+                    name="view"
+                    value={option.id}
+                    aria-pressed={active}
+                    className={[
+                      "-ms-px border px-3 py-1.5 font-mono text-xs uppercase tracking-wider transition-colors first:ms-0",
+                      active
+                        ? "relative border-foreground bg-foreground text-background"
+                        : "border-border text-muted-foreground hover:text-foreground",
+                    ].join(" ")}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </form>
+          )}
 
           <div className="ms-auto flex items-center gap-3">
             <span className="hidden font-mono text-xs text-muted-foreground md:inline">

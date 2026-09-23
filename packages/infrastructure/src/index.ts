@@ -22,8 +22,10 @@ export {
 } from "./mqtt/decoder.ts";
 export { numericField, parseStationPayload } from "./mqtt/payload.ts";
 export {
+  rawFieldsOf,
   SCALES,
   unconfirmedScales,
+  type RawFields,
   type ScaleConfidence,
   type ScaleFactor,
   type ScaleTable,
@@ -41,6 +43,15 @@ export {
   type FirestoreOptions,
   type LatestDocument,
 } from "./firestore/latest-store.ts";
+export {
+  DEFAULT_OBSERVER_DOCUMENT,
+  fileDocumentStore,
+  fromSnapshotDocument,
+  ObserverSnapshotStore,
+  toSnapshotDocument,
+  type ObserverSnapshot,
+  type SnapshotDocument,
+} from "./observer/snapshot.ts";
 export type {
   BigQueryClientOptions,
   QueryParams,

@@ -10,6 +10,7 @@
  * and a real broker is to send the event.
  */
 import type { LatestReadingStore, ReadingWriter } from "@power-meter/application";
+import type { ObserverSnapshot } from "@power-meter/infrastructure";
 import type { Broker } from "./broker.ts";
 import type { Config } from "./config.ts";
 import { createHttpServer } from "./http.ts";
@@ -22,6 +23,11 @@ export interface ServiceOptions {
   readonly writer: ReadingWriter | null;
   readonly latestStore?: LatestReadingStore | undefined;
   readonly log?: (message: string) => void;
+  /**
+   * Where observe mode publishes its snapshot, every `latestFlushIntervalMs`.
+   * Omitted means nowhere. See `ObserverSnapshotStore`.
+   */
+  readonly snapshotStore?: { write(snapshot: ObserverSnapshot): Promise<void> } | undefined;
   /** Bind a port. Off in tests, where the routes are exercised directly. */
   readonly serve?: boolean;
 }
@@ -74,9 +80,34 @@ export async function startService(options: ServiceOptions): Promise<Service> {
   await ingester.rehydrate();
   rehydrated = true;
 
+  // The Incoming view's source. Written even while nothing has arrived, so the
+  // view can tell an observer that is up and hearing nothing from one that is
+  // gone: the first has a fresh `updatedAt` and no readings.
+  let snapshotTimer: ReturnType<typeof setInterval> | undefined;
+  let snapshotFailing = false;
+  const publishSnapshot = async (): Promise<void> => {
+    try {
+      await options.snapshotStore?.write(ingester.observerSnapshot());
+      if (snapshotFailing) log("observer snapshot written again");
+      snapshotFailing = false;
+    } catch (error) {
+      // Logged once per outage, not every thirty seconds.
+      if (!snapshotFailing) {
+        log(`could not write the observer snapshot: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      snapshotFailing = true;
+    }
+  };
+  if (options.snapshotStore !== undefined) {
+    snapshotTimer = setInterval(() => void publishSnapshot(), config.latestFlushIntervalMs);
+    snapshotTimer.unref?.();
+    void publishSnapshot();
+  }
+
   const stop = (reason: string): Promise<void> => {
     stopping ??= (async () => {
       log(`shutting down: ${reason}`);
+      if (snapshotTimer !== undefined) clearInterval(snapshotTimer);
       await broker.close();
       // The final flush is what makes a deploy lossless: the readings received
       // since the last tick are written before the process goes.

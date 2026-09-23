@@ -84,6 +84,52 @@ export const SCALES: ScaleTable = {
   },
 };
 
+/** The payload integers behind one meter's reading, keyed without the meter's prefix. */
+export interface RawFields {
+  readonly VL1: number;
+  readonly VL2: number;
+  readonly VL3: number;
+  readonly CL1: number;
+  readonly CL2: number;
+  readonly CL3: number;
+  readonly P: number;
+  readonly PF: number;
+  readonly E: number;
+}
+
+/**
+ * The integers a reading was decoded from: the decoder's exact inverse.
+ *
+ * Exact because the decoder only divides an integer by a power of ten, so
+ * multiplying back and rounding recovers it. This is what lets a screen show
+ * the wire values beside the scaled ones — the Incoming view's "raw" toggle —
+ * without the raw payload ever being stored or shipped: a divisor that is a
+ * guess changes the scaled figure, never the integer under it.
+ */
+export function rawFieldsOf(
+  reading: {
+    readonly voltage: { readonly l1: number; readonly l2: number; readonly l3: number };
+    readonly current: { readonly l1: number; readonly l2: number; readonly l3: number };
+    readonly activePowerKw: number;
+    readonly powerFactor: number;
+    readonly energyKwh: number;
+  },
+  scales: ScaleTable = SCALES,
+): RawFields {
+  const back = (value: number, factor: ScaleFactor) => Math.round(value * factor.divisor);
+  return {
+    VL1: back(reading.voltage.l1, scales.voltage),
+    VL2: back(reading.voltage.l2, scales.voltage),
+    VL3: back(reading.voltage.l3, scales.voltage),
+    CL1: back(reading.current.l1, scales.current),
+    CL2: back(reading.current.l2, scales.current),
+    CL3: back(reading.current.l3, scales.current),
+    P: back(reading.activePowerKw, scales.activePower),
+    PF: back(reading.powerFactor, scales.powerFactor),
+    E: back(reading.energyKwh, scales.energy),
+  };
+}
+
 /**
  * The fields whose divisor is still a guess.
  *

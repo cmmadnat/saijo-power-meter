@@ -8,7 +8,8 @@
 import { formatRunningHours } from "@power-meter/application";
 import { MeterRegistry } from "@power-meter/domain";
 import { HistoryFilters } from "@/components/history-filters";
-import { provenance } from "@/lib/data-mode";
+import { dataSource, provenance } from "@/lib/data-mode";
+import { currentView } from "@/lib/view";
 import { formatClockMinutes, formatNumber } from "@/lib/format";
 import {
   historySnapshot,
@@ -39,7 +40,34 @@ export default async function HistoryPage(props: PageProps<"/history">) {
     toTime: first(params.toTime),
   });
   const department = parseDepartment(first(params.department), registry);
-  const table = await historySnapshot(range, department);
+
+  const view = await currentView();
+  const source = dataSource(view);
+  // A view that stores nothing has no history to show, and says so. It never
+  // falls back to fixtures, and never reads a window it does not have.
+  if (!(await source).records) {
+    return (
+      <div className="flex flex-col gap-6">
+        <HistoryHeader line={provenance(view).line} />
+        <section className="flex max-w-[80ch] flex-col gap-2 border border-border bg-card p-6">
+          <p className="font-mono text-2xs uppercase tracking-wider text-muted-foreground">
+            Not recorded yet
+          </p>
+          <p className="text-sm">
+            The Incoming view shows what the customer&rsquo;s feed is sending right now, and
+            stores none of it: its scaling is still unconfirmed, and a guessed number kept as
+            history would be indistinguishable from a measurement later. History begins at
+            go-live, when the scaling is confirmed and the ingester starts recording.
+          </p>
+          <p className="text-sm text-muted-foreground">
+            Switch to Demo in the header to see what this screen will show.
+          </p>
+        </section>
+      </div>
+    );
+  }
+
+  const table = await historySnapshot(range, department, source);
 
   const totalEnergy = table.rows.reduce(
     (sum, row) => sum + (row.totalEnergyKwh ?? 0),
@@ -59,17 +87,7 @@ export default async function HistoryPage(props: PageProps<"/history">) {
 
   return (
     <div className="flex flex-col gap-6">
-      <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border pb-4">
-        <div className="flex flex-col gap-1">
-          <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
-            Specification page 4 · History
-          </p>
-          <h1 className="text-2xl font-semibold tracking-wide">History</h1>
-        </div>
-        <p className="font-mono text-xs text-muted-foreground">
-          {provenance().line}
-        </p>
-      </header>
+      <HistoryHeader line={provenance(view).line} />
 
       <HistoryFilters
         departments={registry.departments()}
@@ -185,5 +203,19 @@ export default async function HistoryPage(props: PageProps<"/history">) {
         </p>
       </section>
     </div>
+  );
+}
+
+function HistoryHeader({ line }: { line: string }) {
+  return (
+    <header className="flex flex-wrap items-baseline justify-between gap-2 border-b border-border pb-4">
+      <div className="flex flex-col gap-1">
+        <p className="font-mono text-xs uppercase tracking-widest text-muted-foreground">
+          Specification page 4 · History
+        </p>
+        <h1 className="text-2xl font-semibold tracking-wide">History</h1>
+      </div>
+      <p className="font-mono text-xs text-muted-foreground">{line}</p>
+    </header>
   );
 }

@@ -140,5 +140,5 @@ function trend({ registry, dayStart, sparkMs, now }: TrendRequest) {
 }
 
 export function createDemoSource(): DataSource {
-  return { latest, series, history, trend };
+  return { records: true, latest, series, history, trend };
 }

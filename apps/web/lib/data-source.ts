@@ -16,6 +16,7 @@
  * in a source file, so both travel back with the port.
  */
 import type {
+  FreshnessThresholds,
   LatestReadingStore,
   ReadingRepository,
   RollupRepository,
@@ -49,7 +50,29 @@ export interface HistoryPort {
   readonly maxRunGapMs?: number;
 }
 
+/** What a source knows about how often its readings arrive. */
+export interface FeedStatus {
+  /** The interval the feed was measured at; null before it has been seen. */
+  readonly publishIntervalMs: number | null;
+  /** When the source last heard from its producer; null if never. */
+  readonly observedAt: Date | null;
+  readonly thresholds: FreshnessThresholds;
+}
+
 export interface DataSource {
+  /**
+   * False where nothing is stored — the Incoming view. History and every
+   * energy figure then say "not recorded yet" rather than draw from a window
+   * the source does not have, and never fall back to fixtures to fill it.
+   */
+  readonly records: boolean;
+  /** The widest chart window this source can fill. Omitted means any. */
+  readonly maxSeriesMs?: number;
+  /**
+   * The feed's own rate and the thresholds derived from it. Omitted means the
+   * specification's ~9 s and `DEFAULT_FRESHNESS`.
+   */
+  feed?(): Promise<FeedStatus>;
   /** The newest reading per meter, as of now. */
   latest(registry: MeterRegistry, now: Date): LatestReadingStore;
   /** A chart window ending about now, and where to read it. */

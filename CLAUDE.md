@@ -365,8 +365,9 @@ eight minutes against a scratch dataset, zero failures, where a load job is refu
 database exists, and the ingester's `roles/bigquery.jobUser` is gone. **Steps 9–11 were revised on
 2026-09-23**: the ingester in *observe* mode against the customer's simulated feed, writing
 nothing (9), then a viewer toggle between Demo and that Incoming feed (10), then go-live (11).
-**Step 9's code is in** — `WAREHOUSE=none`, `/recent`, the observed publish interval — and verified
-against the replay; `deployIngester` is `"true"`, so it deploys on that change's merge — to a
+**Step 10's code is in too** — the observer's snapshot, the Incoming view and its toggle — verified
+against the replay in a browser; merging it deploys both. **Step 9's code is in** — `WAREHOUSE=none`,
+`/recent`, the observed publish interval — and verified against the replay; `deployIngester` is `"true"`, so it deploys on that change's merge — to a
 free-tier **Compute Engine e2-micro**, not Cloud Run (`ingesterHost`, below) — and its checks
 against HiveMQ are in `docs/runbooks/cloud-shell.md`. The
 passcode gate, the rollback rehearsal and the alerts are in the plan's Backlog, and the gate is due
@@ -529,8 +530,8 @@ memory; the durable copy exists so a restart does not begin blind, and is replac
 than merged. Since step 8c it is **one Firestore document** holding all 55 readings, in the
 project's `(default)` database — not 55 documents (~158 000 writes a day), and not the `latest`
 BigQuery table it used to be (2 880 table modifications a day against a standard table's cap of
-1 500, which cannot be raised). Migration `0002` drops that table. The web app has no Firestore
-access at all, because it never read `latest`.
+1 500, which cannot be raised). Migration `0002` drops that table. The web app never reads it; its
+one Firestore role, `datastore.viewer` since step 10, is for the observer's separate document.
 
 **The ingester's repeating writes may never go back to load jobs, and the reason is a number.**
 A load job counts as a table modification, a **standard** table takes 1 500 of those a day — a
@@ -584,11 +585,22 @@ so never two. The Cloud Run service is still in the program as `"cloudrun"`, ~$4
 source needs a route of its own, and the program refuses live mode on a VM. `/logs` does not see
 it either; its output is under `gce_instance`. `docs/architecture/ingester.md` has the rest.
 
+**The Incoming view reads one Firestore document, not the observer.** Step 10: the observer
+overwrites `observer/latest` every 30 s — latest readings, the last hour as 1-minute rollup rows,
+the measured publish interval — and the web app reads it through `incoming-adapters.ts`, at most
+once per 10 s per instance. That is the whole integration: no network path joins Cloud Run to the
+private VM, and none should be added. A header toggle picks Demo or Incoming for **the whole app
+at once**, remembered in a `pm-view` cookie; `DATA_MODE` stays the deployment's mode and the
+default. Incoming has `records: false`, so History, the kWh chart and energy today say *not
+recorded yet* — never fixtures. `docs/architecture/data-modes.md` has the table of what each screen
+does in it.
+
 **There are two ways past that gate, and both write nowhere near BigQuery.** `WAREHOUSE=memory`
 or `WAREHOUSE=file` with an `mqtt://127.0.0.1` URL is the replay harness — both halves checked,
 because what is being protected is the warehouse and not the broker. `WAREHOUSE=none` is observe
 mode (step 9): any broker, and the ingester is handed `writer: null` — no buffer, no flush, no
-Firestore restart state, a clean MQTT session. Its client id is `power-meter-observer`, and the
+Firestore restart state, a clean MQTT session. Its one write is the Incoming snapshot, a separate
+throwaway document the gate refuses at the restart state's path or outside observe mode. Its client id is `power-meter-observer`, and the
 gate refuses the writer's id in observe mode and the observer's id in a writing one, so an
 observer can never evict the ingester that records. Do not add a fourth exemption.
 

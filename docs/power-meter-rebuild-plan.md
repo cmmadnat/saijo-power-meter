@@ -800,6 +800,21 @@ viewer's instead of the deployment's.
 (asserted, not eyeballed); both badges present on every route including not-found; the raw
 integers on screen match a `capture` run taken at the same minute.
 
+*Status, 2026-09-23:* built and verified against the replay broker, in a browser. **One change to
+the design above:** the Incoming view does not read the observer's `/latest` and `/recent` over
+HTTP. The observer runs on a private VM in `us-central1` (step 9's free tier), and a network route
+from Cloud Run to it was the expensive part; instead the observer overwrites one Firestore document,
+`observer/latest`, every 30 s — latest readings, the last hour as 1-minute rollup rows, the measured
+interval — and the web app reads that. "Writes nothing" became "writes one throwaway document,
+never history". Verified locally: the toggle switches every route in one navigation, both badges
+on every route including not-found, 1 hour the only window offered, History and energy *not
+recorded yet*, and the raw toggle printing the wire integers (228.0 V → `2280`, 48.2 kW → `482`).
+Asserted rather than eyeballed, in `apps/web/lib/incoming.test.ts`: every row equals the snapshot's
+reading, and an empty snapshot is 55 offline rows with no fixture behind them. Outstanding: the
+raw integers against a `capture` at the same minute, which needs the customer's power-meter
+publisher back on — it has been silent since at least 07:41 UTC on 2026-09-23, while their
+field-test topics publish.
+
 **Step 10 is where the project waits until the customer goes live, and it is a safe place to wait.**
 Nothing is stored, so nothing accumulates that step 11 must undo. When the real meters begin
 publishing they appear in Incoming first, raw integers on screen, and reading one meter's display at

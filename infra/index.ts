@@ -186,6 +186,15 @@ if (ingesterMode !== "observe" && ingesterMode !== "record") {
 const ingesterClientId =
     ingesterMode === "record" ? "power-meter-ingester" : "power-meter-observer";
 
+// Step 10: an observing ingester writes one throwaway document,
+// `observer/latest`, and the web app's Incoming view reads it — so the two need
+// no network path to each other, which matters now that the ingester is a
+// private VM in another region. The ingester already holds datastore.user for
+// its restart state; the web app gets datastore.viewer below. A recording
+// ingester writes none of it: the app refuses the combination.
+const incomingOffered = deployIngester && ingesterMode === "observe";
+const observerSnapshot = incomingOffered ? "firestore" : "off";
+
 // The broker's address and credentials. The *containers* are declared here,
 // and so — since step 9, and only while observing — are their first versions.
 //
@@ -416,6 +425,9 @@ function deployTheIngester(): gcp.cloudrunv2.Service {
                             // when a new revision attaches — and different per
                             // mode, so an observer never evicts the writer.
                             { name: "MQTT_CLIENT_ID", value: ingesterClientId },
+                            // The Incoming view's one document. Observe mode
+                            // only; see observerSnapshot below.
+                            { name: "OBSERVER_SNAPSHOT", value: observerSnapshot },
                             // `latest`, so rotating a credential is a new secret
                             // version and a restart rather than a deploy.
                             ...brokerSecrets.map(({ env, secretId }) => ({
@@ -614,6 +626,7 @@ docker run -d --name ingester --restart always --network host \\
   -e PORT=8080 \\
   -e WAREHOUSE='${ingesterMode === "record" ? "bigquery" : "none"}' \\
   -e MQTT_CLIENT_ID='${ingesterClientId}' \\
+  -e OBSERVER_SNAPSHOT='${observerSnapshot}' \\
   -e GOOGLE_PROJECT="$PROJECT" \\
   -e WAREHOUSE_DATASET='${warehouse.datasetId}' \\
   -e WAREHOUSE_LOCATION='${region}' \\
@@ -719,7 +732,27 @@ const webEnvs = [
     // The ingester is private; the web service's account holds run.invoker on
     // it and mints an ID token with this URL as the audience.
     ...(ingesterService ? [{ name: "INGESTER_URL", value: ingesterService.uri }] : []),
+    // The Incoming view, and the header toggle that offers it. Read from the
+    // same (default) database the observer writes; the web app can read, not
+    // write, documents there.
+    ...(incomingOffered
+        ? [
+              { name: "INCOMING", value: "firestore" },
+              { name: "FIRESTORE_DATABASE", value: restartState.name },
+          ]
+        : []),
 ];
+
+// Read-only on Firestore documents, for the Incoming view's one document. It
+// was "no Firestore access at all" until step 10; viewer is the narrowest
+// predefined role that reads a document, and it can write nothing.
+if (incomingOffered) {
+    new gcp.projects.IAMMember("web-incoming-reader", {
+        project: restartState.project,
+        role: "roles/datastore.viewer",
+        member: pulumi.interpolate`serviceAccount:${webIdentity.email}`,
+    });
+}
 
 const web = new gcp.cloudrunv2.Service(
     "web",

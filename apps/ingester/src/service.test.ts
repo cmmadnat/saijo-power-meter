@@ -17,6 +17,7 @@ import { MeterRegistry, type Reading } from "@power-meter/domain";
 import { generateFixtures, toStationPayload } from "@power-meter/infrastructure/fixtures";
 import { subscribeOptions, type Broker, type BrokerHandlers } from "./broker.ts";
 import type { Config } from "./config.ts";
+import type { ObserverSnapshot } from "@power-meter/infrastructure";
 import { startService } from "./service.ts";
 
 const REGISTRY = MeterRegistry.fromWorkbook();
@@ -85,6 +86,8 @@ const config: Config = {
   location: "asia-southeast1",
   firestoreDatabase: "(default)",
   latestDocument: "ingester/latest",
+  observerSnapshot: "off",
+  observerDocument: "observer/latest",
   port: 0,
 };
 
@@ -194,5 +197,39 @@ describe("subscribing", () => {
     await started.stopped;
     assert.equal(broker.closed, true);
     assert.equal(started.ingester.stats().flushes, 0);
+  });
+
+  it("publishes the observer snapshot at once and on the timer, even before a message", async () => {
+    const broker = new FakeBroker();
+    const written: ObserverSnapshot[] = [];
+    const started = await startService({
+      config: {
+        ...config,
+        warehouse: "none",
+        clientId: "power-meter-observer",
+        observerSnapshot: "file",
+        latestFlushIntervalMs: 20,
+      },
+      broker,
+      writer: null,
+      serve: false,
+      snapshotStore: { write: async (snapshot) => void written.push(snapshot) },
+    });
+    // The first write is immediate and empty: up, and hearing nothing.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(written.length, 1);
+    assert.equal(written[0]?.latest.length, 0);
+
+    broker.deliver("PMeterStation01", new Date());
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    const last = written.at(-1);
+    assert.ok(last);
+    assert.equal(last.latest.length, 5);
+    assert.ok(last.rollup.length >= 5, "the rolling hour, as minute rows");
+
+    await started.stop("test over");
+    const count = written.length;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(written.length, count, "no writes after stop");
   });
 });

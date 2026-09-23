@@ -40,7 +40,15 @@ export interface RealtimeTableRow {
   readonly ageMs: number | null;
   readonly status: MeterStatus;
   readonly running: boolean;
+  /**
+   * The payload integers behind the scaled values, keyed as the wire keys
+   * them (`M1VL1`, `M1P`, …). Present only in the Incoming view, where the
+   * point is to compare them with what the broker's own console shows.
+   */
+  readonly raw?: { readonly prefix: string; readonly fields: Readonly<Record<RawField, number>> } | null;
 }
+
+export type RawField = "VL1" | "VL2" | "VL3" | "CL1" | "CL2" | "CL3" | "PF" | "P" | "E";
 
 type SortKey =
   | "meterNumber"
@@ -197,7 +205,10 @@ export function RealtimeTable({
   byDepartment,
   asOf,
   counts,
+  cadence = "readings arrive every 9 s; a meter silent for more than 3 min is shown offline with its last values.",
 }: {
+  /** The footer's line about how often readings arrive and when a meter is called offline. */
+  cadence?: string;
   rows: readonly RealtimeTableRow[];
   departments: readonly string[];
   /** Per-department census and load, summed in the application layer. */
@@ -217,6 +228,11 @@ export function RealtimeTable({
   // Grouping is on by default: 55 rows in five departments read as a list of
   // machines, and a supervisor's question is usually about a department.
   const [grouped, setGrouped] = useState(true);
+  // The wire integers in place of the scaled values, one click away. Offered
+  // only where the rows carry them.
+  const hasRaw = rows.some((row) => row.raw != null);
+  const [raw, setRaw] = useState(false);
+  const showRaw = hasRaw && raw;
   const [sort, setSort] = useState<{ key: SortKey; direction: SortDirection }>({
     key: "meterNumber",
     direction: "asc",
@@ -319,6 +335,23 @@ export function RealtimeTable({
             ].join(" ")}
           >
             group by แผนก
+          </button>
+        )}
+
+        {hasRaw && (
+          <button
+            type="button"
+            onClick={() => setRaw((on) => !on)}
+            aria-pressed={raw}
+            title="Show the integers exactly as the payload carried them, before any divisor"
+            className={[
+              "border px-2.5 py-1 font-mono text-2xs uppercase tracking-wider transition-colors",
+              raw
+                ? "border-accent-strong text-foreground"
+                : "border-border text-muted-foreground hover:border-accent-strong hover:text-foreground",
+            ].join(" ")}
+          >
+            {raw ? "raw integers" : "show raw"}
           </button>
         )}
 
@@ -490,14 +523,14 @@ export function RealtimeTable({
                     <td className={numeric} />
                   </tr>
                   {group.rows.map((row) => (
-                    <Row key={row.meterId} row={row} cell={cell} numeric={numeric} />
+                    <Row key={row.meterId} row={row} cell={cell} numeric={numeric} raw={showRaw} />
                   ))}
                 </Fragment>
               ))}
 
             {groups === null &&
               visible.map((row) => (
-                <Row key={row.meterId} row={row} cell={cell} numeric={numeric} />
+                <Row key={row.meterId} row={row} cell={cell} numeric={numeric} raw={showRaw} />
               ))}
           </tbody>
         </table>
@@ -505,9 +538,9 @@ export function RealtimeTable({
 
       <p className="font-mono text-xs text-muted-foreground">
         {visible.length} of {rows.length} meters
-        {department === ALL ? "" : ` · ${department}`} · readings arrive every 9
-        s; a meter silent for more than 3 min is shown offline with its last
-        values.
+        {department === ALL ? "" : ` · ${department}`} · {cadence}
+        {showRaw &&
+          " Raw: the payload's integers under each wire key, before any divisor — compare them with the broker's console."}
       </p>
     </section>
   );
@@ -518,12 +551,26 @@ function Row({
   row,
   cell,
   numeric,
+  raw = false,
 }: {
   row: RealtimeTableRow;
   cell: string;
   numeric: string;
+  raw?: boolean;
 }) {
   const dim = row.status === "offline";
+  const wire = raw ? (row.raw ?? null) : null;
+  /** A scaled value, or its wire integer under the key it arrived as. */
+  const show = (field: RawField, scaled: number | null, decimals: number) =>
+    raw ? (
+      wire === null ? (
+        "—"
+      ) : (
+        <span title={`${wire.prefix}${field}`}>{wire.fields[field]}</span>
+      )
+    ) : (
+      formatNumber(scaled, decimals)
+    );
   return (
     <tr
       className={[
@@ -554,7 +601,7 @@ function Row({
           key={`v${phase}`}
           className={`${numeric} ${phase === 0 ? "border-s border-border" : ""}`}
         >
-          {formatNumber(row.voltage?.[phase] ?? null, 1)}
+          {show((["VL1", "VL2", "VL3"] as const)[phase]!, row.voltage?.[phase] ?? null, 1)}
         </td>
       ))}
       {[0, 1, 2].map((phase) => (
@@ -562,11 +609,11 @@ function Row({
           key={`c${phase}`}
           className={`${numeric} ${phase === 0 ? "border-s border-border" : ""}`}
         >
-          {formatNumber(row.current?.[phase] ?? null, 1)}
+          {show((["CL1", "CL2", "CL3"] as const)[phase]!, row.current?.[phase] ?? null, 1)}
         </td>
       ))}
       <td className={`${numeric} border-s border-border`}>
-        {formatNumber(row.powerFactor, 2)}
+        {show("PF", row.powerFactor, 2)}
       </td>
       <td
         className={[
@@ -574,10 +621,10 @@ function Row({
           row.running && !dim ? "text-foreground" : "",
         ].join(" ")}
       >
-        {formatNumber(row.activePowerKw, 1)}
+        {show("P", row.activePowerKw, 1)}
       </td>
       <td className={numeric}>
-        {formatNumber(row.energyKwh, 1)}
+        {show("E", row.energyKwh, 1)}
       </td>
     </tr>
   );
