@@ -77,9 +77,21 @@ export function formatSelection(selection: Selection): string {
   return slots.map((id) => id ?? "").join(",");
 }
 
-export function parseWindow(raw: string | undefined): WindowId {
-  const found = WINDOWS.find((w) => w.id === raw);
-  return found ? found.id : DEFAULT_WINDOW;
+/**
+ * The windows a source can fill. Incoming holds an hour and offers only that;
+ * a window it cannot fill would draw an hour of line and five of nothing.
+ */
+export function windowsFor(maxSeriesMs: number | undefined): readonly (typeof WINDOWS)[number][] {
+  return maxSeriesMs === undefined ? WINDOWS : WINDOWS.filter((w) => w.ms <= maxSeriesMs);
+}
+
+export function parseWindow(
+  raw: string | undefined,
+  offered: readonly (typeof WINDOWS)[number][] = WINDOWS,
+): WindowId {
+  const found = offered.find((w) => w.id === raw);
+  if (found) return found.id;
+  return offered.some((w) => w.id === DEFAULT_WINDOW) ? DEFAULT_WINDOW : (offered.at(-1)?.id ?? DEFAULT_WINDOW);
 }
 
 export interface ChartData {

@@ -12,6 +12,7 @@
  * token that reads the ingester, neither of which belongs in the client bundle.
  */
 import {
+  DEFAULT_FRESHNESS,
   fleetTrend,
   realtimeTable,
   systemClock,
@@ -20,19 +21,35 @@ import {
 } from "@power-meter/application";
 import { MeterRegistry } from "@power-meter/domain";
 import { dataSource } from "./data-mode.ts";
-import type { DataSource } from "./data-source.ts";
+import type { DataSource, FeedStatus } from "./data-source.ts";
 import { startOfDay } from "./format.ts";
 
-/** Build the table as of now. */
+/**
+ * How the source's feed behaves: its measured rate, when it was last heard
+ * from, and the freshness thresholds that follow. A source that says nothing
+ * is on the specification's schedule.
+ */
+export async function feedStatus(
+  source: DataSource | Promise<DataSource> = dataSource(),
+): Promise<FeedStatus> {
+  const resolved = await source;
+  return resolved.feed
+    ? resolved.feed()
+    : { publishIntervalMs: null, observedAt: null, thresholds: DEFAULT_FRESHNESS };
+}
+
+/** Build the table as of now, judged against the source's own feed rate. */
 export async function realtimeSnapshot(
   source: DataSource | Promise<DataSource> = dataSource(),
 ): Promise<RealtimeTable> {
   const registry = MeterRegistry.fromWorkbook();
   const now = systemClock.now();
+  const { thresholds } = await feedStatus(source);
   return realtimeTable({
     registry,
     latest: (await source).latest(registry, now),
     clock: systemClock,
+    thresholds,
   });
 }
 

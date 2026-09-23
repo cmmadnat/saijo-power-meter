@@ -1,4 +1,5 @@
-import { MeterRegistry } from "@power-meter/domain";
+import { MeterRegistry, type MeterId } from "@power-meter/domain";
+import { rawFieldsOf } from "@power-meter/infrastructure";
 import {
   RealtimeCharts,
   type SelectableMeter,
@@ -8,15 +9,16 @@ import {
   RealtimeTable,
   type RealtimeTableRow,
 } from "@/components/realtime-table";
-import { formatClock, formatClockMinutes } from "@/lib/format";
-import { provenance } from "@/lib/data-mode";
-import { fleetTrendSnapshot, realtimeSnapshot } from "@/lib/realtime-source";
+import { formatAge, formatClock, formatClockMinutes } from "@/lib/format";
+import { dataSource, provenance } from "@/lib/data-mode";
+import { currentView } from "@/lib/view";
+import { feedStatus, fleetTrendSnapshot, realtimeSnapshot } from "@/lib/realtime-source";
 import {
   chartSeries,
   MAX_SERIES,
   parseSelection,
   parseWindow,
-  WINDOWS,
+  windowsFor,
 } from "@/lib/series-source";
 
 // The table and the charts are both snapshots of now, so there is nothing to
@@ -29,15 +31,40 @@ export default async function RealTimePage(props: PageProps<"/">) {
   const first = (value: string | string[] | undefined): string | undefined =>
     Array.isArray(value) ? value[0] : value;
 
+  // One view for the whole page, and every source function handed the same
+  // source for it: the toggle switches the app, never one panel of it.
+  const view = await currentView();
+  const source = dataSource(view);
+  const { records, maxSeriesMs } = await source;
+  const windows = windowsFor(maxSeriesMs);
+
   const registry = MeterRegistry.fromWorkbook();
   const selection = parseSelection(first(params.meters), registry);
-  const windowId = parseWindow(first(params.window));
+  const windowId = parseWindow(first(params.window), windows);
 
-  const [table, charts, trend] = await Promise.all([
-    realtimeSnapshot(),
-    chartSeries(registry, selection, windowId),
-    fleetTrendSnapshot(),
+  const [table, charts, trend, feed] = await Promise.all([
+    realtimeSnapshot(source),
+    chartSeries(registry, selection, windowId, source),
+    fleetTrendSnapshot(source),
+    feedStatus(source),
   ]);
+
+  // Incoming only: the wire integers under each value, recovered exactly from
+  // the scaled reading, so the table can show what the broker's console shows.
+  const rawFor = (meterId: string, reading: (typeof table.rows)[number]["reading"]) => {
+    if (view !== "incoming" || reading === null) return null;
+    const prefix = registry.find(meterId as MeterId)?.keyPrefix;
+    return prefix === undefined ? null : { prefix, fields: rawFieldsOf(reading) };
+  };
+
+  // What the footer says about cadence: the specification's, or the one the
+  // observer measured and the thresholds derived from it.
+  const cadence =
+    feed.publishIntervalMs === null
+      ? view === "incoming"
+        ? "no publish interval measured yet — thresholds are the specification's 30 s and 3 min until one is."
+        : undefined
+      : `the observer measured one publish every ${formatAge(feed.publishIntervalMs)}; live within ${formatAge(feed.thresholds.liveWithinMs)}, offline after ${formatAge(feed.thresholds.staleWithinMs)} of silence.`;
 
   // Flattened here rather than in the components: the client is handed plain
   // values, and the domain's Reading — with its branded id and its Date — stays
@@ -60,6 +87,7 @@ export default async function RealTimePage(props: PageProps<"/">) {
     ageMs: row.ageMs,
     status: row.status,
     running: row.running,
+    raw: rawFor(row.meterId, row.reading),
   }));
 
   const meters: SelectableMeter[] = table.rows.map((row) => ({
@@ -94,7 +122,8 @@ export default async function RealTimePage(props: PageProps<"/">) {
           <h1 className="text-2xl font-semibold tracking-wide">Power Meter</h1>
         </div>
         <p className="font-mono text-xs text-muted-foreground">
-          {provenance().line}
+          {provenance(view).line}
+          {feed.observedAt !== null && ` · observer as of ${formatClock(feed.observedAt)}`}
         </p>
       </header>
 
@@ -108,6 +137,7 @@ export default async function RealTimePage(props: PageProps<"/">) {
         energyTodayKwh={trend.energyTodayKwh}
         energyMeters={trend.energyMeters}
         energySince={formatClockMinutes(trend.dayStart)}
+        energyRecorded={records}
         spark={trend.spark.map((point) => ({
           label: formatClockMinutes(point.at),
           kw: point.activePowerKw,
@@ -127,11 +157,12 @@ export default async function RealTimePage(props: PageProps<"/">) {
       <RealtimeCharts
         meters={meters}
         selection={[...selection]}
-        windows={WINDOWS.map((w) => ({ id: w.id, label: w.label }))}
+        windows={windows.map((w) => ({ id: w.id, label: w.label }))}
         windowId={windowId}
         windowLabel={
-          WINDOWS.find((w) => w.id === windowId)?.label ?? windowId
+          windows.find((w) => w.id === windowId)?.label ?? windowId
         }
+        energyRecorded={records}
         since={formatClockMinutes(charts.view.from)}
         times={charts.view.series[0]?.points.map((p) => p.at.getTime()) ?? []}
         series={chartSeriesData}
@@ -145,6 +176,7 @@ export default async function RealTimePage(props: PageProps<"/">) {
         byDepartment={table.byDepartment.map((d) => ({ ...d }))}
         asOf={formatClock(table.at)}
         counts={table.counts}
+        {...(cadence === undefined ? {} : { cadence })}
       />
     </div>
   );

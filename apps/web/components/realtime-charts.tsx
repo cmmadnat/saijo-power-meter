@@ -69,7 +69,14 @@ export function RealtimeCharts({
   bucketMs,
   maxSeries,
   since,
+  energyRecorded = true,
 }: {
+  /**
+   * False in the Incoming view. The kW chart draws the hour the observer
+   * holds; the kWh chart would need the counter's history, which nothing
+   * stores, so it says "not recorded yet" rather than draw an hour of it.
+   */
+  energyRecorded?: boolean;
   meters: readonly SelectableMeter[];
   /** Fixed-length, with holes: a meter keeps its colour slot when others go. */
   selection: readonly (string | null)[];
@@ -253,12 +260,14 @@ export function RealtimeCharts({
                   >
                     Power now (kW)
                   </th>
-                  <th
-                    scope="col"
-                    className="ps-2 py-1 text-right font-mono text-3xs font-normal uppercase tracking-wider text-muted-foreground"
-                  >
-                    Consumed ({windowLabel}, kWh)
-                  </th>
+                  {energyRecorded && (
+                    <th
+                      scope="col"
+                      className="ps-2 py-1 text-right font-mono text-3xs font-normal uppercase tracking-wider text-muted-foreground"
+                    >
+                      Consumed ({windowLabel}, kWh)
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody>
@@ -289,9 +298,11 @@ export function RealtimeCharts({
                     <td className="px-2 py-1 text-right font-mono tabular-nums">
                       {formatValue(last(s.activePowerKw), 1)}
                     </td>
-                    <td className="ps-2 py-1 text-right font-mono tabular-nums">
-                      {formatValue(last(s.energyConsumedKwh), 1)}
-                    </td>
+                    {energyRecorded && (
+                      <td className="ps-2 py-1 text-right font-mono tabular-nums">
+                        {formatValue(last(s.energyConsumedKwh), 1)}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -310,29 +321,44 @@ export function RealtimeCharts({
             focused={focused}
           />
 
-          <div className="border-t border-border pt-4">
-            <MeterChart
-              title="Energy (kWh)"
-              subtitle={`consumed since ${since}`}
-              unit="kWh"
-              decimals={1}
-              zeroBased
-              times={times}
-              series={toChartSeries("energyConsumedKwh")}
-              bucketMs={bucketMs}
-              pending={pending}
-              focused={focused}
-            />
-          </div>
+          {energyRecorded ? (
+            <>
+              <div className="border-t border-border pt-4">
+                <MeterChart
+                  title="Energy (kWh)"
+                  subtitle={`consumed since ${since}`}
+                  unit="kWh"
+                  decimals={1}
+                  zeroBased
+                  times={times}
+                  series={toChartSeries("energyConsumedKwh")}
+                  bucketMs={bucketMs}
+                  pending={pending}
+                  focused={focused}
+                />
+              </div>
 
-          <p className="text-xs text-muted-foreground">
-            The meter reports a cumulative counter, which plotted raw is a flat
-            line whose height is whatever that meter has totalled since it was
-            installed. This is its rise across the window — the same arithmetic
-            as the History screen&rsquo;s Total Energy, including the rule that a
-            counter reset counts as the new reading rather than as negative
-            consumption.
-          </p>
+              <p className="text-xs text-muted-foreground">
+                The meter reports a cumulative counter, which plotted raw is a
+                flat line whose height is whatever that meter has totalled since
+                it was installed. This is its rise across the window — the same
+                arithmetic as the History screen&rsquo;s Total Energy, including
+                the rule that a counter reset counts as the new reading rather
+                than as negative consumption.
+              </p>
+            </>
+          ) : (
+            <div className="border-t border-border pt-4">
+              <p className="font-mono text-2xs uppercase tracking-wider text-muted-foreground">
+                Energy (kWh)
+              </p>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Not recorded yet. This view stores nothing, so there is no
+                counter history to plot. The power chart above is the last hour
+                the observer holds in memory.
+              </p>
+            </div>
+          )}
         </div>
       </div>
     </section>

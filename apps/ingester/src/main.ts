@@ -11,7 +11,9 @@ import {
   FileLatestReadingStore,
   FileReadingWriter,
   FirestoreLatestStore,
+  fileDocumentStore,
   firestoreDocumentStore,
+  ObserverSnapshotStore,
   storageWriteStream,
   WarehouseReadingWriter,
 } from "@power-meter/infrastructure";
@@ -56,11 +58,13 @@ interface WritePath {
 async function warehouse(config: Config): Promise<WritePath> {
   if (config.warehouse === "none") {
     // Observe mode, step 9. No writer and no restart state: nothing reaches
-    // BigQuery or Firestore, and a restart begins empty and fills within one
-    // publish. See the gate in config.ts for why this may face a real broker.
+    // BigQuery or the restart document, and a restart begins empty and fills
+    // within one publish. See the gate in config.ts for why this may face a
+    // real broker. The one thing it may write is the Incoming view's
+    // snapshot, which is a separate, throwaway document; see below.
     log(
-      `WAREHOUSE=none — observe mode as ${config.clientId}: nothing is written, ` +
-        "nothing is read back, the hot state and the last hour live in memory only.",
+      `WAREHOUSE=none — observe mode as ${config.clientId}: no history is written, ` +
+        "nothing is read back, the hot state and the last hour live in memory.",
     );
     return { writer: null, latest: undefined, close: async () => {} };
   }
@@ -114,11 +118,32 @@ async function warehouse(config: Config): Promise<WritePath> {
 const config = readConfig();
 assertSafeToStart(config);
 
+/**
+ * Where observe mode's snapshot goes, if anywhere. The gate has already
+ * refused it outside observe mode and at the restart state's path.
+ */
+async function snapshotStore(config: Config): Promise<ObserverSnapshotStore | undefined> {
+  if (config.observerSnapshot === "off") return undefined;
+  if (config.observerSnapshot === "file") {
+    log(`observer snapshot → ${config.warehouseDir}, as ${config.observerDocument}`);
+    return new ObserverSnapshotStore(fileDocumentStore(config.warehouseDir), config.observerDocument);
+  }
+  log(`observer snapshot → firestore ${config.firestoreDatabase}/${config.observerDocument}`);
+  return new ObserverSnapshotStore(
+    await firestoreDocumentStore({
+      ...(config.projectId === undefined ? {} : { projectId: config.projectId }),
+      databaseId: config.firestoreDatabase,
+    }),
+    config.observerDocument,
+  );
+}
+
 const { writer, latest, close } = await warehouse(config);
 const service = await startService({
   config,
   writer,
   latestStore: latest,
+  snapshotStore: await snapshotStore(config),
   log,
   broker: new MqttBroker({
     url: config.brokerUrl,

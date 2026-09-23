@@ -69,7 +69,11 @@ import {
   type LatestReadingStore,
 } from "@power-meter/application";
 import { MeterRegistry, type MeterId, type Reading } from "@power-meter/domain";
-import { StationDecoder, type DecodeIssueKind } from "@power-meter/infrastructure";
+import {
+  StationDecoder,
+  type DecodeIssueKind,
+  type ObserverSnapshot,
+} from "@power-meter/infrastructure";
 import type { BrokerMessage } from "./broker.ts";
 
 export interface IngesterOptions {
@@ -275,6 +279,21 @@ export class Ingester {
     return meters.flatMap((meterId) =>
       (this.#recent.get(meterId) ?? []).filter((reading) => reading.at.getTime() >= since),
     );
+  }
+
+  /**
+   * What the Incoming view reads: the hot state, the rolling hour folded into
+   * 1-minute rollup rows by the same `rollupReadings()` the warehouse's
+   * `readings_1m` is written with, and the measured interval.
+   */
+  observerSnapshot(): ObserverSnapshot {
+    return {
+      updatedAt: this.#clock.now(),
+      publishIntervalMs: this.publishIntervalMs(),
+      windowMs: this.#recentWindowMs,
+      latest: this.snapshot(),
+      rollup: rollupReadings(this.recent()),
+    };
   }
 
   /** The median gap between consecutive messages on one topic, or null. */

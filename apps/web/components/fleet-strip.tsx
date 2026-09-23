@@ -40,6 +40,12 @@ export interface FleetStripProps {
   readonly energySince: string;
   /** The last hour of total load, a point a minute. */
   readonly spark: readonly SparklinePoint[];
+  /**
+   * False in the Incoming view: nothing is stored, so there is no "since
+   * 00:00" to sum, and the tile says so rather than print an hour's worth
+   * under a label that claims the day.
+   */
+  readonly energyRecorded?: boolean;
 }
 
 const DOT: Record<"live" | "stale" | "offline", string> = {
@@ -70,6 +76,7 @@ export function FleetStrip({
   energyMeters,
   energySince,
   spark,
+  energyRecorded = true,
 }: FleetStripProps) {
   const idle = counts.reporting - counts.running;
   const busiest = [...byDepartment].sort(
@@ -123,16 +130,25 @@ export function FleetStrip({
 
       <div className={tile}>
         <p className={label}>energy today</p>
-        <p className={figure}>
-          {formatNumber(energyTodayKwh, 0)}
-          <span className="ms-1 font-sans text-sm text-muted-foreground">
-            kWh
-          </span>
-        </p>
-        <p className={label}>
-          since {energySince} · {energyMeters} of {meterCount} meters
-          {energyTodayKwh === null ? "" : " · to the last closed minute"}
-        </p>
+        {energyRecorded ? (
+          <>
+            <p className={figure}>
+              {formatNumber(energyTodayKwh, 0)}
+              <span className="ms-1 font-sans text-sm text-muted-foreground">
+                kWh
+              </span>
+            </p>
+            <p className={label}>
+              since {energySince} · {energyMeters} of {meterCount} meters
+              {energyTodayKwh === null ? "" : " · to the last closed minute"}
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="text-sm text-muted-foreground">Not recorded yet</p>
+            <p className={label}>nothing is stored in this view</p>
+          </>
+        )}
       </div>
 
       <div className={tile}>

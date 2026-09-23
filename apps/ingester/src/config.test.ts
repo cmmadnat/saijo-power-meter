@@ -35,6 +35,8 @@ function config(overrides: Partial<Config> = {}): Config {
     location: "asia-southeast1",
     firestoreDatabase: "(default)",
     latestDocument: "ingester/latest",
+    observerSnapshot: "off",
+    observerDocument: "observer/latest",
     port: 8080,
     ...overrides,
   };
@@ -101,6 +103,38 @@ describe("the startup gate", () => {
     );
   });
 
+  it("lets observe mode publish its snapshot, and nothing else", () => {
+    assertSafeToStart(
+      config({ warehouse: "none", clientId: OBSERVE_CLIENT_ID, observerSnapshot: "firestore" }),
+    );
+    assert.throws(
+      () =>
+        assertSafeToStart(
+          config({
+            brokerUrl: "mqtt://127.0.0.1:1883",
+            warehouse: "file",
+            observerSnapshot: "file",
+          }),
+        ),
+      /only observe mode's/,
+    );
+  });
+
+  it("never writes the snapshot over the restart state", () => {
+    assert.throws(
+      () =>
+        assertSafeToStart(
+          config({
+            warehouse: "none",
+            clientId: OBSERVE_CLIENT_ID,
+            observerSnapshot: "firestore",
+            observerDocument: "ingester/latest",
+          }),
+        ),
+      /restart\nstate's path|restart/,
+    );
+  });
+
   it("does not take a hostname's word for being local", () => {
     assert.equal(isLoopbackBroker("mqtt://localhost.example.com:1883"), false);
     assert.equal(isLoopbackBroker("mqtt://127.0.0.1:1883"), true);
@@ -126,6 +160,21 @@ describe("reading the configuration", () => {
     assert.equal(parsed.warehouse, "none");
     assert.equal(parsed.clientId, "power-meter-observer");
     assert.notEqual(OBSERVE_CLIENT_ID, GO_LIVE_CLIENT_ID);
+  });
+
+  it("publishes no snapshot unless asked, and to observer/latest when it is", () => {
+    const quiet = readConfig({ MQTT_URL: "mqtts://b.example.com", WAREHOUSE: "none" });
+    assert.equal(quiet.observerSnapshot, "off");
+    const loud = readConfig({
+      MQTT_URL: "mqtts://b.example.com",
+      WAREHOUSE: "none",
+      OBSERVER_SNAPSHOT: "firestore",
+    });
+    assert.equal(loud.observerDocument, "observer/latest");
+    assert.throws(
+      () => readConfig({ MQTT_URL: "mqtt://x", OBSERVER_SNAPSHOT: "bigquery" }),
+      /OBSERVER_SNAPSHOT must be/,
+    );
   });
 
   it("fails without one rather than connecting to nothing", () => {

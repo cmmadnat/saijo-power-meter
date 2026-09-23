@@ -14,6 +14,7 @@
  */
 import {
   DEFAULT_LATEST_DOCUMENT,
+  DEFAULT_OBSERVER_DOCUMENT,
   isLoopbackUrl,
   unconfirmedScales,
 } from "@power-meter/infrastructure";
@@ -44,6 +45,19 @@ export const GO_LIVE_CLIENT_ID = "power-meter-ingester";
  * either of two very different processes.
  */
 export const OBSERVE_CLIENT_ID = "power-meter-observer";
+
+/**
+ * Where observe mode publishes what it sees, for the web app's Incoming view.
+ *
+ * - `off`       — nowhere; `/latest` and `/recent` on the process only.
+ * - `firestore` — one document, `observer/latest`, overwritten every ~30 s.
+ *                 The deployment. The web app reads it; no network path
+ *                 between the two is needed.
+ * - `file`      — the same document as a JSON file, for the local replay.
+ *
+ * Only in observe mode, and never at the restart state's path: see the gate.
+ */
+export type ObserverSnapshotMode = "off" | "firestore" | "file";
 
 export interface Config {
   /** `mqtt://`, `mqtts://`, `ws://` or `wss://`. */
@@ -86,6 +100,9 @@ export interface Config {
   readonly firestoreDatabase: string;
   /** `<collection>/<document>`. One document holds all 55 meters. */
   readonly latestDocument: string;
+  readonly observerSnapshot: ObserverSnapshotMode;
+  /** Where the snapshot goes. Never `latestDocument`. */
+  readonly observerDocument: string;
   readonly port: number;
 }
 
@@ -111,6 +128,12 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error("MQTT_URL is required (mqtt://, mqtts://, ws:// or wss://).");
   }
   const warehouse = (env["WAREHOUSE"] ?? "bigquery") as WarehouseMode;
+  const observerSnapshot = (env["OBSERVER_SNAPSHOT"] || "off") as ObserverSnapshotMode;
+  if (observerSnapshot !== "off" && observerSnapshot !== "firestore" && observerSnapshot !== "file") {
+    throw new Error(
+      `OBSERVER_SNAPSHOT must be "off", "firestore" or "file", not ${observerSnapshot}`,
+    );
+  }
   if (
     warehouse !== "bigquery" &&
     warehouse !== "none" &&
@@ -142,6 +165,8 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): Config {
     location: env["WAREHOUSE_LOCATION"] || DEFAULTS.location,
     firestoreDatabase: env["FIRESTORE_DATABASE"] || DEFAULTS.firestoreDatabase,
     latestDocument: env["LATEST_DOCUMENT"] || DEFAULT_LATEST_DOCUMENT,
+    observerSnapshot,
+    observerDocument: env["OBSERVER_DOCUMENT"] || DEFAULT_OBSERVER_DOCUMENT,
     port: positive(env["PORT"], DEFAULTS.port),
   };
 }
@@ -202,6 +227,7 @@ export function isLoopbackBroker(brokerUrl: string): boolean {
  */
 export function assertSafeToStart(config: Config): void {
   assertClientId(config);
+  assertSnapshot(config);
 
   const unconfirmed = unconfirmedScales();
   if (unconfirmed.length === 0) return;
@@ -224,6 +250,33 @@ export function assertSafeToStart(config: Config): void {
       "a broker on loopback with WAREHOUSE=memory or WAREHOUSE=file, which is the local\n" +
       "replay harness.",
   );
+}
+
+/**
+ * The snapshot belongs to observe mode, and never lands on the restart state.
+ *
+ * It is the one thing observe mode writes, and it is safe because it is a
+ * throwaway: one document, overwritten whole, an hour at most. That argument
+ * holds only while it cannot be mistaken for anything that is kept — so a
+ * recording ingester does not write it (at go-live the screens read the
+ * warehouse), and its path may never be the restart state's, which a writing
+ * ingester rehydrates from.
+ */
+function assertSnapshot(config: Config): void {
+  if (config.observerSnapshot === "off") return;
+  if (config.warehouse !== "none") {
+    throw new Error(
+      `Refusing to start: OBSERVER_SNAPSHOT=${config.observerSnapshot} with WAREHOUSE=${config.warehouse}.\n` +
+        "The snapshot is observe mode's, and only observe mode's; a recording ingester's\n" +
+        "readers use the warehouse.",
+    );
+  }
+  if (config.observerDocument === config.latestDocument) {
+    throw new Error(
+      `Refusing to start: OBSERVER_DOCUMENT is ${config.observerDocument}, which is the restart\n` +
+        "state's path. A writing ingester would rehydrate from the observer's guesses.",
+    );
+  }
 }
 
 /**

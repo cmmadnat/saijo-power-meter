@@ -47,3 +47,32 @@ test("every unconfirmed factor says so in its basis", () => {
     assert.match(SCALES[field].basis, /UNANSWERED/);
   }
 });
+
+test("the raw integers under a reading are the ones the payload carried", async () => {
+  // Through the decoder and back: every field of every meter on a station.
+  const { MeterRegistry } = await import("@power-meter/domain");
+  const { generateFixtures, toStationPayload } = await import("../fixtures/generate.ts");
+  const { StationDecoder } = await import("./decoder.ts");
+  const { rawFieldsOf } = await import("./scaling.ts");
+  const registry = MeterRegistry.fromWorkbook();
+  const at = new Date("2026-09-23T03:00:00Z");
+  const { readings } = generateFixtures({ registry, from: at, to: new Date(at.getTime() + 9_000), intervalMs: 9_000 });
+  for (const topic of registry.topics()) {
+    const meters = registry.forTopic(topic).filter((meter) => meter.commissioned);
+    const payload = toStationPayload(
+      readings.filter((reading) => meters.some((meter) => meter.meterId === reading.meterId)),
+      { registry },
+    );
+    const decoded = new StationDecoder({ registry }).decode(
+      topic,
+      new TextEncoder().encode(JSON.stringify(payload)),
+      at,
+    );
+    for (const reading of decoded.readings) {
+      const prefix = registry.find(reading.meterId)!.keyPrefix;
+      for (const [field, value] of Object.entries(rawFieldsOf(reading))) {
+        assert.equal(value, payload[`${prefix}${field}`], `${prefix}${field}`);
+      }
+    }
+  }
+});
