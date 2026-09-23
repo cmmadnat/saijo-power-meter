@@ -338,7 +338,8 @@ schema, migrations and a fixture loader. Step 7 added the ingester — `apps/ing
 `ReadingWriter` port behind it, the `migrate` step in the pipeline — built and verified against a
 local broker, gated on the customer, and deployed nowhere. Step 8 put the screens on either data
 mode — the live adapters beside the fixture ones, one switch between them — and verified live mode
-against the replay; nothing in it has read BigQuery yet. Remaining: the passcode gate.
+against the replay. Its SQL has been parsed and timed against BigQuery by `warehouse cost`, over
+step 6's fixture rows; no web process has read the warehouse yet. Remaining: the passcode gate.
 
 **The screens read their data through three files, `apps/web/lib/realtime-source.ts`,
 `apps/web/lib/series-source.ts` and `apps/web/lib/history-source.ts`, and none of them knows the

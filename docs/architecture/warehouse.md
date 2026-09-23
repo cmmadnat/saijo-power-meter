@@ -111,8 +111,10 @@ minute-resolution source would quietly round them.
 
 **`warehouse cost` is how the price of those reads is measured.** It dry-runs the exact SQL the
 adapters issue — the strip, a 24-hour chart, today's History — prints the bytes each processes and
-what that bills, and times each through the adapters and use cases the web app runs. It needs
-credentials and has not been run; it is also the first time BigQuery will parse the step-8 SQL.
+what that bills, and times each through the adapters and use cases the web app runs. First run
+2026-09-23: all three statements parsed; each billed the 10 MB floor over step 6's fixture rows;
+p95 1 281 ms for the strip, 720 ms for a 24-hour chart, 545 ms for today's History in one query.
+The figures are in `docs/architecture/data-modes.md`.
 
 ## Writing, from the ingester
 

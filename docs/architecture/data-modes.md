@@ -161,12 +161,27 @@ warm instance and costs single-digit dollars past it. The query count is asserte
 `sources.test.ts` renders the route six times against a counting client and requires two queries
 for the minute.
 
-**Measured without BigQuery, and that is the honest limit of it.** The 10 MB floor makes the bytes
-processed irrelevant for these reads, which is why the table above can be stated; what it cannot
-state is latency. `npm run warehouse -w @power-meter/infrastructure -- cost --runs 20` dry-runs the
-exact SQL the adapters issue for the strip, a 24 h chart and today's History, prints the bytes each
-processes and bills, and times each end to end through the same adapters and use cases the web app
-runs. It needs credentials, so it has not been run.
+**Measured against BigQuery, 2026-09-23.** `npm run warehouse -w @power-meter/infrastructure --
+cost --runs 20`, run from Cloud Shell against `saijo-power-meter`, dry-runs the exact SQL the
+adapters issue, then times each read 20 times through the same adapters and use cases the web app
+runs. It was also the first time BigQuery parsed the step-8 SQL — `IN UNNEST(@meterIds)` and the
+meter-major `ORDER BY` on raw — and all three statements ran.
+
+| Read (cache miss) | Processes | Bills | p50 / p95 |
+| --- | --- | --- | --- |
+| Strip — 55 meters since 00:00 | 0.23 MB | 10 MB | 949 / 1 281 ms |
+| Chart — 4 meters, 24 h | 0.23 MB | 10 MB | 308 / 720 ms |
+| History — 55 meters, raw, today | 3.46 MB, 1 query | 10 MB | 258 / 545 ms |
+
+It confirms the cost table: 20 MB a minute per warm instance, 0.82 TiB a month. Its uncached figure
+is 4.94 TiB a month per open screen, lower than the 7.4 above because it assumes the strip's two
+windows already share one read — two queries a render rather than three.
+
+**Two limits on those numbers.** The tables still hold only step 6's two hours of fixture rows. A
+full real day of `readings_1m` is ~3 MB, so the strip and the charts stay on the 10 MB floor; a
+full day of raw `readings` is tens of MB, so History on a real day bills above the floor — still one
+query. And the latencies are per cache miss: the strip's ~1.3 s p95 is paid once a minute per
+instance, not on every ten-second refresh.
 
 ## No fixture on the live path, checked like the dependency rule
 
@@ -217,10 +232,9 @@ BigQuery's latency, which `warehouse cost` is for.
 
 ## What is still unproven
 
-- **Nothing here has read BigQuery.** The warehouse adapters are tested against a fake client; the
-  new SQL (`IN UNNEST(@meterIds)`, `ORDER BY meter_id, …`) has not been through BigQuery's parser,
-  and the step-6 lesson is that the parser is the one reviewer the fake cannot stand in for. The
-  first `warehouse cost` run is also the first parse.
+- **The live screens have not rendered from BigQuery.** The SQL parses and the adapters' reads
+  are measured (above), but only through the CLI; no web process has read the warehouse, and the
+  data read was step 6's fixtures.
 - **The ID token path has not run on Cloud Run.** `metadataIdToken` is tested against a stub
   metadata server; the ingester service it would call does not exist.
 - **Live mode has not been deployed.** It cannot be until the divisors are confirmed, by design.

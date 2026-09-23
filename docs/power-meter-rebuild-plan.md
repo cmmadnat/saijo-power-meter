@@ -510,10 +510,11 @@ the production build reaches the credentials check.
 
 *Not verified, and why:*
 
-- **No BigQuery.** This session has no credentials by design. The new SQL — `IN UNNEST`, the
-  meter-major `ORDER BY` on raw — has not been parsed by BigQuery, which is the reviewer that caught
-  `at` at step 6. `npm run warehouse -w @power-meter/infrastructure -- cost --runs 20` is the first
-  parse and the latency measurement at once; p95 "against real stored data" in BigQuery is that run.
+- ~~**No BigQuery.**~~ **Done, 2026-09-23**, from Cloud Shell: `warehouse cost --runs 20` parsed
+  and ran all three statements against the project. p50 / p95 per cache miss — strip 949 / 1 281 ms,
+  24-hour chart 308 / 720 ms, today's History 258 / 545 ms in one query — each billing the 10 MB
+  floor. What remains is that the data read was step 6's fixtures, and that no web process has yet
+  read the warehouse: that happens when live mode is switched on.
 - **The ID token has not been minted on Cloud Run**, because the ingester service does not exist.
 - **The two strip tiles have not been checked against History in BigQuery.** In the replay they
   differ by the rollup's lagging tail, as designed; the warehouse still holds step 6's fixtures.
