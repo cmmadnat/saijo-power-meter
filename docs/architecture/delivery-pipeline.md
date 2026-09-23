@@ -121,10 +121,25 @@ a top-level directory silently stops building it and the symptom is an absence n
 rather than `**/*.md`: a README inside `apps/` is traced into an image, so it stays a reason to
 build.
 
-The trap to check before copying this anywhere else: a pull request touching only ignored files
-creates no build, so its check never appears — and a check **required** by branch protection would
-leave such a pull request pending forever. `infra-preview` is not required here, which is
-observable rather than assumed: PR #31 was merged three minutes before its preview finished.
+**Observed on PR #34**, which touched one documentation file and nothing else. No build ran — and
+the check did not simply fail to appear, which is what this page predicted before anyone looked.
+Cloud Build posts the filtered event as a check run with conclusion **`neutral`**, zero duration,
+whose "details" link points at the **trigger's edit page rather than at a build**. That is how a
+skipped trigger reads from GitHub: a check that arrives, says nothing, and cost nothing.
+
+The distinction matters for the trap worth checking before copying this anywhere else. The fear
+was that a required check would never arrive and leave such a pull request pending forever; since a
+neutral check *does* arrive, that particular hang does not happen. Whether `neutral` **satisfies**
+a required check is a different question and is **not** settled here: GitHub's conclusion table
+says neutral is treated as success "for dependent checks in GitHub Actions", which is a narrower
+claim than branch protection. `infra-preview` is not required on this repository — observable
+rather than assumed, since PR #31 was merged three minutes before its preview finished — so the
+question has never had to be answered. Anyone making it required should answer it first.
+
+The apply that carried the list (`b8feb07`, build `a92a84ae`) had already shown that Cloud Build
+*accepted* the patterns, `reference doc/**` and its space included. Acceptance and effect are two
+claims, and this page's own rule is why they were checked separately: "the trigger was created" is
+not evidence that it works.
 
 ### The fork guard is a setting now
 
