@@ -21,7 +21,52 @@ node --version          # must be >= 22.6 for --experimental-strip-types; nvm in
 
 ---
 
-## Nothing is outstanding
+## Outstanding: step 9's checks, once the observe ingester is applied
+
+Step 9 deploys the ingester in **observe mode** — the customer's broker, `WAREHOUSE=none`, client
+id `power-meter-observer` — and nothing about it can be checked from a Claude session, which holds
+no credentials and cannot reach the broker. It goes live on the merge that sets
+`saijo-power-meter:deployIngester: "true"`; the apply creates the three broker secrets' first
+versions from `reference doc/mqtt` and then the service. These are the plan's four checks.
+
+```bash
+URL=$(gcloud run services describe power-meter-ingester --region asia-southeast1 \
+  --project saijo-power-meter --format 'value(status.url)')
+auth=(-H "Authorization: Bearer $(gcloud auth print-identity-token)")
+
+# 1. Every station's commissioned slots, and nothing else: expect 5 5 8 7 7 6 7 6 4, recording false,
+#    and the interval the feed actually publishes at (the test publisher: ~60000).
+curl -s "${auth[@]}" "$URL/latest" | jq -r \
+  '"recording=\(.recording) interval=\(.publishIntervalMs)",
+   ([.readings[].meterId[1:3]] | group_by(.) | map(length) | join(" "))'
+curl -s "${auth[@]}" "$URL/stats"  | jq '{recording, messages, readings, flushes, latestFlushes, rowsWritten}'
+
+# 2. Writes nothing. Note the three values, leave it running an hour, read them again: all unchanged.
+bq query --nouse_legacy_sql --project_id saijo-power-meter \
+  'SELECT (SELECT MAX(ingested_at) FROM power_meter.readings) AS raw,
+          (SELECT COUNT(*) FROM power_meter.readings_1m) AS rollup_rows'
+gcloud firestore documents describe ingester/latest --project saijo-power-meter \
+  --format 'value(updateTime)' 2>&1 | tail -1     # NOT_FOUND is also a pass
+
+# 3. A restart begins empty and fills within one publish. Roll a revision, then watch it fill.
+gcloud run services update power-meter-ingester --region asia-southeast1 \
+  --project saijo-power-meter --update-labels restarted="$(date +%s)"
+for i in $(seq 1 15); do curl -s "${auth[@]}" "$URL/latest" | jq '.readings | length'; sleep 5; done
+
+# 4. A connection on the go-live id is not evicted by the observer, and does not evict it.
+#    Read-only, clean session, writes nothing. Expect nine messages and no "DISCONNECT, reason code 142".
+npm run capture -w @power-meter/ingester -- --messages 9 --client-id power-meter-ingester
+```
+
+`bq ls -j` is *not* the check for 2: the Storage Write API creates no jobs, so an ingester that was
+writing would leave job history empty too. `ingested_at` and the rollup's row count move when
+anything appends. For 4, the observer's own log (`/logs`) must not say *shutting down* either.
+`--client-id power-meter-ingester` is safe only **before go-live** — once the writing ingester
+runs on that id, the same command evicts it.
+
+---
+
+## Step 8c's apply — done
 
 As of 2026-09-23 the project is fully applied: step 8c's migration `0002` is in, the `(default)`
 Firestore database exists, and the deployer holds `roles/datastore.owner`.

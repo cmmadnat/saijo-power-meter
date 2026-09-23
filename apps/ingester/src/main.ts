@@ -46,13 +46,24 @@ class MemoryWriter implements ReadingWriter {
 }
 
 interface WritePath {
-  readonly writer: ReadingWriter;
+  /** Null in observe mode: there is no writer to hand the ingester at all. */
+  readonly writer: ReadingWriter | null;
   readonly latest: LatestReadingStore | undefined;
   /** Release whatever the write path holds open. Called once, on the way out. */
   close(): Promise<void>;
 }
 
 async function warehouse(config: Config): Promise<WritePath> {
+  if (config.warehouse === "none") {
+    // Observe mode, step 9. No writer and no restart state: nothing reaches
+    // BigQuery or Firestore, and a restart begins empty and fills within one
+    // publish. See the gate in config.ts for why this may face a real broker.
+    log(
+      `WAREHOUSE=none — observe mode as ${config.clientId}: nothing is written, ` +
+        "nothing is read back, the hot state and the last hour live in memory only.",
+    );
+    return { writer: null, latest: undefined, close: async () => {} };
+  }
   if (config.warehouse === "memory") {
     log("WAREHOUSE=memory — nothing is written and nothing is read back.");
     return { writer: new MemoryWriter(), latest: undefined, close: async () => {} };
@@ -115,6 +126,7 @@ const service = await startService({
     username: config.username,
     password: config.password,
     protocolVersion: config.protocolVersion,
+    persistentSession: config.warehouse !== "none",
     // The nine station topics, from the registry the workbook generated. The
     // ingester drops anything that arrives on a topic it does not know, so
     // subscribing from the same source is what keeps the two in step.

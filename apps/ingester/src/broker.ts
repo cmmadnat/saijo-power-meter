@@ -56,6 +56,13 @@
  * Past that the broker drops the oldest, silently. That bound is the documented
  * loss window, and it is why "a broker that goes away for an hour" loses data
  * no matter what this code does.
+ *
+ * Observe mode is the exception, and sets `persistentSession: false`. It
+ * records nothing, so there is no loss for a queue to prevent — and a queue
+ * drained after a restart would arrive in one burst, every message stamped
+ * with the moment of the burst, and paint an hour of the rolling window with
+ * one instant's numbers. A clean session starts empty and fills within one
+ * publish, which is the behaviour an observer should have.
  */
 import mqtt, { type IClientOptions, type MqttClient } from "mqtt";
 
@@ -90,6 +97,11 @@ export interface MqttBrokerOptions {
   readonly protocolVersion?: 4 | 5;
   /** Milliseconds between reconnection attempts. */
   readonly reconnectPeriodMs?: number;
+  /**
+   * Ask the broker to hold messages while this client is away. On for the
+   * writing ingester; off in observe mode — see the note at the top.
+   */
+  readonly persistentSession?: boolean;
 }
 
 /** MQTT 5 reason code 142: another connection used this client id. */
@@ -122,15 +134,16 @@ export class MqttBroker implements Broker {
   }
 
   connect(handlers: BrokerHandlers): void {
+    const persistent = this.#options.persistentSession ?? true;
     const options: IClientOptions = {
       clientId: this.#options.clientId,
-      // Persistent session: see the note at the top of this file.
-      clean: false,
+      // Persistent session unless observing: see the note at the top of this file.
+      clean: !persistent,
       protocolVersion: this.#options.protocolVersion ?? 5,
       // An MQTT 5 property, and rejected outright by a 3.1.1 broker: there the
       // session's lifetime is the broker's business and there is nothing to ask
-      // for.
-      ...(this.#options.protocolVersion === 4
+      // for. A clean session has no lifetime to ask for either.
+      ...(this.#options.protocolVersion === 4 || !persistent
         ? {}
         : {
             properties: {

@@ -769,6 +769,14 @@ in BigQuery's history and `ingester/latest`'s update time does not move while it
 begins empty and fills within one publish; a second instance with the go-live client id is not
 evicted by it.
 
+*Status, 2026-09-23:* built and verified against the replay broker — `WAREHOUSE=none` hands the
+ingester no writer at all, `/recent` serves the rolling hour, `/latest` carries `recording` and the
+measured `publishIntervalMs`, and `freshnessForInterval()` derives thresholds from it by the
+default's own rule. `deployIngester` is still `"false"`; the merge that flips it deploys the
+observer, and the four checks above are in `docs/runbooks/cloud-shell.md` with one correction —
+the Storage Write API creates no jobs, so "no job in BigQuery's history" proves nothing, and the
+runbook reads `MAX(ingested_at)` and the rollup's row count instead.
+
 ### Step 10 — A viewer toggle: Demo ↔ Incoming
 A control in the header, remembered in a cookie, that chooses the data source for **the whole app
 at once** — never one screen — so "no half-live app" still holds; it becomes a choice of the

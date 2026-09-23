@@ -362,8 +362,11 @@ ingester's writes are a daily rate. That is measured, not argued: 1 600 appends 
 eight minutes against a scratch dataset, zero failures, where a load job is refused at 1 500 — see
 `docs/architecture/warehouse.md`. **It is applied**: `0002` is in, the `(default)` Firestore
 database exists, and the ingester's `roles/bigquery.jobUser` is gone. **Steps 9–11 were revised on
-2026-09-23**: next is the ingester in *observe* mode against the customer's simulated feed, writing
-nothing (9), then a viewer toggle between Demo and that Incoming feed (10), then go-live (11). The
+2026-09-23**: the ingester in *observe* mode against the customer's simulated feed, writing
+nothing (9), then a viewer toggle between Demo and that Incoming feed (10), then go-live (11).
+**Step 9's code is in** — `WAREHOUSE=none`, `/recent`, the observed publish interval — and verified
+against the replay; it reaches Cloud Run on the merge that sets `deployIngester: "true"`, and its
+four checks against HiveMQ are in `docs/runbooks/cloud-shell.md`. The
 passcode gate, the rollback rehearsal and the alerts are in the plan's Backlog, and the gate is due
 before go-live. The rules below about exemptions and the one `DATA_MODE` still hold until the step
 that changes each of them lands.
@@ -564,14 +567,20 @@ row it writes and no backfill recovers it, so `assertSafeToStart` in `apps/inges
 refuses to run while `unconfirmedScales()` names anything, and the Cloud Run service sits behind
 `saijo-power-meter:deployIngester: "false"` in `Pulumi.dev.yaml` — a crash-looping revision would
 fail every apply from then on. Its service account, the three broker secrets and its warehouse
-access apply regardless, because none of them ingests anything. Flipping the flag belongs in the
-same change that confirms the divisors and adds a version to each secret. **Step 8c has landed, so
-the quota blocker is gone and the scaling one is all that is left.**
+access apply regardless, because none of them ingests anything. Since step 9
+the service runs whatever `saijo-power-meter:ingesterMode` says — `"observe"` by default,
+`"record"` at go-live — and turning `deployIngester` on also declares the three broker secrets'
+first versions from `reference doc/mqtt` (already committed, so state exposes nothing new;
+`deletionPolicy: ABANDON`, so dropping them at rotation destroys nothing). The program refuses
+`dataMode: "live"` unless `ingesterMode` is `"record"`.
 
-**The only way past that gate is a broker on loopback writing nowhere near BigQuery.**
-`WAREHOUSE=memory` or `WAREHOUSE=file` with an `mqtt://127.0.0.1` URL is the replay harness;
-anything else is refused. Both halves are checked, because what is being protected is the
-warehouse and not the broker. Do not add a third exemption.
+**There are two ways past that gate, and both write nowhere near BigQuery.** `WAREHOUSE=memory`
+or `WAREHOUSE=file` with an `mqtt://127.0.0.1` URL is the replay harness — both halves checked,
+because what is being protected is the warehouse and not the broker. `WAREHOUSE=none` is observe
+mode (step 9): any broker, and the ingester is handed `writer: null` — no buffer, no flush, no
+Firestore restart state, a clean MQTT session. Its client id is `power-meter-observer`, and the
+gate refuses the writer's id in observe mode and the observer's id in a writing one, so an
+observer can never evict the ingester that records. Do not add a fourth exemption.
 
 **`apps/ingester/tools/capture.ts` is how a real payload gets read, and it is not an exemption.**
 It is not the ingester: it subscribes, prints the raw integers and writes nothing, so there is

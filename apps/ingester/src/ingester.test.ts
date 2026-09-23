@@ -428,3 +428,121 @@ describe("the ingester", () => {
     assert.ok(ingester.topics().includes("PMeterStation09"));
   });
 });
+
+describe("observe mode", () => {
+  it("has no writer, so nothing is buffered, flushed or mirrored", async () => {
+    const clock = new FixedClock(new Date("2026-09-22T03:10:00Z"));
+    const ingester = new Ingester({ writer: null, registry: REGISTRY, clock });
+    for (const message of stationMessages(
+      new Date("2026-09-22T03:00:00Z"),
+      new Date("2026-09-22T03:05:00Z"),
+    )) {
+      ingester.accept(message);
+    }
+    ingester.start();
+    await ingester.flush();
+    await ingester.flushLatest();
+    await ingester.stop();
+
+    const stats = ingester.stats();
+    assert.equal(stats.recording, false);
+    assert.ok(stats.readings > 0);
+    assert.equal(stats.bufferedReadings, 0);
+    assert.equal(stats.pendingRollupReadings, 0);
+    assert.equal(stats.flushes, 0);
+    assert.equal(stats.latestFlushes, 0);
+    assert.equal(stats.rowsWritten, 0);
+    assert.equal(ingester.snapshot().length, COMMISSIONED_ON_STATION_01);
+  });
+
+  it("starts empty: there is no restart state to read back", async () => {
+    const ingester = new Ingester({ writer: null, registry: REGISTRY });
+    assert.equal(await ingester.rehydrate(), 0);
+    assert.equal(ingester.snapshot().length, 0);
+  });
+});
+
+describe("the rolling hour", () => {
+  it("keeps the last hour per meter, oldest first, and no more", () => {
+    const clock = new FixedClock(new Date("2026-09-22T04:30:00Z"));
+    const ingester = new Ingester({ writer: null, registry: REGISTRY, clock });
+    const messages = stationMessages(
+      new Date("2026-09-22T03:00:00Z"),
+      new Date("2026-09-22T04:30:00Z"),
+      60_000,
+    );
+    for (const message of messages) ingester.accept(message);
+
+    const [meter] = REGISTRY.forTopic(TOPIC).filter((m) => m.commissioned);
+    assert.ok(meter);
+    const recent = ingester.recent({ meters: [meter.meterId] });
+    const since = clock.now().getTime() - 3_600_000;
+    assert.ok(recent.length >= 59 && recent.length <= 61, `${recent.length} readings`);
+    assert.ok(recent.every((reading) => reading.meterId === meter.meterId));
+    assert.ok(recent.every((reading) => reading.at.getTime() >= since));
+    for (let i = 1; i < recent.length; i += 1) {
+      assert.ok(recent[i - 1]!.at.getTime() <= recent[i]!.at.getTime(), "oldest first");
+    }
+    // Held in memory for the hour and not beyond it.
+    assert.ok(ingester.stats().recentReadings <= 61 * COMMISSIONED_ON_STATION_01);
+
+    const tenMinutes = ingester.recent({ meters: [meter.meterId], withinMs: 600_000 });
+    assert.ok(tenMinutes.length >= 9 && tenMinutes.length <= 11);
+    // Asking for more than the window returns the window.
+    assert.equal(
+      ingester.recent({ meters: [meter.meterId], withinMs: 86_400_000 }).length,
+      recent.length,
+    );
+  });
+
+  it("keeps a late reading in order", () => {
+    const clock = new FixedClock(new Date("2026-09-22T03:10:00Z"));
+    const ingester = new Ingester({ writer: null, registry: REGISTRY, clock });
+    const messages = stationMessages(
+      new Date("2026-09-22T03:00:00Z"),
+      new Date("2026-09-22T03:05:00Z"),
+      60_000,
+    );
+    const [first, ...rest] = messages;
+    assert.ok(first);
+    for (const message of rest) ingester.accept(message);
+    ingester.accept(first);
+    const recent = ingester.recent();
+    const byMeter = new Map<string, number[]>();
+    for (const reading of recent) {
+      byMeter.set(reading.meterId, [...(byMeter.get(reading.meterId) ?? []), reading.at.getTime()]);
+    }
+    for (const times of byMeter.values()) {
+      assert.deepEqual(times, [...times].sort((a, b) => a - b));
+    }
+  });
+});
+
+describe("the publish interval", () => {
+  it("is unknown until a topic has published twice", () => {
+    const ingester = new Ingester({ writer: null, registry: REGISTRY });
+    assert.equal(ingester.publishIntervalMs(), null);
+    const [message] = stationMessages(
+      new Date("2026-09-22T03:00:00Z"),
+      new Date("2026-09-22T03:01:00Z"),
+      60_000,
+    );
+    assert.ok(message);
+    ingester.accept(message);
+    assert.equal(ingester.publishIntervalMs(), null);
+  });
+
+  it("is what the feed does, not what the spec says", () => {
+    // The customer's test publisher: once a minute, not every ~9 s.
+    const ingester = new Ingester({ writer: null, registry: REGISTRY });
+    for (const message of stationMessages(
+      new Date("2026-09-22T03:00:00Z"),
+      new Date("2026-09-22T03:10:00Z"),
+      60_000,
+    )) {
+      ingester.accept(message);
+    }
+    assert.equal(ingester.publishIntervalMs(), 60_000);
+    assert.equal(ingester.stats().publishIntervalMs, 60_000);
+  });
+});

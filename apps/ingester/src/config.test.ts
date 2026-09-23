@@ -12,7 +12,9 @@ import { describe, it } from "node:test";
 import { unconfirmedScales } from "@power-meter/infrastructure";
 import {
   assertSafeToStart,
+  GO_LIVE_CLIENT_ID,
   isLoopbackBroker,
+  OBSERVE_CLIENT_ID,
   readConfig,
   type Config,
 } from "./config.ts";
@@ -76,6 +78,29 @@ describe("the startup gate", () => {
     );
   });
 
+  it("lets observe mode face the real broker: there is no writer behind it", () => {
+    assertSafeToStart(config({ warehouse: "none", clientId: OBSERVE_CLIENT_ID }));
+  });
+
+  it("refuses observe mode on the writing ingester's client id", () => {
+    // It would evict the writer, which exits by design, and the factory would
+    // stop being recorded with only an observer left running.
+    assert.throws(
+      () => assertSafeToStart(config({ warehouse: "none", clientId: GO_LIVE_CLIENT_ID })),
+      /WAREHOUSE=none with MQTT_CLIENT_ID=power-meter-ingester/,
+    );
+  });
+
+  it("refuses a writer on the observer's client id", () => {
+    assert.throws(
+      () =>
+        assertSafeToStart(
+          config({ brokerUrl: "mqtt://127.0.0.1:1883", clientId: OBSERVE_CLIENT_ID }),
+        ),
+      /reserved for observe mode/,
+    );
+  });
+
   it("does not take a hostname's word for being local", () => {
     assert.equal(isLoopbackBroker("mqtt://localhost.example.com:1883"), false);
     assert.equal(isLoopbackBroker("mqtt://127.0.0.1:1883"), true);
@@ -94,6 +119,13 @@ describe("reading the configuration", () => {
     assert.equal(parsed.latestFlushIntervalMs, 30_000);
     assert.equal(parsed.port, 8080);
     assert.equal(parsed.protocolVersion, 5);
+  });
+
+  it("gives observe mode its own client id by default", () => {
+    const parsed = readConfig({ MQTT_URL: "mqtts://broker.example.com", WAREHOUSE: "none" });
+    assert.equal(parsed.warehouse, "none");
+    assert.equal(parsed.clientId, "power-meter-observer");
+    assert.notEqual(OBSERVE_CLIENT_ID, GO_LIVE_CLIENT_ID);
   });
 
   it("fails without one rather than connecting to nothing", () => {

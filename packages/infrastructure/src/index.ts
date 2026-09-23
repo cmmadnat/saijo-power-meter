@@ -76,10 +76,12 @@ export {
   type WarehouseTarget,
 } from "./warehouse/schema.ts";
 export {
+  publishIntervalFromLatest,
   readingsFromLatest,
   toLatestDto,
   type LatestReadingDto,
   type LatestResponse,
+  type RecentResponse,
 } from "./hot-state/dto.ts";
 export {
   IngesterLatestReadingStore,

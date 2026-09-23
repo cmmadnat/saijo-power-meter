@@ -27,7 +27,39 @@ export interface LatestReadingDto {
 export interface LatestResponse {
   /** When the snapshot was taken, not when any reading was received. */
   readonly asOf: string;
+  /**
+   * False when the ingester is in observe mode and stores nothing — the
+   * reason a screen reading it must not offer History or an energy chart.
+   */
+  readonly recording: boolean;
+  /**
+   * The median gap between messages on one topic, as observed; null before a
+   * topic has published twice. Freshness thresholds are derived from it with
+   * `freshnessForInterval` rather than assumed from the spec's ~9 s.
+   */
+  readonly publishIntervalMs: number | null;
   readonly readings: readonly LatestReadingDto[];
+}
+
+/**
+ * `GET /recent`: the ingester's rolling in-memory window, oldest first per
+ * meter. The same reading shape as `/latest`, so `readingsFromLatest` parses
+ * it too.
+ */
+export interface RecentResponse {
+  readonly asOf: string;
+  /** How far back `readings` reaches from `asOf`. */
+  readonly windowMs: number;
+  readonly readings: readonly LatestReadingDto[];
+}
+
+/**
+ * The observed publish interval out of a `/latest` body, or null when the
+ * ingester has not seen one yet — or predates the field.
+ */
+export function publishIntervalFromLatest(body: unknown): number | null {
+  const value = (body as { publishIntervalMs?: unknown } | null)?.publishIntervalMs;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 export function toLatestDto(reading: Reading): LatestReadingDto {
@@ -43,7 +75,7 @@ export function toLatestDto(reading: Reading): LatestReadingDto {
 }
 
 /**
- * Parse a `/latest` body back into readings.
+ * Parse a `/latest` or `/recent` body back into readings.
  *
  * Checked field by field rather than cast: a response from the wrong service,
  * or from an ingester a version ahead, should fail here with the field named
