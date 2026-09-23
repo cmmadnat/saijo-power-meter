@@ -50,7 +50,10 @@ function isMissingDataset(error: unknown): boolean {
 }
 
 const command = process.argv[2];
-const projectId = flag("project") ?? process.env["GOOGLE_PROJECT"];
+// `||`, not `??`: an empty --project or an exported-but-empty GOOGLE_PROJECT
+// means "not set", and letting "" through reaches the SDK, which waits on the
+// metadata server rather than saying so.
+const projectId = flag("project") || process.env["GOOGLE_PROJECT"] || undefined;
 const target: WarehouseTarget = {
   ...(projectId === undefined ? {} : { projectId }),
   dataset: flag("dataset") ?? process.env["WAREHOUSE_DATASET"] ?? DEFAULT_DATASET,
