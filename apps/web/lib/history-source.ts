@@ -11,10 +11,11 @@
  * Server-only: it reaches into the meter registry.
  */
 import { historyTable, type HistoryTable } from "@power-meter/application";
-import { MeterRegistry, type Department } from "@power-meter/domain";
+import type { Department, MeterRegistry } from "@power-meter/domain";
 import { dataSource } from "./data-mode.ts";
 import type { DataSource } from "./data-source.ts";
 import { TIME_ZONE } from "./format.ts";
+import { registryFor } from "./registry-source.ts";
 
 /**
  * Asia/Bangkok is UTC+07:00 and has been since 1920 — no daylight saving, no
@@ -149,7 +150,7 @@ export async function historySnapshot(
   department: Department | null,
   source: DataSource | Promise<DataSource> = dataSource(),
 ): Promise<HistoryTable> {
-  const registry = MeterRegistry.fromWorkbook();
+  const registry = await registryFor(source);
   const window = { from: range.from, to: range.to };
   const { repository, maxRunGapMs } = (await source).history(registry, window);
 

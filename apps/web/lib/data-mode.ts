@@ -37,13 +37,15 @@
  * for the one view — so "no half-live app" still holds; it has become the
  * viewer's choice instead of the deployment's. Incoming is not a weaker live
  * mode and does not go through the gate above: nothing it shows is stored, and
- * it is badged on every route as unconfirmed.
+ * its header line says the scaling is unconfirmed. It is the default view
+ * wherever it is offered in a demo deployment.
  */
 import {
   DEFAULT_OBSERVER_DOCUMENT,
   isLoopbackUrl,
   unconfirmedScales,
 } from "@power-meter/infrastructure";
+import type { MeterLabelStore } from "@power-meter/application";
 import type { DataSource } from "./data-source.ts";
 import type { IncomingConfig } from "./incoming-adapters.ts";
 
@@ -159,9 +161,14 @@ function incomingConfig(): IncomingConfig | null {
   return incoming;
 }
 
-/** The views this deployment offers, its own mode first. */
+/**
+ * The views this deployment offers, the default first. A demo deployment that
+ * has a real feed opens on the feed: synthetic numbers are the fallback, not
+ * the first thing a visitor is shown when real ones are arriving.
+ */
 export function viewsOf(config: DataModeConfig, offersIncoming: boolean): readonly ViewId[] {
-  return offersIncoming ? [config.mode, "incoming"] : [config.mode];
+  if (!offersIncoming) return [config.mode];
+  return config.mode === "demo" ? ["incoming", "demo"] : [config.mode, "incoming"];
 }
 
 export function availableViews(): readonly ViewId[] {
@@ -215,11 +222,22 @@ export function dataSource(view?: ViewId): Promise<DataSource> {
 }
 
 /**
+ * Where meter labels are kept, whichever view the viewer is in: the Incoming
+ * source's store, since labels name the feed's meters. Null where this
+ * deployment offers no Incoming view — there is then nothing to label.
+ */
+export async function labelStore(): Promise<MeterLabelStore | null> {
+  if (incomingConfig() === null) return null;
+  return (await dataSource("incoming")).labels ?? null;
+}
+
+/**
  * What the shell and the page headers print about where the numbers come from.
  *
- * `badge` is null in live mode and nowhere else: a screenshot of demo mode —
- * or of the replay harness, which runs live code over fixture numbers — has to
- * be unmistakable as not-measurement months later and out of context.
+ * `badge` is null in live mode and in Incoming, which shows the feed's own
+ * readings: a screenshot of demo mode — or of the replay harness, which runs
+ * live code over fixture numbers — has to be unmistakable as not-measurement
+ * months later and out of context.
  */
 export interface Provenance {
   readonly badge: string | null;
@@ -228,8 +246,10 @@ export interface Provenance {
 
 export function provenanceOf(config: DataModeConfig, view: ViewId = config.mode): Provenance {
   if (view === "incoming") {
+    // No badge: this is the feed's own data, and a mark pinned over it hid
+    // rows on a phone. The header line still says what it is on every page.
     return {
-      badge: "Incoming · unconfirmed",
+      badge: null,
       line: "Incoming · the customer's test publisher, via the observer · scaling unconfirmed · nothing stored",
     };
   }

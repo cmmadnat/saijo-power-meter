@@ -18,6 +18,7 @@
 import type {
   FreshnessThresholds,
   LatestReadingStore,
+  MeterLabelStore,
   ReadingRepository,
   RollupRepository,
   TimeRange,
@@ -69,6 +70,13 @@ export interface DataSource {
    * the source does not have, and never fall back to fixtures to fill it.
    */
   readonly records: boolean;
+  /**
+   * Where the viewers' names for meters are kept, when this source identifies
+   * meters by the feed rather than by the workbook. Present, the screens group
+   * by station and name a meter only by its label, or its id until it has one
+   * (`lib/registry-source.ts`). Incoming only.
+   */
+  readonly labels?: MeterLabelStore;
   /** The widest chart window this source can fill. Omitted means any. */
   readonly maxSeriesMs?: number;
   /**

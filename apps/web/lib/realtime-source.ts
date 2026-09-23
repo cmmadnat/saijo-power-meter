@@ -19,10 +19,10 @@ import {
   type FleetTrend,
   type RealtimeTable,
 } from "@power-meter/application";
-import { MeterRegistry } from "@power-meter/domain";
 import { dataSource } from "./data-mode.ts";
 import type { DataSource, FeedStatus } from "./data-source.ts";
 import { startOfDay } from "./format.ts";
+import { registryFor } from "./registry-source.ts";
 
 /**
  * How the source's feed behaves: its measured rate, when it was last heard
@@ -42,7 +42,7 @@ export async function feedStatus(
 export async function realtimeSnapshot(
   source: DataSource | Promise<DataSource> = dataSource(),
 ): Promise<RealtimeTable> {
-  const registry = MeterRegistry.fromWorkbook();
+  const registry = await registryFor(source);
   const now = systemClock.now();
   const { thresholds } = await feedStatus(source);
   return realtimeTable({
@@ -66,7 +66,7 @@ const SPARK_MS = 60 * 60_000;
 export async function fleetTrendSnapshot(
   source: DataSource | Promise<DataSource> = dataSource(),
 ): Promise<FleetTrend> {
-  const registry = MeterRegistry.fromWorkbook();
+  const registry = await registryFor(source);
   const now = systemClock.now();
   const dayStart = startOfDay(now);
   const { range, repository } = (await source).trend({ registry, dayStart, sparkMs: SPARK_MS, now });

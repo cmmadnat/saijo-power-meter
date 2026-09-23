@@ -54,6 +54,13 @@ export {
   type ObserverSnapshot,
   type SnapshotDocument,
 } from "./observer/snapshot.ts";
+export {
+  DEFAULT_LABELS_DOCUMENT,
+  DocumentMeterLabelStore,
+  fromLabelsDocument,
+  toLabelsDocument,
+  type LabelsDocument,
+} from "./labels/label-store.ts";
 export type {
   BigQueryClientOptions,
   QueryParams,

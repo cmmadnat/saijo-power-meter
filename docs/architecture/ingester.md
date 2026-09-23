@@ -145,8 +145,8 @@ Two things about the Firestore side are decisions rather than defaults:
   adopts; `gcloud firestore databases list` says in advance, and `pulumi import` is the remedy.
 
 The web app never reads this document: in live mode the real-time screen reads the ingester's
-memory over HTTP, as it always did. Since step 10 it does hold `roles/datastore.viewer`, for the
-observer's **separate** document — see *The observer snapshot* below.
+memory over HTTP, as it always did. Since step 10 it holds a Firestore role (`datastore.user` since the meter labels), for the
+observer's **separate** document and its own `labels/meters` — see *The observer snapshot* below.
 
 ## The startup gate
 

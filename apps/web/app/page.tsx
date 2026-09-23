@@ -1,4 +1,4 @@
-import { MeterRegistry, type MeterId } from "@power-meter/domain";
+import { meterNumber, type Meter, type MeterId } from "@power-meter/domain";
 import { rawFieldsOf } from "@power-meter/infrastructure";
 import {
   RealtimeCharts,
@@ -14,6 +14,7 @@ import {
 import { formatAge, formatClock, formatClockMinutes } from "@/lib/format";
 import { dataSource, provenance } from "@/lib/data-mode";
 import { currentView } from "@/lib/view";
+import { registryFor } from "@/lib/registry-source";
 import { feedStatus, fleetTrendSnapshot, realtimeSnapshot } from "@/lib/realtime-source";
 import {
   chartSeries,
@@ -37,10 +38,13 @@ export default async function RealTimePage(props: PageProps<"/">) {
   // source for it: the toggle switches the app, never one panel of it.
   const view = await currentView();
   const source = dataSource(view);
-  const { records, maxSeriesMs } = await source;
+  const { records, maxSeriesMs, labels } = await source;
   const windows = windowsFor(maxSeriesMs);
+  // Where labels are kept, the table links an unlabelled meter to the page
+  // that names it.
+  const labelling = labels !== undefined;
 
-  const registry = MeterRegistry.fromWorkbook();
+  const registry = await registryFor(source);
   const selection = parseSelection(first(params.meters), registry);
   const windowId = parseWindow(first(params.window), windows);
 
@@ -57,6 +61,20 @@ export default async function RealTimePage(props: PageProps<"/">) {
     if (view !== "incoming" || reading === null) return null;
     const prefix = registry.find(meterId as MeterId)?.keyPrefix;
     return prefix === undefined ? null : { prefix, fields: rawFieldsOf(reading) };
+  };
+
+  // Which meter a payload problem was about, by label where it has one. The
+  // decoder names the meter when it got that far and the wire key when it did
+  // not; either resolves to a slot on the topic.
+  const issueMeter = (issue: { topic: string; meterId?: string; key?: string }): string => {
+    const byId = issue.meterId === undefined ? undefined : registry.find(issue.meterId as MeterId);
+    const prefix = /^M\d/.exec(issue.key ?? "")?.[0];
+    const meter: Meter | undefined =
+      byId ?? registry.forTopic(issue.topic).find((m) => m.keyPrefix === prefix);
+    if (meter === undefined) return issue.topic;
+    return meter.machineName === null
+      ? `${meterNumber(meter)} (${meter.keyPrefix})`
+      : `${meterNumber(meter)} ${meter.machineName}`;
   };
 
   // What the footer says about cadence: the specification's, or the one the
@@ -135,6 +153,7 @@ export default async function RealTimePage(props: PageProps<"/">) {
           issues={[...(feed.health?.recentIssues ?? [])].reverse().map((issue) => ({
             at: formatClock(issue.at),
             topic: issue.topic,
+            meter: issueMeter(issue),
             kind: issue.kind,
             where: issue.key ?? issue.meterId ?? null,
             detail: issue.detail,
@@ -192,6 +211,7 @@ export default async function RealTimePage(props: PageProps<"/">) {
         byDepartment={table.byDepartment.map((d) => ({ ...d }))}
         asOf={formatClock(table.at)}
         counts={table.counts}
+        labelling={labelling}
         {...(cadence === undefined ? {} : { cadence })}
       />
     </div>

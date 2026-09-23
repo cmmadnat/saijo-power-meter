@@ -12,6 +12,8 @@ import type { FeedCondition } from "@/lib/feed-condition";
 export interface FeedIssueRow {
   readonly at: string;
   readonly topic: string;
+  /** The meter it was about — number and label, or the topic when no slot is named. */
+  readonly meter: string;
   readonly kind: string;
   readonly where: string | null;
   readonly detail: string;
@@ -66,9 +68,9 @@ export function FeedBanner({
               <thead>
                 <tr className="border-b border-border text-left font-mono text-3xs uppercase tracking-wider text-muted-foreground">
                   <th scope="col" className="py-1 pe-3 font-normal">Time</th>
-                  <th scope="col" className="py-1 pe-3 font-normal">Topic</th>
+                  <th scope="col" className="py-1 pe-3 font-normal">Meter</th>
                   <th scope="col" className="py-1 pe-3 font-normal">Problem</th>
-                  <th scope="col" className="py-1 pe-3 font-normal">Where</th>
+                  <th scope="col" className="py-1 pe-3 font-normal">Key</th>
                   <th scope="col" className="py-1 font-normal">Detail</th>
                 </tr>
               </thead>
@@ -76,7 +78,9 @@ export function FeedBanner({
                 {issues.map((issue, index) => (
                   <tr key={index} className="border-b border-border/50 last:border-b-0">
                     <td className="py-1 pe-3 font-mono whitespace-nowrap">{issue.at}</td>
-                    <td className="py-1 pe-3 font-mono whitespace-nowrap">{issue.topic}</td>
+                    <td className="py-1 pe-3 whitespace-nowrap" title={issue.topic}>
+                      {issue.meter}
+                    </td>
                     <td className="py-1 pe-3 font-mono whitespace-nowrap">{issue.kind}</td>
                     <td className="py-1 pe-3 font-mono whitespace-nowrap">{issue.where ?? "—"}</td>
                     <td className="py-1">{issue.detail}</td>
