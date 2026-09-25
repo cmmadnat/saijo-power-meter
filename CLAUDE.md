@@ -44,6 +44,7 @@ scaling question, and live mode is verified end to end against a local broker re
 | `.claude/hooks/session-start.sh` | Installs the Pulumi CLI and `infra/` deps into a fresh container. |
 | `docs/runbooks/cloud-shell.md` | Every command a human runs in Cloud Shell, and what is outstanding now. |
 | `docs/requirements/` | The frozen spec: the MQTT protocol, the meter registry, and the four screens. |
+| `docs/sibling-apps.md` | The four other systems in `reference doc/`, each its own repo and project. Calorie Testing Room is next. |
 | `reference doc/`, root `.xlsx` | Customer specifications — the source those requirements were read from. |
 | `reference/` | Old implementation. Look, never copy. |
 
