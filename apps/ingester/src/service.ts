@@ -30,7 +30,20 @@ export interface ServiceOptions {
   readonly snapshotStore?: { write(snapshot: ObserverSnapshot): Promise<void> } | undefined;
   /** Bind a port. Off in tests, where the routes are exercised directly. */
   readonly serve?: boolean;
+  /** How often a written snapshot is announced in the log. Tests shorten it. */
+  readonly heartbeatIntervalMs?: number;
 }
+
+/**
+ * The observer's heartbeat: one log line, at most every five minutes, and only
+ * after a snapshot write succeeded. `infra/index.ts` counts these lines with a
+ * log-based metric and alerts on their absence, which covers every way the
+ * observer can go quiet — a VM whose startup script died, a container that
+ * crash-loops, a Firestore write that fails — because each one stops the line.
+ * Do not reword it without changing that metric's filter.
+ */
+export const OBSERVER_HEARTBEAT = "observer heartbeat";
+const HEARTBEAT_INTERVAL_MS = 5 * 60_000;
 
 export interface Service {
   readonly ingester: Ingester;
@@ -90,6 +103,8 @@ export async function startService(options: ServiceOptions): Promise<Service> {
   // gone: the first has a fresh `updatedAt` and no readings.
   let snapshotTimer: ReturnType<typeof setInterval> | undefined;
   let snapshotFailing = false;
+  let lastHeartbeat = Number.NEGATIVE_INFINITY;
+  const heartbeatIntervalMs = options.heartbeatIntervalMs ?? HEARTBEAT_INTERVAL_MS;
   const publishSnapshot = async (): Promise<void> => {
     try {
       await options.snapshotStore?.write(
@@ -97,6 +112,13 @@ export async function startService(options: ServiceOptions): Promise<Service> {
       );
       if (snapshotFailing) log("observer snapshot written again");
       snapshotFailing = false;
+      if (Date.now() - lastHeartbeat >= heartbeatIntervalMs) {
+        lastHeartbeat = Date.now();
+        log(
+          `${OBSERVER_HEARTBEAT}: snapshot written, broker ${connected ? "connected" : "disconnected"}, ` +
+            `${ingester.snapshot().length} meter(s) held`,
+        );
+      }
     } catch (error) {
       // Logged once per outage, not every thirty seconds.
       if (!snapshotFailing) {

@@ -1213,6 +1213,84 @@ if (!alertEmail) {
         },
         { dependsOn: services },
     );
+
+    // --- The observer going quiet --------------------------------------------
+    //
+    // After a written snapshot the observer logs `observer heartbeat` at most
+    // every five minutes (OBSERVER_HEARTBEAT in apps/ingester/src/service.ts).
+    // A log-based metric counts those lines and the policy fires when none
+    // arrive for fifteen minutes. That catches every way the observer goes
+    // quiet: the startup script dying, the container crash-looping, a failing
+    // Firestore write. A VM reading RUNNING says none of that, and the one time
+    // it happened the Incoming view sat 113 hours stale before anyone looked.
+    //
+    // The series is summed across instances, so a VM replacement (new
+    // instance_id, a minute or two of silence) reads as one series with a short
+    // gap rather than an old series going absent. Absence only fires on a
+    // series that has reported at least once, so the first boot after this
+    // lands has to heartbeat before the alert is armed.
+    //
+    // A new kind of resource, so the deployer's roles were checked in the same
+    // edit: logging.logMetrics.create is in roles/logging.configWriter, and the
+    // policy is monitoring.editor, both already held for the build alert.
+    if (incomingOffered) {
+        const heartbeat = new gcp.logging.Metric(
+            "observer-heartbeat",
+            {
+                name: "observer_heartbeat",
+                description: "Snapshots the observer wrote, one line per five minutes at most.",
+                filter: [
+                    `resource.type="${ingesterHost === "vm" ? "gce_instance" : "cloud_run_revision"}"`,
+                    '(textPayload:"observer heartbeat" OR jsonPayload.message:"observer heartbeat")',
+                ].join(" "),
+                metricDescriptor: { metricKind: "DELTA", valueType: "INT64" },
+            },
+            { dependsOn: services },
+        );
+
+        new gcp.monitoring.AlertPolicy(
+            "observer-silent",
+            {
+                displayName: "Ingester: the observer has stopped writing its snapshot",
+                combiner: "OR",
+                notificationChannels: [channel.id],
+                conditions: [
+                    {
+                        displayName: "No observer heartbeat for 15 minutes",
+                        conditionAbsent: {
+                            filter: pulumi.interpolate`metric.type="logging.googleapis.com/user/${heartbeat.name}" AND resource.type="${ingesterHost === "vm" ? "gce_instance" : "cloud_run_revision"}"`,
+                            duration: "900s",
+                            aggregations: [
+                                {
+                                    alignmentPeriod: "300s",
+                                    perSeriesAligner: "ALIGN_SUM",
+                                    crossSeriesReducer: "REDUCE_SUM",
+                                },
+                            ],
+                        },
+                    },
+                ],
+                alertStrategy: { autoClose: "86400s" },
+                documentation: {
+                    mimeType: "text/markdown",
+                    content: [
+                        "The observer has written no snapshot for 15 minutes, so the",
+                        "Incoming view is going stale. Check in Cloud Shell, per",
+                        "`docs/runbooks/cloud-shell.md`:",
+                        "",
+                        "1. `sudo docker ps -a` on the VM. No `ingester` container means",
+                        "   the startup script failed: read the serial console",
+                        "   (`get-serial-port-output ... | grep startup-script`), then",
+                        "   `gcloud compute instances reset power-meter-ingester",
+                        "   --zone us-central1-a`.",
+                        "2. `sudo docker logs --tail 40 ingester` for a crash loop or",
+                        "   `could not write the observer snapshot`.",
+                    ].join("\n"),
+                },
+            },
+            { dependsOn: services },
+        );
+    }
 }
 
 export const pipelineTriggers = {
