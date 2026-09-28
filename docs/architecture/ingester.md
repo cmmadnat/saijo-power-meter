@@ -331,7 +331,7 @@ e2-micro, which an ingester decoding nine messages a minute does not strain. Wha
 | Deploys | The commit-pinned image is in the startup script, which cannot change in place, so a code merge *replaces* the VM — a minute or two without an observer. |
 | Secrets | Fetched at boot by the ingester's own image, as its own account, into tmpfs, and passed as `--env-file`. |
 | Access | Private. One firewall rule: SSH from IAP's range. `/latest` is read through `gcloud compute ssh --tunnel-through-iap`. The external IP is outbound only; Cloud NAT would cost more than the rest together. |
-| Health | `docker --restart always`. There is no readiness gate as Cloud Run had; a boot that fails shows in the serial console. |
+| Health | `docker --restart always`, and the startup script retries its network steps. There is no readiness gate as Cloud Run had; a boot that fails shows in the serial console. In observe mode, an `observer heartbeat` log line after a written snapshot (at most every 5 min) feeds a log-based metric, and the *observer-silent* alert emails when none arrives for 15 min. |
 | Logs | Cloud Logging under `gce_instance`, not the Cloud Run resource `/logs` reads. |
 | The web app | **Has no route to it.** Cloud Run's `run.invoker` has no VM equivalent, so step 10 must give the Incoming source one; the program refuses `dataMode: "live"` on a VM until then. |
 

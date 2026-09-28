@@ -18,7 +18,7 @@ import { generateFixtures, toStationPayload } from "@power-meter/infrastructure/
 import { subscribeOptions, type Broker, type BrokerHandlers } from "./broker.ts";
 import type { Config } from "./config.ts";
 import type { ObserverSnapshot } from "@power-meter/infrastructure";
-import { startService } from "./service.ts";
+import { OBSERVER_HEARTBEAT, startService } from "./service.ts";
 
 const REGISTRY = MeterRegistry.fromWorkbook();
 
@@ -241,5 +241,40 @@ describe("subscribing", () => {
     const count = written.length;
     await new Promise((resolve) => setTimeout(resolve, 60));
     assert.equal(written.length, count, "no writes after stop");
+  });
+
+  it("logs a heartbeat only after a snapshot is written, and not on every write", async () => {
+    const lines: string[] = [];
+    let failing = true;
+    const started = await startService({
+      config: {
+        ...config,
+        warehouse: "none",
+        clientId: "power-meter-observer",
+        observerSnapshot: "file",
+        latestFlushIntervalMs: 10,
+      },
+      broker: new FakeBroker(),
+      writer: null,
+      serve: false,
+      log: (line) => void lines.push(line),
+      heartbeatIntervalMs: 60_000,
+      snapshotStore: {
+        write: async () => {
+          if (failing) throw new Error("firestore unavailable");
+        },
+      },
+    });
+    const heartbeats = () => lines.filter((line) => line.startsWith(OBSERVER_HEARTBEAT));
+
+    // Failing writes are the outage the alert exists for: no heartbeat.
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(heartbeats().length, 0);
+
+    failing = false;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    assert.equal(heartbeats().length, 1, "one line per interval, however many writes");
+
+    await started.stop("test over");
   });
 });

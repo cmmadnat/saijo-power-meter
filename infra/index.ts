@@ -588,6 +588,12 @@ function deployTheIngesterVm(): gcp.compute.Instance {
     // Runs on every boot. Container-Optimized OS has docker and curl and a
     // read-only root; /var is writable and /run is tmpfs, which is where the
     // credentials go so they never reach the disk as a file of their own.
+    //
+    // Every network step retries. The script runs once per boot and nothing
+    // reruns it, so a single failure leaves a VM that reads RUNNING with no
+    // container in it. That happened on the step-10 labels merge: `docker
+    // login` timed out 36 s after boot, `set -e` ended the script, and the
+    // observer was silent for five days until someone read the serial console.
     const startupScript = pulumi.interpolate`#!/bin/bash
 set -euo pipefail
 IMAGE='${ingesterImage}'
@@ -596,11 +602,26 @@ export DOCKER_CONFIG=/var/lib/ingester/docker
 mkdir -p "$DOCKER_CONFIG" /run/ingester
 chmod 755 /run/ingester
 
-curl -sf -H 'Metadata-Flavor: Google' \\
-  'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' \\
-  | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p' \\
-  | docker login -u oauth2accesstoken --password-stdin 'https://${registryHost}'
-docker pull "$IMAGE"
+# Up to ~10 minutes per step, then give up loudly in the serial console.
+retry() {
+  local attempt
+  for attempt in $(seq 1 40); do
+    "$@" && return 0
+    echo "ingester boot: '$1' failed (attempt $attempt/40), retrying in 15 s" >&2
+    sleep 15
+  done
+  echo "ingester boot: '$1' failed 40 times, giving up; reset the VM to retry" >&2
+  return 1
+}
+
+registry_login() {
+  curl -sf -H 'Metadata-Flavor: Google' \\
+    'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' \\
+    | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p' \\
+    | docker login -u oauth2accesstoken --password-stdin 'https://${registryHost}'
+}
+retry registry_login
+retry docker pull "$IMAGE"
 
 # The broker's address and credentials, read as the ingester's own account by
 # the ingester's own image: Node has fetch, and COS has no gcloud and no jq.
@@ -617,8 +638,11 @@ for (const [id, env] of [${secretEnv}]) {
 }
 JS
 chmod 644 /run/ingester/secrets.mjs
-(umask 077 && docker run --rm --network host -v /run/ingester:/w:ro --entrypoint node "$IMAGE" \\
-  /w/secrets.mjs "$PROJECT" > /run/ingester/env)
+fetch_secrets() {
+  (umask 077 && docker run --rm --network host -v /run/ingester:/w:ro --entrypoint node "$IMAGE" \\
+    /w/secrets.mjs "$PROJECT" > /run/ingester/env)
+}
+retry fetch_secrets
 
 docker rm -f ingester >/dev/null 2>&1 || true
 docker run -d --name ingester --restart always --network host \\
@@ -1189,6 +1213,84 @@ if (!alertEmail) {
         },
         { dependsOn: services },
     );
+
+    // --- The observer going quiet --------------------------------------------
+    //
+    // After a written snapshot the observer logs `observer heartbeat` at most
+    // every five minutes (OBSERVER_HEARTBEAT in apps/ingester/src/service.ts).
+    // A log-based metric counts those lines and the policy fires when none
+    // arrive for fifteen minutes. That catches every way the observer goes
+    // quiet: the startup script dying, the container crash-looping, a failing
+    // Firestore write. A VM reading RUNNING says none of that, and the one time
+    // it happened the Incoming view sat 113 hours stale before anyone looked.
+    //
+    // The series is summed across instances, so a VM replacement (new
+    // instance_id, a minute or two of silence) reads as one series with a short
+    // gap rather than an old series going absent. Absence only fires on a
+    // series that has reported at least once, so the first boot after this
+    // lands has to heartbeat before the alert is armed.
+    //
+    // A new kind of resource, so the deployer's roles were checked in the same
+    // edit: logging.logMetrics.create is in roles/logging.configWriter, and the
+    // policy is monitoring.editor, both already held for the build alert.
+    if (incomingOffered) {
+        const heartbeat = new gcp.logging.Metric(
+            "observer-heartbeat",
+            {
+                name: "observer_heartbeat",
+                description: "Snapshots the observer wrote, one line per five minutes at most.",
+                filter: [
+                    `resource.type="${ingesterHost === "vm" ? "gce_instance" : "cloud_run_revision"}"`,
+                    '(textPayload:"observer heartbeat" OR jsonPayload.message:"observer heartbeat")',
+                ].join(" "),
+                metricDescriptor: { metricKind: "DELTA", valueType: "INT64" },
+            },
+            { dependsOn: services },
+        );
+
+        new gcp.monitoring.AlertPolicy(
+            "observer-silent",
+            {
+                displayName: "Ingester: the observer has stopped writing its snapshot",
+                combiner: "OR",
+                notificationChannels: [channel.id],
+                conditions: [
+                    {
+                        displayName: "No observer heartbeat for 15 minutes",
+                        conditionAbsent: {
+                            filter: pulumi.interpolate`metric.type="logging.googleapis.com/user/${heartbeat.name}" AND resource.type="${ingesterHost === "vm" ? "gce_instance" : "cloud_run_revision"}"`,
+                            duration: "900s",
+                            aggregations: [
+                                {
+                                    alignmentPeriod: "300s",
+                                    perSeriesAligner: "ALIGN_SUM",
+                                    crossSeriesReducer: "REDUCE_SUM",
+                                },
+                            ],
+                        },
+                    },
+                ],
+                alertStrategy: { autoClose: "86400s" },
+                documentation: {
+                    mimeType: "text/markdown",
+                    content: [
+                        "The observer has written no snapshot for 15 minutes, so the",
+                        "Incoming view is going stale. Check in Cloud Shell, per",
+                        "`docs/runbooks/cloud-shell.md`:",
+                        "",
+                        "1. `sudo docker ps -a` on the VM. No `ingester` container means",
+                        "   the startup script failed: read the serial console",
+                        "   (`get-serial-port-output ... | grep startup-script`), then",
+                        "   `gcloud compute instances reset power-meter-ingester",
+                        "   --zone us-central1-a`.",
+                        "2. `sudo docker logs --tail 40 ingester` for a crash loop or",
+                        "   `could not write the observer snapshot`.",
+                    ].join("\n"),
+                },
+            },
+            { dependsOn: services },
+        );
+    }
 }
 
 export const pipelineTriggers = {
