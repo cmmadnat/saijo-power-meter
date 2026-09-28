@@ -588,6 +588,12 @@ function deployTheIngesterVm(): gcp.compute.Instance {
     // Runs on every boot. Container-Optimized OS has docker and curl and a
     // read-only root; /var is writable and /run is tmpfs, which is where the
     // credentials go so they never reach the disk as a file of their own.
+    //
+    // Every network step retries. The script runs once per boot and nothing
+    // reruns it, so a single failure leaves a VM that reads RUNNING with no
+    // container in it. That happened on the step-10 labels merge: `docker
+    // login` timed out 36 s after boot, `set -e` ended the script, and the
+    // observer was silent for five days until someone read the serial console.
     const startupScript = pulumi.interpolate`#!/bin/bash
 set -euo pipefail
 IMAGE='${ingesterImage}'
@@ -596,11 +602,26 @@ export DOCKER_CONFIG=/var/lib/ingester/docker
 mkdir -p "$DOCKER_CONFIG" /run/ingester
 chmod 755 /run/ingester
 
-curl -sf -H 'Metadata-Flavor: Google' \\
-  'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' \\
-  | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p' \\
-  | docker login -u oauth2accesstoken --password-stdin 'https://${registryHost}'
-docker pull "$IMAGE"
+# Up to ~10 minutes per step, then give up loudly in the serial console.
+retry() {
+  local attempt
+  for attempt in $(seq 1 40); do
+    "$@" && return 0
+    echo "ingester boot: '$1' failed (attempt $attempt/40), retrying in 15 s" >&2
+    sleep 15
+  done
+  echo "ingester boot: '$1' failed 40 times, giving up; reset the VM to retry" >&2
+  return 1
+}
+
+registry_login() {
+  curl -sf -H 'Metadata-Flavor: Google' \\
+    'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token' \\
+    | sed -n 's/.*"access_token":"\\([^"]*\\)".*/\\1/p' \\
+    | docker login -u oauth2accesstoken --password-stdin 'https://${registryHost}'
+}
+retry registry_login
+retry docker pull "$IMAGE"
 
 # The broker's address and credentials, read as the ingester's own account by
 # the ingester's own image: Node has fetch, and COS has no gcloud and no jq.
@@ -617,8 +638,11 @@ for (const [id, env] of [${secretEnv}]) {
 }
 JS
 chmod 644 /run/ingester/secrets.mjs
-(umask 077 && docker run --rm --network host -v /run/ingester:/w:ro --entrypoint node "$IMAGE" \\
-  /w/secrets.mjs "$PROJECT" > /run/ingester/env)
+fetch_secrets() {
+  (umask 077 && docker run --rm --network host -v /run/ingester:/w:ro --entrypoint node "$IMAGE" \\
+    /w/secrets.mjs "$PROJECT" > /run/ingester/env)
+}
+retry fetch_secrets
 
 docker rm -f ingester >/dev/null 2>&1 || true
 docker run -d --name ingester --restart always --network host \\

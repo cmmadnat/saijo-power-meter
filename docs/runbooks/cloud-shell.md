@@ -89,6 +89,10 @@ Cloud Logging under `resource.type="gce_instance"`, or `vm 'sudo docker logs ing
 **If check 0 shows no container**, the startup script failed; its output is in the serial console:
 `gcloud compute instances get-serial-port-output power-meter-ingester --zone us-central1-a
 --project saijo-power-meter | grep startup-script`.
+The fix is `gcloud compute instances reset power-meter-ingester --zone us-central1-a --project
+saijo-power-meter`, which reruns it. The script retries its network steps for ~10 minutes each since
+the observer went silent for five days after one `docker login` timed out 36 s into a boot; a VM
+that reads RUNNING says nothing about whether its container ever started.
 
 **What it costs**, per the free tier: the e2-micro, its 10 GB standard disk and the first 1 GB a
 month of egress from North America are free. The in-use external IPv4 address may be billed at
