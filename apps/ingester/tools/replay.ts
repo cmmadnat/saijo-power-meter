@@ -13,7 +13,7 @@
  *
  * `--drop-at` and `--drop-for` take the broker down mid-run and bring it back,
  * which is the reconnect case. Messages published while it is down are gone —
- * this harness has no queue, where HiveMQ has one bounded at 1000 messages —
+ * this harness has no queue, where a real broker may queue for a persistent session —
  * so what it proves is that the subscriber comes back and resumes, not that
  * nothing was lost.
  *

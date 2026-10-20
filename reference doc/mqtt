@@ -1,5 +1,12 @@
-USERNAME=hivemq.webclient.1790098372108
-PASSWORD=APo*Yf&9C7**H4#LYmA$kYLcs&VI3NQP
-MQTT_URL=2c6361568aba445e886e250f7bd11fd9.s1.eu.hivemq.cloud
-TLS_MQTT_URL=2c6361568aba445e886e250f7bd11fd9.s1.eu.hivemq.cloud:8883
-TLS_WEBSOCKET_URL=2c6361568aba445e886e250f7bd11fd9.s1.eu.hivemq.cloud:8884/mqtt
+# The customer's broker since 2026-10-20 (it replaced HiveMQ Cloud).
+# MQTT 3.1.1 recommended, 3.1 and 5.0 accepted. Cloudflare terminates TLS on 443.
+# Publishes every ~60 s, all stations together at about :27; nothing retained.
+# Keepalive <= 60 (Cloudflare drops a pipe silent for ~100 s); client ids must be unique.
+#
+# No password here, by the customer's instruction and ours: export MQTT_PASSWORD
+# for the tools. The deployed observer reads Secret Manager, not this file.
+#
+# Accounts are per project. saijomqttweb01 is this one: read-only, PMeterStation only.
+# saijomqttweb (every topic) is for administration and debugging, not for an app.
+MQTT_URL=wss://mqtt.saijodenki.net/mqtt
+USERNAME=saijomqttweb01

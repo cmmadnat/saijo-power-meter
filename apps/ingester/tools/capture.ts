@@ -10,14 +10,14 @@
  *
  *     npm run capture -w @power-meter/ingester -- --messages 9 --out capture.jsonl
  *
- * It reads the address and the credentials from `reference doc/mqtt`, which the
- * customer supplied, so there is nothing to export and no password on a command
- * line. `MQTT_URL`, `MQTT_USERNAME` and `MQTT_PASSWORD` override it, and
- * `--creds <path>` points at a different file.
+ * It reads the address and the username from `reference doc/mqtt`, which the
+ * customer supplied, and the password from `MQTT_PASSWORD`, which the file
+ * deliberately does not carry. `MQTT_URL` and `MQTT_USERNAME` override the
+ * file, and `--creds <path>` points at a different one.
  *
- * **Run it from somewhere with plain outbound TCP.** A Claude cloud session has
- * no egress on 1883 or 8883 — only HTTPS through an agent proxy — so this will
- * time out there and needs a laptop, Cloud Shell or the factory network.
+ * **Run it from a laptop or Cloud Shell.** The broker is WebSocket over 443
+ * since 2026-10-20; a Claude cloud session's proxy reset every TLS handshake to
+ * the old broker, and this one has not been tried from there.
  *
  * Two safety properties, both deliberate:
  *
@@ -87,9 +87,10 @@ const client = mqtt.connect(url, {
   // subscription away.
   clientId,
   clean: true,
-  // 5 against HiveMQ. `MQTT_PROTOCOL_VERSION=4` is for pointing this at the
-  // local replay broker, which speaks 3.1.1 only — useful for checking the
-  // tool itself, never for reading a real meter.
+  // 5 by default, as the ingester connects. The customer's broker takes 3.1.1
+  // or 5 (it recommends 3.1.1), so `MQTT_PROTOCOL_VERSION=4` reads it too — and
+  // is the only way to point this at the local replay broker, which speaks
+  // 3.1.1 alone.
   protocolVersion: process.env["MQTT_PROTOCOL_VERSION"] === "4" ? 4 : 5,
   connectTimeout: 20_000,
   reconnectPeriod: 0,

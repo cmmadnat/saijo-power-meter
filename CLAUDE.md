@@ -370,7 +370,7 @@ nothing (9), then a viewer toggle between Demo and that Incoming feed (10), then
 against the replay in a browser; merging it deploys both. **Step 9's code is in** — `WAREHOUSE=none`,
 `/recent`, the observed publish interval — and verified against the replay; `deployIngester` is `"true"`, so it deploys on that change's merge — to a
 free-tier **Compute Engine e2-micro**, not Cloud Run (`ingesterHost`, below) — and its checks
-against HiveMQ are in `docs/runbooks/cloud-shell.md`. The
+against the broker are in `docs/runbooks/cloud-shell.md`. The
 passcode gate, the rollback rehearsal and the alerts are in the plan's Backlog, and the gate is due
 before go-live. The rules below about exemptions and the one `DATA_MODE` still hold until the step
 that changes each of them lands.
@@ -573,9 +573,9 @@ refuses to *write* while `unconfirmedScales()` names anything — a recording re
 crash-loop and fail every apply from then on, which is why the deployed service observes. Its service account, the three broker secrets and its warehouse
 access apply regardless, because none of them ingests anything. Since step 9
 the service runs whatever `saijo-power-meter:ingesterMode` says — `"observe"` by default,
-`"record"` at go-live — and turning `deployIngester` on also declares the three broker secrets'
-first versions from `reference doc/mqtt` (already committed, so state exposes nothing new;
-`deletionPolicy: ABANDON`, so dropping them at rotation destroys nothing). The program refuses
+`"record"` at go-live. The program declares the three broker secrets and **none of their
+versions** — those are added by hand (`gcloud secrets versions add`), so a new project needs all
+three before `deployIngester` or Cloud Run refuses the revision. The program refuses
 `dataMode: "live"` unless `ingesterMode` is `"record"`.
 
 **The ingester runs on a VM because always-on Cloud Run is not free.** `saijo-power-meter:ingesterHost`
@@ -620,27 +620,36 @@ observer can never evict the ingester that records. Do not add a fourth exemptio
 It is not the ingester: it subscribes, prints the raw integers and writes nothing, so there is
 nothing behind it to corrupt. It connects with a random client id — never the ingester's fixed one,
 which would evict a running ingester — and with a clean session at QoS 0. It reads the address and
-credentials from **`reference doc/mqtt`**, which the customer supplied on 2026-09-22 (the workbook
-itself never carried a hostname). Run it where TCP is allowed and its output settles active power on
-a running meter; energy still needs that meter's display reading.
+username from **`reference doc/mqtt`** and the password from `MQTT_PASSWORD`, which that file
+deliberately does not carry. Its output settles active power on a running meter; energy still needs
+that meter's display reading.
 
-**A cloud session cannot reach that broker, and it is a blocked host rather than a blocked port.**
-The egress proxy establishes a `CONNECT` tunnel to 8883, 8884 and 443 and then resets during the TLS
-handshake, while the same tunnel completes one to `api.github.com`. Its README says to report a
-policy denial rather than route around it, so do not go looking for a way through — run the capture
-from a laptop or Cloud Shell instead.
+**The broker is the customer's own since 2026-10-20: `wss://mqtt.saijodenki.net/mqtt`,** behind
+Cloudflare, after HiveMQ withdrew its free tier. MQTT 3.1.1 recommended, 5 accepted; nothing
+retained; every station publishes together about :27 past each minute; keepalive must stay ≤ 60
+(Cloudflare drops a pipe silent for ~100 s). Accounts are per project and this one is
+`saijomqttweb01` — read-only, PMeterStation topics only; `saijomqttweb` sees every topic and is not
+for an app. The smoke test that day saw all nine topics within 0.5 s and the same filler values on
+all 55 slots — still a test publisher. The observer was moved by adding version 2 of each
+`mqtt-broker-*` secret and resetting the VM, and held 55 meters at its next heartbeat.
 
-**Those credentials are committed in plaintext and are in git history.** Rotate them before go-live
-and put the new values in the `mqtt-broker-*` Secret Manager secrets, not back in a tracked file:
-rotation is then a secret version plus a restart rather than a commit. Deleting the file does not
-undo the exposure.
+**A cloud session could not reach HiveMQ** — its egress proxy reset every TLS handshake to that
+host — and has not been tried against the new broker. Its README says to report a policy denial
+rather than route around it, so do not go looking for a way through.
+
+**The broker password never goes in a tracked file.** The customer's instruction says so, and
+rotation is then a secret version plus a VM reset rather than a commit. Every account currently
+shares one password, sent in a chat message; ask for one per account before go-live. The old HiveMQ
+credentials are in git history, and dead with the cluster.
 
 **Exactly one ingester, and it is three things rather than a setting.** `min-instances=1,
 max-instances=1`; a fixed MQTT client id, so a broker evicts the older session when a new revision
 attaches; and — the part that is easy to leave out — **an evicted instance exits instead of
 reconnecting**. Without the third, two ingesters evict each other every few seconds and both write.
-That last one reads MQTT 5's session-taken-over reason code. **HiveMQ sends it —
-checked on 2026-09-22 with `npm run takeover -w @power-meter/ingester`, which saw reason code 142.**
+That last one reads MQTT 5's session-taken-over reason code. **HiveMQ sent it —
+checked on 2026-09-22 with `npm run takeover -w @power-meter/ingester`, which saw reason code 142.
+The customer's broker, live since 2026-10-20, has not been probed:** re-run `takeover` against it
+before go-live, because without 142 an evicted ingester reconnects instead of exiting.
 The local replay broker (aedes, 3.1.1) cannot, which is why `MQTT_PROTOCOL_VERSION=4` is a harness
 setting and never a deployment one.
 

@@ -51,11 +51,12 @@
  *
  * `clean: false` with QoS 1 asks the broker to hold messages while the
  * subscriber is away, which is what turns a thirty-second reconnect into no
- * loss at all. It is not unlimited: HiveMQ Cloud's free plan queues 1000
- * messages per client, which at 60 messages a minute is about sixteen minutes.
- * Past that the broker drops the oldest, silently. That bound is the documented
- * loss window, and it is why "a broker that goes away for an hour" loses data
- * no matter what this code does.
+ * loss at all. It is not unlimited: HiveMQ Cloud's free plan queued 1000
+ * messages per client and then dropped the oldest, silently. The customer's
+ * broker, which replaced it on 2026-10-20, has not said what it queues for an
+ * offline session, or whether it queues at all. That bound is the loss window,
+ * and it is why "a broker that goes away for an hour" loses data no matter what
+ * this code does — so it is a question to settle before go-live.
  *
  * Observe mode is the exception, and sets `persistentSession: false`. It
  * records nothing, so there is no loss for a queue to prevent — and a queue

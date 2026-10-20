@@ -30,10 +30,11 @@ export interface BrokerConfig {
 /**
  * `KEY=VALUE` lines, as the customer's file carries them.
  *
- * Reading the file rather than asking for exports means nobody has to put a
- * password on a command line, where it lands in a shell history. The
- * environment still wins, so a rotated credential that is not in the file is
- * one export away.
+ * The file carries the address and the username; the password is not in it
+ * since the broker moved on 2026-10-20, and comes from `MQTT_PASSWORD`. Export
+ * it with `read -rs MQTT_PASSWORD; export MQTT_PASSWORD` rather than on a
+ * command line, where it lands in a shell history. The environment wins for
+ * all three.
  */
 async function fromFile(path: string): Promise<Record<string, string>> {
   try {
@@ -56,10 +57,9 @@ async function fromFile(path: string): Promise<Record<string, string>> {
 /**
  * The address as a URL with a scheme.
  *
- * The supplied file gives `host`, `host:8883` and `host:8884/mqtt` without one,
- * because HiveMQ's console prints them that way. TLS on 8883 is the default:
- * plain 1883 is not open on a HiveMQ Cloud cluster at all, so a bare host can
- * only mean `mqtts://`.
+ * The customer's file now carries a full `wss://` URL, which passes through
+ * untouched. A bare host is what HiveMQ's console used to print, and still
+ * means TLS on 8883: assuming plain 1883 would send credentials in the clear.
  */
 export function toUrl(raw: string): string {
   if (/^[a-z]+:\/\//.test(raw)) return raw;

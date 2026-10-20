@@ -39,7 +39,8 @@ for role in roles/compute.instanceAdmin.v1 roles/compute.networkAdmin roles/comp
 done
 ```
 
-The merge creates the three broker secrets' first versions from `reference doc/mqtt`, a network,
+The broker secrets' versions are added by hand beforehand (`gcloud secrets versions add`; the
+program declares only the secrets). The merge creates a network,
 one IAP-only SSH rule, and the VM. The VM is private — no port but 22, and that only from IAP — so
 every check goes through the tunnel. The first `gcloud compute ssh` creates an OS Login key.
 Docker needs `sudo`: the OS Login user is not in the `docker` group. `curl` does not.
@@ -235,7 +236,8 @@ so it runs here, or on a laptop on the factory network.
 npm run capture -w @power-meter/ingester -- --messages 9 --out capture.jsonl
 ```
 
-It reads the address and credentials from `reference doc/mqtt`, connects with a random client id
+It reads the address and username from `reference doc/mqtt` and the password from `MQTT_PASSWORD`
+(`read -rs MQTT_PASSWORD; export MQTT_PASSWORD`), connects with a random client id
 (never the ingester's, which would evict a running one) and a clean session at QoS 0.
 
 ## Reading logs without Cloud Shell

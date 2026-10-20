@@ -1,5 +1,3 @@
-import { readFileSync } from "node:fs";
-import * as path from "node:path";
 import * as gcp from "@pulumi/gcp";
 import * as pulumi from "@pulumi/pulumi";
 
@@ -11,9 +9,7 @@ const region = new pulumi.Config("gcp").require("region");
 // are secret values that cannot live in code: the state bucket, its KMS key and
 // the deployer service account. The Secret Manager *secrets* are declared here;
 // their values are added out of band, since a secret value in a Pulumi program
-// is a secret value in the state bucket and in every diff. The one exception is
-// the broker's first versions, whose values the customer already committed —
-// see brokerSecretValues below.
+// is a secret value in the state bucket and in every diff.
 
 // App-level API enablement. The bootstrap enables only what it needs itself.
 const services = [
@@ -196,29 +192,26 @@ const ingesterClientId =
 const incomingOffered = deployIngester && ingesterMode === "observe";
 const observerSnapshot = incomingOffered ? "firestore" : "off";
 
-// The broker's address and credentials. The *containers* are declared here,
-// and so — since step 9, and only while observing — are their first versions.
-//
-// A secret value in a Pulumi program is a secret value in the state bucket,
-// which is why the header of this file says values are added out of band. These
-// three are the exception because they are not secret any more: the customer
-// supplied them in `reference doc/mqtt`, which is committed, and they are in
-// git history for good. Putting them in state exposes nothing git has not, and
-// it removes a hand-run step that an apply depends on — Cloud Run refuses a
-// revision whose secret has no version, so a forgotten `gcloud secrets versions
-// add` would be a red `main`.
-//
-// That reasoning ends at rotation, which is a go-live item. The rotated values
-// go in by hand as new versions, never into a file:
+// The broker's address and credentials. Only the *containers* are declared
+// here; every version is added by hand, never from a file:
 //
 //   printf '%s' "$PASSWORD" | gcloud secrets versions add mqtt-broker-password \
 //     --project saijo-power-meter --data-file=-
 //
-// The service reads `latest`, so a new version plus a restart is the whole
-// rotation. Then delete `brokerSecretValues` below: `deletionPolicy: ABANDON`
-// means removing the resources leaves the old versions where they are, to be
-// disabled with `gcloud secrets versions disable`, rather than Pulumi
-// destroying a version the service might still be reading.
+// The service reads `latest`, so a new version plus a restart (a VM reset, or a
+// new Cloud Run revision) is the whole rotation. Disable the old version after.
+//
+// Until 2026-10-20 this program declared each secret's first version from
+// `reference doc/mqtt`, because those HiveMQ credentials were committed anyway.
+// The broker then moved to the customer's own (wss://mqtt.saijodenki.net), and
+// its values went in by hand as version 2. Keeping the file-derived versions
+// would have been a trap: any edit to that file replaces version 1 with a new
+// `latest` — silently pointing the observer back at a broker that is gone.
+// Their removal abandons them (`deletionPolicy: ABANDON`) rather than
+// destroying them.
+//
+// The catch this reintroduces: Cloud Run refuses a revision whose secret has no
+// version, so a new project needs all three added before `deployIngester`.
 const brokerSecrets = [
     { secretId: "mqtt-broker-url", env: "MQTT_URL" },
     { secretId: "mqtt-broker-username", env: "MQTT_USERNAME" },
@@ -315,55 +308,6 @@ const brokerSecretAccess = brokerSecrets.map(
             member: pulumi.interpolate`serviceAccount:${ingesterIdentity.email}`,
         }),
 );
-
-/**
- * `KEY=VALUE` lines from the customer's file, the same format
- * apps/ingester/tools/broker-config.ts reads. The host comes without a scheme;
- * a HiveMQ Cloud cluster has no plain 1883, so it can only mean mqtts:// on
- * 8883, and that is the one conversion made here.
- */
-function brokerSecretValues(): Record<string, string> {
-    const file = path.join(__dirname, "..", "reference doc", "mqtt");
-    const entries = Object.fromEntries(
-        readFileSync(file, "utf8")
-            .split("\n")
-            .map((line) => line.trim())
-            .filter((line) => line !== "" && !line.startsWith("#") && line.includes("="))
-            .map((line) => {
-                const at = line.indexOf("=");
-                return [line.slice(0, at).trim(), line.slice(at + 1).trim()];
-            }),
-    );
-    const host = entries["TLS_MQTT_URL"] ?? entries["MQTT_URL"];
-    const { USERNAME: username, PASSWORD: password } = entries;
-    if (!host || !username || !password) {
-        throw new Error(
-            `${file} must carry MQTT_URL or TLS_MQTT_URL, USERNAME and PASSWORD.`,
-        );
-    }
-    const url = /^[a-z]+:\/\//.test(host)
-        ? host
-        : `mqtts://${host.includes(":") ? host : `${host}:8883`}`;
-    return {
-        "mqtt-broker-url": url,
-        "mqtt-broker-username": username,
-        "mqtt-broker-password": password,
-    };
-}
-
-const brokerSecretVersions = deployIngester
-    ? (() => {
-          const values = brokerSecretValues();
-          return brokerSecrets.map(
-              ({ secretId, secret }) =>
-                  new gcp.secretmanager.SecretVersion(`${secretId}-v1`, {
-                      secret: secret.id,
-                      secretData: pulumi.secret(values[secretId]!),
-                      deletionPolicy: "ABANDON",
-                  }),
-          );
-      })()
-    : [];
 
 const ingesterImage = process.env.INGESTER_IMAGE;
 
@@ -463,7 +407,7 @@ function deployTheIngester(): gcp.cloudrunv2.Service {
             },
         },
         {
-            // The secret access and versions too: Cloud Run resolves the
+            // The secret access too: Cloud Run resolves the
             // secrets when it creates the revision, and a revision created
             // before the grant lands fails with a permission error.
             dependsOn: [
@@ -472,7 +416,6 @@ function deployTheIngester(): gcp.cloudrunv2.Service {
                 restartState,
                 ...services,
                 ...brokerSecretAccess,
-                ...brokerSecretVersions,
             ],
         },
     );
@@ -520,7 +463,7 @@ function deployTheIngester(): gcp.cloudrunv2.Service {
 //   account into tmpfs (/run) and handed to the container as its environment.
 // - **Private.** The only ingress rule is SSH from IAP's range, so /latest is
 //   read over `gcloud compute ssh --tunnel-through-iap`. The external IP is
-//   outbound only — to HiveMQ and the registry — because Cloud NAT, the
+//   outbound only — to the broker and the registry — because Cloud NAT, the
 //   alternative, costs more than everything else here put together.
 //
 // The deployer needs three compute roles for this that it did not hold before
@@ -700,7 +643,6 @@ docker run -d --name ingester --restart always --network host \\
                 pull,
                 logs,
                 ...brokerSecretAccess,
-                ...brokerSecretVersions,
                 ...services,
             ],
         },
