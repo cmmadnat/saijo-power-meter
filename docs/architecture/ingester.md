@@ -25,7 +25,7 @@ so and nothing that outlives the process. See *Observe mode* below.
 | `apps/ingester/tools/replay.ts` | A broker on loopback replaying the fixtures at 60 msg/min. |
 | `apps/ingester/tools/reconcile.ts` | Checks a run's rollup against the raw readings behind it. |
 | `apps/ingester/tools/capture.ts` | Reads the real broker, prints raw payloads, writes nothing. |
-| `apps/ingester/tools/takeover.ts` | Two connections, one id: does HiveMQ send reason code 142? |
+| `apps/ingester/tools/takeover.ts` | Two connections, one id: does the broker send reason code 142? |
 | `apps/ingester/tools/broker-config.ts` | Where both of those read the address and credentials. |
 | `apps/ingester/tools/hotstate.ts` | Writes the restart-state document to a scratch database and reads it back. |
 | `packages/infrastructure/src/warehouse/writer.ts` | The `ReadingWriter` port: BigQuery for rows, Firestore for restart state. |
@@ -61,7 +61,11 @@ and it is the half of the guarantee the local harness cannot show. The local rep
 speaks 3.1.1 only, so `MQTT_PROTOCOL_VERSION=4` is how the harness runs — and running two ingesters
 against *it* shows exactly the flap described above, which is the failure mode this guard removes.
 
-So the chain is now: the broker sends 142 (seen on the real broker), the adapter reads 142 as a
+**On 2026-10-20 the broker changed** to the customer's own, `wss://mqtt.saijodenki.net/mqtt`, and
+that observation does not carry over: it has not been probed. Re-run `tools/takeover.ts` against it
+before go-live.
+
+So the chain was: the broker sends 142 (seen on HiveMQ), the adapter reads 142 as a
 takeover rather than a drop (`broker.ts`), and the service shuts down instead of reconnecting
 (asserted in `service.test.ts`). The only link never exercised end to end is the ingester process
 itself against HiveMQ, because it has never been allowed to connect.
@@ -98,7 +102,7 @@ drift from the one the screen draws.
 | A flush fails | Nothing. The batch is held and goes out with the next one, rollup rows included. A request BigQuery accepted but did not acknowledge can land twice: the default stream is at-least-once, as load jobs were. |
 | The warehouse is down for a long time | The buffer is capped at 20 000 readings (~an hour); past that the oldest are dropped, and counted in `/stats`. |
 | The broker drops briefly | Nothing. `clean: false` with QoS 1 means the broker queues while the subscriber is away. |
-| The broker is away a long time | Everything past the broker's queue depth. HiveMQ Cloud's free plan holds 1000 messages per client — about **16 minutes** at 60 a minute — and then drops the oldest, silently. |
+| The broker is away a long time | Everything past the broker's queue depth. HiveMQ Cloud's free plan held 1000 messages per client and then dropped the oldest, silently. The customer's broker (since 2026-10-20) has not said what it queues for an offline session — ask before go-live. |
 | SIGTERM (a deploy) | Nothing: the shutdown flushes once more before the process goes. |
 
 The acknowledgement is sent when the message is handed to the decoder, not when the batch is
@@ -185,7 +189,8 @@ publishing yet, so what it shows is the wire format and the fleet's shape, not m
 It was run against the replay broker on 2026-09-23 (`WAREHOUSE=none`, loopback, protocol 4): ready
 as `power-meter-observer` with `recording: false`, 55 meters on `/latest`, a measured interval of
 9 011 ms against the replay's 9 s, 240 readings on `/recent`, zero flushes, and no `.ingester`
-directory created. Against HiveMQ it has not run; the checks for that are in
+directory created. It has run on the VM since step 9 — against HiveMQ, then from 2026-10-20 against
+the customer's broker, holding 55 meters at its first heartbeat there. The checks are in
 `docs/runbooks/cloud-shell.md`.
 
 ## The observer snapshot (step 10)
@@ -228,11 +233,11 @@ which is why it is not an exemption to the gate — it never goes through it.
 npm run capture -w @power-meter/ingester -- --messages 9 --out capture.jsonl
 ```
 
-It reads the address and the credentials from `reference doc/mqtt`, which the customer supplied on
-2026-09-22 — so there is nothing to export and no password on a command line, where it would land
-in a shell history. `MQTT_URL`, `MQTT_USERNAME` and `MQTT_PASSWORD` override the file, and
-`--creds <path>` points at a different one. The file gives the host without a scheme; the tool
-reads that as `mqtts://host:8883`, because a HiveMQ Cloud cluster has no plain 1883 to mean.
+It reads the address and the username from `reference doc/mqtt` and the password from
+`MQTT_PASSWORD` — export it with `read -rs`, not on a command line, where it lands in a shell
+history. `MQTT_URL` and `MQTT_USERNAME` override the file, and `--creds <path>` points at a
+different one. The file carries a full `wss://` URL since the broker moved on 2026-10-20; a bare
+host, as HiveMQ's console printed it, is still read as `mqtts://host:8883`.
 
 Two properties are deliberate. It connects with a **random client id**, never
 `power-meter-ingester`: a diagnostic that evicted the running ingester would be worse than no
@@ -245,18 +250,18 @@ that settles active power arithmetically, because V, I and PF are pinned indepen
 not settled that way — a counter has nothing in the payload to cross-check against, so it still
 takes one meter's own display reading at a known moment.
 
-**It cannot run from a Claude cloud session, and the reason is now precise.** The egress policy does
-not allow that host on any port. A `CONNECT` tunnel is established to 8883, 8884 and 443 alike and
+**It could not run from a Claude cloud session against HiveMQ**, and the new broker has not been
+tried from one. The egress policy did not allow that host on any port. A `CONNECT` tunnel is established to 8883, 8884 and 443 alike and
 then reset during the TLS handshake, where the same tunnel completes a handshake to `api.github.com`
 without trouble; the proxy's own log records `ws_closed_mid_exchange` against the cluster after 39
 bytes come back. So this is not an MQTT-port restriction to work around — it is a blocked host, and
 the proxy's README is explicit that a policy denial is reported rather than routed around. Run the
 capture from a laptop, Cloud Shell or the factory network.
 
-**The credentials are in the repository, in plaintext, and that is now in git history.** They should
-be rotated before go-live, and the new values belong in the `mqtt-broker-*` secrets rather than back
-in a tracked file — rotation is then a secret version and a restart, not a commit. Deleting the file
-does not undo the exposure; only rotating does.
+**The password is not in the repository.** The HiveMQ credentials were, and are in git history,
+dead with that cluster. The customer's broker's password lives only in the `mqtt-broker-*` secrets,
+so rotation is a secret version and a VM reset, not a commit. All its accounts currently share one
+password; ask for one per account before go-live.
 
 ## Running it locally
 
@@ -306,19 +311,21 @@ crash-looping revision fails every apply from then on. The program also refuses
 `dataMode: "live"` unless `ingesterMode` is `"record"`, because live mode reads a warehouse an
 observer never writes.
 
-**Turning `deployIngester` on also creates the three secrets' first versions**, read at apply time
-from `reference doc/mqtt` — values the customer already committed, so putting them in Pulumi state
-exposes nothing git has not, and it removes a hand-run step an apply would otherwise depend on:
-Cloud Run refuses a revision whose secret has no version. They carry `deletionPolicy: ABANDON`.
-Rotation, at go-live, is by hand and never into a file:
+**The program declares the three secrets and none of their versions.** Until 2026-10-20 it created
+each one's first version from `reference doc/mqtt`, whose HiveMQ values were committed anyway. When
+the broker moved, version 2 went in by hand, and the file-derived versions were removed from the
+program — kept, any edit to that file would have minted a new `latest` pointing back at a dead
+broker. Removal abandons them (`deletionPolicy: ABANDON`). The cost is one hand-run step on a new
+project: Cloud Run refuses a revision whose secret has no version. Every version, then and at
+rotation, goes in by hand and never into a file:
 
 ```bash
 printf '%s' "$VALUE" | gcloud secrets versions add mqtt-broker-password \
   --project saijo-power-meter --data-file=-
 ```
 
-then delete the `SecretVersion` resources from the program — ABANDON leaves the old versions in
-place to be disabled, rather than destroying one the service might still be reading.
+then reset the VM (`gcloud compute instances reset power-meter-ingester --zone us-central1-a`),
+which reads `latest` at boot, and disable the old version once the new one is seen working.
 
 **It runs on a VM, not on Cloud Run** — `saijo-power-meter:ingesterHost`, `"vm"` by default.
 Cloud Run holding one always-on vCPU bills ~$45–70 a month; Compute Engine's free tier covers one
@@ -352,11 +359,10 @@ hand before the merge and added to `bootstrap.sh`.
   is built for the first time by the pipeline's `image` step.
 - **The Cloud Run service has never existed**, so `min/max-instances`, the probes and the secret
   environment are declared and unapplied.
-- **The ingester process has never connected to HiveMQ**, so the takeover chain is proven in two
-  pieces rather than end to end: `tools/takeover.ts` saw reason code 142 on the real broker on
-  2026-09-22, and the adapter's and service's response to it is asserted against a fake. Re-run
-  that probe (two connections, one *random* id — never the ingester's, read-only) if the broker or
-  its plan ever changes.
+- **The takeover chain is proven in pieces, and the broker piece is out of date**:
+  `tools/takeover.ts` saw reason code 142 on HiveMQ on 2026-09-22, and the adapter's and service's
+  response to it is asserted against a fake. The broker changed on 2026-10-20, so re-run that probe
+  (two connections, one *random* id — never the ingester's, read-only) before go-live.
 - **Nothing has measured cost per day**, which the plan asks for and which needs the service
   running.
 - **Neither of step 8c's two stores has been written to from this process.** The composition in

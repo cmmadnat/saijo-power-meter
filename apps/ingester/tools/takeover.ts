@@ -8,7 +8,9 @@
  * instance that exits instead of reconnecting — and the third reads MQTT 5's
  * disconnect reason code `0x8E`, *session taken over*. The replay harness
  * (aedes) speaks 3.1.1 only, where that code does not exist, so it can show the
- * eviction and not the signal. HiveMQ Cloud speaks 5.
+ * eviction and not the signal. HiveMQ Cloud sent it (2026-09-22); the
+ * customer's own broker, live since 2026-10-20, accepts MQTT 5 and has not been
+ * probed. Export `MQTT_PASSWORD` first — `reference doc/mqtt` does not carry it.
  *
  * This connects twice with the same client id and reports what the first
  * connection is told. It is read-only: it subscribes to nothing, publishes
@@ -71,7 +73,7 @@ async function connectOrExplain(label: string): Promise<MqttClient> {
     if (/protocol version/i.test(message)) {
       log(
         "This probe is about an MQTT 5 reason code, so it needs an MQTT 5 broker. " +
-          "The local replay harness (aedes) speaks 3.1.1 only; point it at HiveMQ.",
+          "The local replay harness (aedes) speaks 3.1.1 only; point it at the customer's broker.",
       );
     }
     process.exit(1);

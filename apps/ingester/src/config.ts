@@ -75,7 +75,9 @@ export interface Config {
    *
    * The takeover guard in `broker.ts` reads MQTT 5's disconnect reason code,
    * which is the only way a client is *told* it was evicted rather than merely
-   * dropped. HiveMQ Cloud speaks 5. The local replay broker (aedes) speaks
+   * dropped. HiveMQ Cloud sent it; the customer's own broker (since
+   * 2026-10-20) accepts 5 but has not been probed for it — `tools/takeover.ts`
+   * is the check. The local replay broker (aedes) speaks
    * 3.1.1 only, so the harness sets this to 4 and loses that one signal — it
    * still shows the eviction, from the broker's side.
    */

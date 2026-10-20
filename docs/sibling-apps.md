@@ -53,5 +53,7 @@ EMC. Each MQTT app inherits the power meter's gate: it refuses to record until i
 
 - The free e2-micro is one per **billing account**, and the power meter's ingester already has it.
   Every further ingester VM is about US$7–8 a month. Calorie Room and EMC need none.
-- The three MQTT apps read the customer's one HiveMQ broker on separate topics. Ask for a broker
-  user per app; the current credentials are committed and due for rotation regardless.
+- The three MQTT apps read the customer's one broker (`wss://mqtt.saijodenki.net/mqtt` since
+  2026-10-20) on separate topics, each with its own account: `saijomqttweb02` FieldTest,
+  `saijomqttweb03` ReliabilityTest, `saijomqttweb04`/`05` FTIndoor/FTOutdoor (their topic lists still
+  pending). Passwords go in each project's Secret Manager, never a tracked file.
