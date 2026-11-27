@@ -30,6 +30,7 @@ export interface RealtimeTableRow {
   readonly meterId: string;
   readonly meterNumber: string;
   readonly department: string | null;
+  readonly location: string | null;
   readonly machineNumber: string | null;
   readonly machineName: string | null;
   /** L1, L2, L3. Null for a meter that has never reported. */
@@ -54,6 +55,7 @@ export type RawField = "VL1" | "VL2" | "VL3" | "CL1" | "CL2" | "CL3" | "PF" | "P
 type SortKey =
   | "meterNumber"
   | "department"
+  | "location"
   | "machineNumber"
   | "machineName"
   | "v1"
@@ -104,6 +106,8 @@ function value(row: RealtimeTableRow, key: SortKey): string | number | null {
       return row.meterNumber;
     case "department":
       return row.department;
+    case "location":
+      return row.location;
     case "machineNumber":
       return row.machineNumber;
     case "machineName":
@@ -231,8 +235,9 @@ export function RealtimeTable({
   };
 }) {
   const router = useRouter();
-  const groupLabel = labelling ? "Topic" : "แผนก";
+  const groupLabel = labelling ? "แผนก / Topic" : "แผนก";
   const [department, setDepartment] = useState<string>(ALL);
+  const [search, setSearch] = useState("");
   const [live, setLive] = useState(true);
   // Grouping is on by default: 55 rows in five departments read as a list of
   // machines, and a supervisor's question is usually about a department.
@@ -257,10 +262,15 @@ export function RealtimeTable({
   }, [live, router]);
 
   const visible = useMemo(() => {
-    const filtered =
-      department === ALL
-        ? [...rows]
-        : rows.filter((row) => row.department === department);
+    const needle = search.trim().toLocaleLowerCase();
+    const filtered = rows.filter(
+      (row) =>
+        (department === ALL || row.department === department) &&
+        (needle === "" ||
+          [row.machineName, row.department, row.location, row.machineNumber, row.meterNumber].some(
+            (field) => field?.toLocaleLowerCase().includes(needle),
+          )),
+    );
     return filtered.sort((a, b) => {
       const primary = compare(a, b, sort.key, sort.direction);
       // Meter number is the tiebreak so equal values keep a stable, meaningful
@@ -269,7 +279,7 @@ export function RealtimeTable({
         ? primary
         : collator.compare(a.meterNumber, b.meterNumber);
     });
-  }, [rows, department, sort]);
+  }, [rows, department, search, sort]);
 
   /**
    * The rows as the table draws them: one flat list, or one list per
@@ -330,6 +340,16 @@ export function RealtimeTable({
             );
           })}
         </div>
+
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="ค้นหา · name, department, location, machine no."
+          aria-label="Search meters by name, department, location, machine number or meter number"
+          autoComplete="off"
+          className="w-64 border border-input bg-background px-2 py-1 text-xs outline-none focus-visible:border-accent-strong focus-visible:ring-1 focus-visible:ring-accent-strong"
+        />
 
         {department === ALL && (
           <button
@@ -414,6 +434,14 @@ export function RealtimeTable({
                 <SortButton
                   label={groupLabel}
                   columnKey="department"
+                  sort={sort}
+                  onSort={onSort}
+                />
+              </th>
+              <th rowSpan={2} scope="col" className={headCell}>
+                <SortButton
+                  label="สถานที่"
+                  columnKey="location"
                   sort={sort}
                   onSort={onSort}
                 />
@@ -510,7 +538,7 @@ export function RealtimeTable({
                 <Fragment key={group.department}>
                   <tr className="bg-muted">
                     <td
-                      colSpan={11}
+                      colSpan={12}
                       className={`${cell} font-mono text-2xs uppercase tracking-widest text-muted-foreground`}
                     >
                       {/* The name as given — a topic is printed as sent, not shouted. */}
@@ -603,6 +631,9 @@ function Row({
       </td>
       <td className={`${cell} whitespace-nowrap`}>
         {row.department ?? "—"}
+      </td>
+      <td className={`${cell} whitespace-nowrap`}>
+        {row.location ?? "—"}
       </td>
       <td className={`${cell} font-mono whitespace-nowrap`}>
         {row.machineNumber ?? "—"}

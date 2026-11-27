@@ -15,7 +15,8 @@ import { MeterRegistry, type Meter } from "@power-meter/domain";
 import { saveStationLabels } from "@/app/actions";
 import { dataSource, labelStore } from "@/lib/data-mode";
 import { formatAge, formatNumber } from "@/lib/format";
-import { LABEL_FIELD } from "@/lib/registry-source";
+import { MAX_LABEL_LENGTH, MAX_MACHINE_NUMBER_LENGTH, type MeterLabel } from "@power-meter/application";
+import { DEPARTMENT_FIELD, LABEL_FIELD, LOCATION_FIELD, MACHINE_NUMBER_FIELD } from "@/lib/registry-source";
 import { realtimeSnapshot } from "@/lib/realtime-source";
 
 export const dynamic = "force-dynamic";
@@ -44,7 +45,11 @@ export default async function MetersPage(props: PageProps<"/meters">) {
       <p className="max-w-[80ch] text-sm text-muted-foreground">
         The feed names a meter only by the topic it arrives on and the prefix its keys carry,
         shown here exactly as sent. Add a label to give it context: the Incoming view shows it on
-        every screen, and a meter without one says Unlabeled. Clear a field to remove its label.
+        every screen, and a meter without one says Unlabeled. Department (แผนก) and location
+        (สถานที่) can be set here beside the name. Department groups the meter on every screen —
+        left empty, the meter is grouped by its topic. Location is a place you type; it does not
+        change grouping. Machine number (หมายเลขเครื่อง) is a code typed here, never read out of
+        the name. Clear every field to remove a label.
       </p>
     </header>
   );
@@ -102,7 +107,7 @@ export default async function MetersPage(props: PageProps<"/meters">) {
                   <MeterField
                     key={meter.meterId}
                     meter={meter}
-                    label={labels.get(meter.meterId) ?? ""}
+                    label={labels.get(meter.meterId)}
                     row={rowFor.get(meter.meterId)}
                   />
                 ))}
@@ -135,32 +140,83 @@ function MeterField({
   row,
 }: {
   meter: Meter;
-  label: string;
+  label: MeterLabel | undefined;
   row: Awaited<ReturnType<typeof realtimeSnapshot>>["rows"][number] | undefined;
 }) {
   const inputId = `${LABEL_FIELD}${meter.meterId}`;
+  const departmentId = `${DEPARTMENT_FIELD}${meter.meterId}`;
+  const locationId = `${LOCATION_FIELD}${meter.meterId}`;
+  const numberId = `${MACHINE_NUMBER_FIELD}${meter.meterId}`;
+  const input =
+    "w-full border border-input bg-background px-2 py-1.5 text-sm outline-none focus-visible:border-accent-strong focus-visible:ring-1 focus-visible:ring-accent-strong";
+  const caption = "font-mono text-3xs uppercase tracking-wider text-muted-foreground";
   const status = row?.status ?? "offline";
   return (
     <li
       id={meter.meterId}
       className="flex scroll-mt-4 flex-wrap items-start gap-x-3 gap-y-1 border-b border-border/60 px-4 py-2 last:border-b-0 target:bg-muted/60 sm:flex-nowrap"
     >
-      <label htmlFor={inputId} className="flex w-14 shrink-0 flex-col pt-1.5 font-mono text-xs">
-        <span>{meter.keyPrefix}</span>
-      </label>
-      <div className="flex min-w-0 flex-1 flex-col gap-1">
-        <input
-          id={inputId}
-          name={inputId}
-          defaultValue={label}
-          maxLength={60}
-          placeholder="Unlabeled"
-          autoComplete="off"
-          className="w-full border border-input bg-background px-2 py-1.5 text-sm outline-none focus-visible:border-accent-strong focus-visible:ring-1 focus-visible:ring-accent-strong"
-        />
+      <span className="flex w-14 shrink-0 flex-col pt-5 font-mono text-xs">
+        {meter.keyPrefix}
+      </span>
+      <div className="grid min-w-0 flex-1 grid-cols-2 gap-x-2 gap-y-1">
+        <div className="col-span-2 flex flex-col gap-0.5">
+          <label htmlFor={inputId} className={caption}>
+            Name
+          </label>
+          <input
+            id={inputId}
+            name={inputId}
+            defaultValue={label?.name ?? ""}
+            maxLength={MAX_LABEL_LENGTH}
+            placeholder="Unlabeled"
+            autoComplete="off"
+            className={input}
+          />
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <label htmlFor={departmentId} className={caption}>
+            แผนก · Department
+          </label>
+          <input
+            id={departmentId}
+            name={departmentId}
+            defaultValue={label?.department ?? ""}
+            maxLength={MAX_LABEL_LENGTH}
+            placeholder={meter.topic}
+            autoComplete="off"
+            className={input}
+          />
+        </div>
+        <div className="flex flex-col gap-0.5">
+          <label htmlFor={locationId} className={caption}>
+            สถานที่ · Location
+          </label>
+          <input
+            id={locationId}
+            name={locationId}
+            defaultValue={label?.location ?? ""}
+            maxLength={MAX_LABEL_LENGTH}
+            autoComplete="off"
+            className={input}
+          />
+        </div>
+        <div className="col-span-2 flex flex-col gap-0.5">
+          <label htmlFor={numberId} className={caption}>
+            หมายเลขเครื่อง · Machine no.
+          </label>
+          <input
+            id={numberId}
+            name={numberId}
+            defaultValue={label?.machineNumber ?? ""}
+            maxLength={MAX_MACHINE_NUMBER_LENGTH}
+            autoComplete="off"
+            className={input}
+          />
+        </div>
       </div>
       <span
-        className="ms-17 flex items-center gap-2 font-mono text-2xs text-muted-foreground sm:ms-0 sm:w-28 sm:shrink-0 sm:justify-end sm:pt-2"
+        className="ms-17 flex items-center gap-2 font-mono text-2xs text-muted-foreground sm:ms-0 sm:w-28 sm:shrink-0 sm:justify-end sm:pt-5"
         title={row?.ageMs == null ? "Never reported" : `Last reading ${formatAge(row.ageMs)} ago`}
       >
         <span aria-hidden className={`inline-block size-2 ${STATUS_DOT[status]}`} />

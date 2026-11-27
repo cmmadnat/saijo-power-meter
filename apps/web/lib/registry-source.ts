@@ -23,3 +23,7 @@ export async function registryFor(
 
 /** The prefix a label input's name carries on the Meters page: `label:s08m6`. */
 export const LABEL_FIELD = "label:";
+/** Likewise the department (แผนก) and machine number (หมายเลขเครื่อง) inputs. */
+export const DEPARTMENT_FIELD = "department:";
+export const LOCATION_FIELD = "location:";
+export const MACHINE_NUMBER_FIELD = "machine-number:";
