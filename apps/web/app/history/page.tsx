@@ -99,7 +99,12 @@ export default async function HistoryPage(props: PageProps<"/history">) {
       )}
 
       <section className="flex flex-col gap-4">
-        <div className="overflow-x-auto border border-border">
+        <div
+          role="region"
+          aria-label="History readings"
+          tabIndex={0}
+          className="overflow-x-auto border border-border focus-visible:outline-2 focus-visible:outline-ring"
+        >
           <table className="w-full min-w-225 border-collapse text-sm">
             <caption className="sr-only">
               Energy consumed and running hours per meter, {window}

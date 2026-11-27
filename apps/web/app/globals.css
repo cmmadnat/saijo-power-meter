@@ -102,7 +102,7 @@
   --accent-foreground: #166534;
   --destructive: #ef4444;
   --border: #e2e8f0;
-  --input: #e2e8f0;
+  --input: #7c8799; /* field edges, WCAG 1.4.11: 3.63:1 on card #fff, 3.52:1 on page #fbfcf8 */
   --ring: #aff33e;
   --chart-1: #aff33e;
   --chart-2: #334155;
@@ -157,7 +157,7 @@
   --accent-foreground: #aff33e;
   --destructive: #991b1b;
   --border: #1e293b;
-  --input: #1e293b;
+  --input: #64748b; /* 3.75:1 on card #0f172a, 4.24:1 on page #020617 */
   --ring: #aff33e;
   --chart-1: #aff33e;
   --chart-2: #3b82f6;

@@ -539,7 +539,7 @@ export function RealtimeTable({
                   <tr className="bg-muted">
                     <td
                       colSpan={12}
-                      className={`${cell} font-mono text-2xs uppercase tracking-widest text-muted-foreground`}
+                      className={`${cell} font-mono text-xs uppercase tracking-widest text-foreground/80`}
                     >
                       {/* The name as given — a topic is printed as sent, not shouted. */}
                       <span className="normal-case">{group.department}</span>
