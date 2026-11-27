@@ -202,7 +202,7 @@ export function RealtimeCharts({
             placeholder="ค้นหา · name, dept, location, machine no."
             aria-label="Search meters by name, department, location, machine number or meter number"
             autoComplete="off"
-            className="border-b border-input bg-background px-3 py-1.5 text-xs outline-none focus-visible:bg-muted/40"
+            className="border-b border-input bg-background px-3 py-1.5 text-xs outline-none focus-visible:border-accent-strong focus-visible:ring-1 focus-visible:ring-accent-strong"
           />
           <div className="overflow-y-auto">
             {groups.map(([department, group]) => (
@@ -244,7 +244,7 @@ export function RealtimeCharts({
                           />
                           <span className="font-mono">{meter.meterNumber}</span>
                           <span
-                            className="line-clamp-2 min-w-0 sm:line-clamp-1"
+                            className="line-clamp-2 min-w-0"
                             title={`${meter.machineName ?? "—"}${meter.location ? ` · ${meter.location}` : ""}`}
                           >
                             {meter.machineName ?? "—"}

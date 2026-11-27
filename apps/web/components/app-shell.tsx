@@ -115,21 +115,34 @@ export function AppShell({
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-400 flex-1 px-4 pt-6 pb-16">
+      <main
+        className={[
+          "mx-auto w-full max-w-400 flex-1 px-4 pt-6",
+          badge !== null ? "pb-16" : "pb-6",
+        ].join(" ")}
+      >
         {children}
       </main>
 
       {/* The same mark, pinned to the viewport, so a screenshot cropped to a
-          chart or scrolled to the bottom of the table still carries it. main's
-          bottom padding (pb-16) is more than the badge height plus its offset, so the
-          last card or table row can always scroll clear of it. */}
+          chart or scrolled to the bottom of the table still carries it. When
+          the badge is shown, main's bottom padding (pb-16) is more than the
+          badge height plus its offset, so the last card or table row can
+          always scroll clear of it; the footer also gets end padding about
+          the badge's width so the fleet line does not run under it at 375px.
+          Live and Incoming have no badge, so they keep a matching pt/pb. */}
       {badge !== null && (
         <div className="pointer-events-none fixed right-3 bottom-3 z-50">
           <DataBadge label={badge} />
         </div>
       )}
 
-      <footer className="border-t border-border px-4 py-3">
+      <footer
+        className={[
+          "border-t border-border px-4 py-3",
+          badge !== null ? "pe-32" : "",
+        ].join(" ")}
+      >
         <div className="mx-auto w-full max-w-400 font-mono text-xs text-muted-foreground">
           {fleet.stations} stations · {fleet.meters} commissioned meters
           {fleet.standbyKw === null ? "" : ` · standby ${fleet.standbyKw} kW`}
