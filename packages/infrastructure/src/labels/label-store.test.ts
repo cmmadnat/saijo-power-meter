@@ -41,8 +41,8 @@ test("a write changes only the meters it names", async () => {
   assert.deepEqual(
     [...(await store.labels())],
     [
-      ["s01m1", { name: "Compressor", department: null, machineNumber: null }],
-      ["s08m6", { name: "Press line 2", department: null, machineNumber: null }],
+      ["s01m1", { name: "Compressor", department: null, location: null, machineNumber: null }],
+      ["s08m6", { name: "Press line 2", department: null, location: null, machineNumber: null }],
     ],
   );
   assert.ok(documents.docs.has(DEFAULT_LABELS_DOCUMENT));
@@ -65,7 +65,7 @@ test("round-trips through the file store the local replay uses", async () => {
 
 test("an old document of plain strings still reads, as names", () => {
   const labels = fromLabelsDocument({ labels: { s01m1: "Compressor", s02m1: "  " } });
-  assert.deepEqual([...labels], [["s01m1", { name: "Compressor", department: null, machineNumber: null }]]);
+  assert.deepEqual([...labels], [["s01m1", { name: "Compressor", department: null, location: null, machineNumber: null }]]);
 });
 
 test("object labels read and write, and empty fields are left out", async () => {
@@ -73,18 +73,19 @@ test("object labels read and write, and empty fields are left out", async () => 
   const store = new DocumentMeterLabelStore(documents);
   await store.setLabels(
     new Map([
-      [id("s01m1"), { name: "Compressor", department: "แผนกลม", machineNumber: "CP-01" }],
+      [id("s01m1"), { name: "Compressor", department: "แผนกลม", location: "อาคาร A", machineNumber: "CP-01" }],
       [id("s02m1"), { name: null, department: "  ", machineNumber: "A1" }],
     ]),
   );
   const stored = documents.docs.get(DEFAULT_LABELS_DOCUMENT)?.["labels"];
   assert.deepEqual(stored, {
-    s01m1: { name: "Compressor", department: "แผนกลม", machine_number: "CP-01" },
+    s01m1: { name: "Compressor", department: "แผนกลม", location: "อาคาร A", machine_number: "CP-01" },
     s02m1: { machine_number: "A1" },
   });
   assert.deepEqual((await store.labels()).get(id("s01m1")), {
     name: "Compressor",
     department: "แผนกลม",
+    location: "อาคาร A",
     machineNumber: "CP-01",
   });
 });
@@ -98,6 +99,6 @@ test("an old string and a new object coexist, and a save touches only what it na
   assert.equal(labels.get(id("s01m1"))?.name, "Compressor");
   assert.equal(labels.get(id("s02m1"))?.department, "D");
   // Clearing every field removes the meter.
-  await store.setLabels(new Map([[id("s02m1"), { name: "", department: "", machineNumber: "" }]]));
+  await store.setLabels(new Map([[id("s02m1"), { name: "", department: "", location: "", machineNumber: "" }]]));
   assert.equal((await store.labels()).has(id("s02m1")), false);
 });

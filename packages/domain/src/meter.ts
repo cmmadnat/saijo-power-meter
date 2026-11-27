@@ -62,6 +62,11 @@ export interface Meter {
    * look at the name's colon suffix. Absent for the workbook's meters.
    */
   readonly machineNumber?: string | null;
+  /**
+   * สถานที่ — a location someone typed. Display only; it is never identity
+   * and it does not group the screens. Absent for the workbook's meters.
+   */
+  readonly location?: string | null;
 }
 
 /** A meter is running when its active power exceeds its standby level. */

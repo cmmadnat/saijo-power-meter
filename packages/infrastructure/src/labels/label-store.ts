@@ -39,6 +39,7 @@ export interface LabelsDocument {
 export interface StoredLabel {
   readonly name?: string;
   readonly department?: string;
+  readonly location?: string;
   readonly machine_number?: string;
 }
 
@@ -57,7 +58,7 @@ export function fromLabelsDocument(
         const v = (value as Record<string, unknown>)[key];
         return typeof v === "string" ? v : null;
       };
-      input = { name: field("name"), department: field("department"), machineNumber: field("machine_number") };
+      input = { name: field("name"), department: field("department"), location: field("location"), machineNumber: field("machine_number") };
     }
     const label = normalizeMeterLabel(input);
     if (label !== null) labels.set(meterId as MeterId, label);
@@ -79,6 +80,7 @@ export function toLabelsDocument(
           {
             ...(label.name === null ? {} : { name: label.name }),
             ...(label.department === null ? {} : { department: label.department }),
+            ...(label.location === null ? {} : { location: label.location }),
             ...(label.machineNumber === null ? {} : { machine_number: label.machineNumber }),
           },
         ]),

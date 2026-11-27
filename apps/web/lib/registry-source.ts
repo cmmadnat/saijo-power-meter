@@ -25,4 +25,5 @@ export async function registryFor(
 export const LABEL_FIELD = "label:";
 /** Likewise the department (แผนก) and machine number (หมายเลขเครื่อง) inputs. */
 export const DEPARTMENT_FIELD = "department:";
+export const LOCATION_FIELD = "location:";
 export const MACHINE_NUMBER_FIELD = "machine-number:";

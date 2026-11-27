@@ -220,13 +220,13 @@ describe("views", () => {
 
       // Department and machine number typed beside the name: grouped by the department, numbered by the code.
       await source.labels.setLabels(
-        new Map([["s08m6" as MeterId, { name: "Press line 2", department: "แผนกปั๊ม", machineNumber: "STL003" }]]),
+        new Map([["s08m6" as MeterId, { name: "Press line 2", department: "แผนกปั๊ม", location: "อาคาร A", machineNumber: "STL003" }]]),
       );
       const again = await realtimeSnapshot(source);
       const typed = again.rows.find((r) => r.meterId === "s08m6");
       assert.deepEqual(
-        [typed?.department, typed?.machineNumber, typed?.machineName, typed?.meterNumber],
-        ["แผนกปั๊ม", "STL003", "Press line 2", "M6"],
+        [typed?.department, typed?.location, typed?.machineNumber, typed?.machineName, typed?.meterNumber],
+        ["แผนกปั๊ม", "อาคาร A", "STL003", "Press line 2", "M6"],
       );
       assert.ok(again.departments.includes("แผนกปั๊ม"));
     } finally {

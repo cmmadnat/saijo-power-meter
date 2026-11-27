@@ -16,7 +16,7 @@ import { saveStationLabels } from "@/app/actions";
 import { dataSource, labelStore } from "@/lib/data-mode";
 import { formatAge, formatNumber } from "@/lib/format";
 import { MAX_LABEL_LENGTH, MAX_MACHINE_NUMBER_LENGTH, type MeterLabel } from "@power-meter/application";
-import { DEPARTMENT_FIELD, LABEL_FIELD, MACHINE_NUMBER_FIELD } from "@/lib/registry-source";
+import { DEPARTMENT_FIELD, LABEL_FIELD, LOCATION_FIELD, MACHINE_NUMBER_FIELD } from "@/lib/registry-source";
 import { realtimeSnapshot } from "@/lib/realtime-source";
 
 export const dynamic = "force-dynamic";
@@ -45,9 +45,11 @@ export default async function MetersPage(props: PageProps<"/meters">) {
       <p className="max-w-[80ch] text-sm text-muted-foreground">
         The feed names a meter only by the topic it arrives on and the prefix its keys carry,
         shown here exactly as sent. Add a label to give it context: the Incoming view shows it on
-        every screen, and a meter without one says Unlabeled. Department (แผนก) groups the meter on
-        every screen — left empty, the meter is grouped by its topic. Machine number (หมายเลขเครื่อง)
-        is a code typed here, never read out of the name. Clear all three fields to remove a label.
+        every screen, and a meter without one says Unlabeled. Department (แผนก) and location
+        (สถานที่) can be set here beside the name. Department groups the meter on every screen —
+        left empty, the meter is grouped by its topic. Location is a place you type; it does not
+        change grouping. Machine number (หมายเลขเครื่อง) is a code typed here, never read out of
+        the name. Clear every field to remove a label.
       </p>
     </header>
   );
@@ -143,6 +145,7 @@ function MeterField({
 }) {
   const inputId = `${LABEL_FIELD}${meter.meterId}`;
   const departmentId = `${DEPARTMENT_FIELD}${meter.meterId}`;
+  const locationId = `${LOCATION_FIELD}${meter.meterId}`;
   const numberId = `${MACHINE_NUMBER_FIELD}${meter.meterId}`;
   const input =
     "w-full border border-input bg-background px-2 py-1.5 text-sm outline-none focus-visible:border-accent-strong focus-visible:ring-1 focus-visible:ring-accent-strong";
@@ -186,6 +189,19 @@ function MeterField({
           />
         </div>
         <div className="flex flex-col gap-0.5">
+          <label htmlFor={locationId} className={caption}>
+            สถานที่ · Location
+          </label>
+          <input
+            id={locationId}
+            name={locationId}
+            defaultValue={label?.location ?? ""}
+            maxLength={MAX_LABEL_LENGTH}
+            autoComplete="off"
+            className={input}
+          />
+        </div>
+        <div className="col-span-2 flex flex-col gap-0.5">
           <label htmlFor={numberId} className={caption}>
             หมายเลขเครื่อง · Machine no.
           </label>

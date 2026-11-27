@@ -30,6 +30,7 @@ export interface SelectableMeter {
   readonly meterId: string;
   readonly meterNumber: string;
   readonly department: string | null;
+  readonly location: string | null;
   readonly machineNumber: string | null;
   readonly machineName: string | null;
 }
@@ -133,7 +134,7 @@ export function RealtimeCharts({
     for (const meter of meters) {
       if (
         needle !== "" &&
-        ![meter.machineName, meter.department, meter.machineNumber, meter.meterNumber].some(
+        ![meter.machineName, meter.department, meter.location, meter.machineNumber, meter.meterNumber].some(
           (field) => field?.toLocaleLowerCase().includes(needle),
         )
       ) {
@@ -198,8 +199,8 @@ export function RealtimeCharts({
             type="search"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="ค้นหา · name, dept, machine no."
-            aria-label="Search meters by name, department, machine number or meter number"
+            placeholder="ค้นหา · name, dept, location, machine no."
+            aria-label="Search meters by name, department, location, machine number or meter number"
             autoComplete="off"
             className="border-b border-border bg-background px-3 py-1.5 text-xs outline-none focus-visible:bg-muted/40"
           />
@@ -244,6 +245,7 @@ export function RealtimeCharts({
                           <span className="font-mono">{meter.meterNumber}</span>
                           <span className="truncate">
                             {meter.machineName ?? "—"}
+                            {meter.location ? ` · ${meter.location}` : ""}
                           </span>
                           {meter.machineNumber !== null && (
                             <span className="ms-auto shrink-0 font-mono text-2xs text-muted-foreground">

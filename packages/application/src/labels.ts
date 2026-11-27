@@ -19,12 +19,14 @@ import {
 
 /**
  * What a person has told the system about one meter. Every field is optional;
- * a meter with all three empty has no label at all.
+ * a meter with every field empty has no label at all.
  */
 export interface MeterLabel {
   readonly name: string | null;
   /** แผนก. Null falls back to the topic in `labelledRegistry`. */
   readonly department: string | null;
+  /** สถานที่ — typed, and not used for grouping. */
+  readonly location: string | null;
   /** หมายเลขเครื่อง — typed, never parsed out of the name. */
   readonly machineNumber: string | null;
 }
@@ -32,7 +34,7 @@ export interface MeterLabel {
 /** A label as typed or as an old document had it: a bare string is a name. */
 export type MeterLabelInput =
   | string
-  | { readonly name?: string | null; readonly department?: string | null; readonly machineNumber?: string | null };
+  | { readonly name?: string | null; readonly department?: string | null; readonly location?: string | null; readonly machineNumber?: string | null };
 
 /** Where labels are kept. Read whole; written a station's worth at a time. */
 export interface MeterLabelStore {
@@ -78,9 +80,13 @@ export function normalizeMeterLabel(raw: MeterLabelInput | null | undefined): Me
   const label: MeterLabel = {
     name: normalizeLabel(input.name),
     department: normalizeLabel(input.department),
+    location: normalizeLabel(input.location),
     machineNumber: normalizeLabel(input.machineNumber, MAX_MACHINE_NUMBER_LENGTH),
   };
-  return label.name === null && label.department === null && label.machineNumber === null
+  return label.name === null &&
+    label.department === null &&
+    label.location === null &&
+    label.machineNumber === null
     ? null
     : label;
 }
@@ -108,6 +114,7 @@ export function labelledRegistry(
       return {
         ...meter,
         department: label?.department ?? meter.topic,
+        location: label?.location ?? null,
         machineName: label?.name ?? null,
         machineNumber: label?.machineNumber ?? null,
         verbatim: true,

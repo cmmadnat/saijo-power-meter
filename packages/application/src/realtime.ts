@@ -81,6 +81,8 @@ export interface RealtimeRow {
   /** Station and Power Meter ID, `01-1` — the หมายเลขมิเตอร์ column. */
   readonly meterNumber: string;
   readonly department: Department | null;
+  /** สถานที่, when someone typed one. */
+  readonly location: string | null;
   /** หมายเลขเครื่องจักร, when the registry name carries one. */
   readonly machineNumber: string | null;
   readonly machineName: string | null;
@@ -179,6 +181,7 @@ export async function realtimeTable(
       meterId: meter.meterId,
       meterNumber: meterNumber(meter),
       department: meter.department,
+      location: meter.location ?? null,
       machineNumber: label.number,
       machineName: label.name,
       reading,

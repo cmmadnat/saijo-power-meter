@@ -14,7 +14,7 @@ import { redirect } from "next/navigation";
 import { MeterRegistry, type MeterId } from "@power-meter/domain";
 import type { MeterLabelInput } from "@power-meter/application";
 import { availableViews, labelStore } from "@/lib/data-mode";
-import { DEPARTMENT_FIELD, LABEL_FIELD, MACHINE_NUMBER_FIELD } from "@/lib/registry-source";
+import { DEPARTMENT_FIELD, LABEL_FIELD, LOCATION_FIELD, MACHINE_NUMBER_FIELD } from "@/lib/registry-source";
 import { VIEW_COOKIE, VIEW_COOKIE_MAX_AGE } from "@/lib/view";
 
 export async function chooseView(form: FormData): Promise<void> {
@@ -36,9 +36,9 @@ export async function chooseView(form: FormData): Promise<void> {
  *
  * Only meters on the station the form was for, and only commissioned ones: the
  * form is an untrusted request, and a field naming anything else is ignored
- * rather than stored. A meter whose name, department and machine number are
- * all empty loses its label; a field absent from the form (an old page open
- * in a tab) leaves that meter untouched rather than clearing it.
+ * rather than stored. A meter whose name, department, location and machine
+ * number are all empty loses its label; a field absent from the form (an old
+ * page open in a tab) leaves that meter untouched rather than clearing it.
  */
 export async function saveStationLabels(form: FormData): Promise<void> {
   const store = await labelStore();
@@ -55,10 +55,12 @@ export async function saveStationLabels(form: FormData): Promise<void> {
     const name = form.get(`${LABEL_FIELD}${meter.meterId}`);
     if (typeof name !== "string") continue;
     const department = form.get(`${DEPARTMENT_FIELD}${meter.meterId}`);
+    const location = form.get(`${LOCATION_FIELD}${meter.meterId}`);
     const machineNumber = form.get(`${MACHINE_NUMBER_FIELD}${meter.meterId}`);
     changes.set(meter.meterId, {
       name,
       department: typeof department === "string" ? department : null,
+      location: typeof location === "string" ? location : null,
       machineNumber: typeof machineNumber === "string" ? machineNumber : null,
     });
   }

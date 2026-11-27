@@ -33,8 +33,8 @@ test("a label is printed whole, and the meter by its key prefix", async () => {
   const labelled = labelledRegistry(
     workbook,
     new Map<MeterId, MeterLabel>([
-      ["s08m6" as MeterId, { name: "Press line 2 : STL003", department: null, machineNumber: null }],
-      ["s01m1" as MeterId, { name: "Compressor", department: null, machineNumber: null }],
+      ["s08m6" as MeterId, { name: "Press line 2 : STL003", department: null, location: null, machineNumber: null }],
+      ["s01m1" as MeterId, { name: "Compressor", department: null, location: null, machineNumber: null }],
     ]),
   );
   const table = await realtimeTable({
@@ -66,11 +66,11 @@ test("department and machine number are first-class, and the name stays whole", 
     workbook,
     new Map<MeterId, MeterLabel>([
       // The name contains a colon-code of its own; the typed number wins and the name is not split.
-      ["s08m6" as MeterId, { name: "Press : STL003", department: "แผนกปั๊ม", machineNumber: "STL777" }],
+      ["s08m6" as MeterId, { name: "Press : STL003", department: "แผนกปั๊ม", location: "อาคาร A", machineNumber: "STL777" }],
       // Department only: the name is empty, the number empty.
-      ["s01m1" as MeterId, { name: null, department: "แผนกจัดส่ง", machineNumber: null }],
+      ["s01m1" as MeterId, { name: null, department: "แผนกจัดส่ง", location: null, machineNumber: null }],
       // Number only: department falls back to the topic.
-      ["s02m1" as MeterId, { name: "Fan", department: null, machineNumber: "F-1" }],
+      ["s02m1" as MeterId, { name: "Fan", department: null, location: null, machineNumber: "F-1" }],
     ]),
   );
   const table = await realtimeTable({
@@ -80,8 +80,8 @@ test("department and machine number are first-class, and the name stays whole", 
   });
   const row = (id: string) => table.rows.find((r) => r.meterId === id);
   assert.deepEqual(
-    [row("s08m6")?.department, row("s08m6")?.machineNumber, row("s08m6")?.machineName],
-    ["แผนกปั๊ม", "STL777", "Press : STL003"],
+    [row("s08m6")?.department, row("s08m6")?.location, row("s08m6")?.machineNumber, row("s08m6")?.machineName],
+    ["แผนกปั๊ม", "อาคาร A", "STL777", "Press : STL003"],
   );
   assert.deepEqual(
     [row("s01m1")?.department, row("s01m1")?.machineNumber, row("s01m1")?.machineName],
@@ -104,8 +104,11 @@ test("the workbook's own colon-split is unchanged where no number was typed", ()
 test("normalizes a whole label field by field", () => {
   assert.equal(normalizeMeterLabel("Compressor")?.name, "Compressor");
   assert.equal(normalizeMeterLabel("Compressor")?.department, null);
-  assert.equal(normalizeMeterLabel({ name: " ", department: "", machineNumber: null }), null);
+  assert.equal(normalizeMeterLabel("Compressor")?.location, null);
+  assert.equal(normalizeMeterLabel({ name: " ", department: "", location: "", machineNumber: null }), null);
   assert.equal(normalizeMeterLabel(null), null);
+  assert.equal(normalizeMeterLabel({ location: "  อาคาร   A " })?.location, "อาคาร A");
+  assert.equal(normalizeMeterLabel({ location: "อาคาร A" })?.name, null);
   const label = normalizeMeterLabel({ name: "x", machineNumber: "N".repeat(100) });
   assert.equal(label?.machineNumber?.length, MAX_MACHINE_NUMBER_LENGTH);
   assert.equal(normalizeMeterLabel({ department: "  แผนก   ปั๊ม " })?.department, "แผนก ปั๊ม");

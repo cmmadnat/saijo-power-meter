@@ -99,6 +99,7 @@ export default async function RealTimePage(props: PageProps<"/">) {
     meterId: row.meterId,
     meterNumber: row.meterNumber,
     department: row.department,
+    location: row.location,
     machineNumber: row.machineNumber,
     machineName: row.machineName,
     voltage: row.reading
@@ -120,6 +121,7 @@ export default async function RealTimePage(props: PageProps<"/">) {
     meterId: row.meterId,
     meterNumber: row.meterNumber,
     department: row.department,
+    location: row.location,
     machineNumber: row.machineNumber,
     machineName: row.machineName ?? (labelling ? UNLABELED : null),
   }));
@@ -130,7 +132,7 @@ export default async function RealTimePage(props: PageProps<"/">) {
     meterId: s.meterId,
     slot: selection.indexOf(s.meterId) + 1,
     // A legend has no group column beside it, so an Incoming series names its
-    // topic too: `M6` alone is on every station.
+    // topic too: `M6` alone is on every topic.
     meterNumber: labelling
       ? `${registry.find(s.meterId)?.topic ?? ""} ${s.meterNumber}`.trim()
       : s.meterNumber,
