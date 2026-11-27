@@ -56,6 +56,12 @@ export interface Meter {
    * machine number. Absent for the workbook's meters.
    */
   readonly verbatim?: boolean;
+  /**
+   * A machine number someone typed, as opposed to one parsed out of the name.
+   * When present (even as null) it is the answer and `machineLabel` does not
+   * look at the name's colon suffix. Absent for the workbook's meters.
+   */
+  readonly machineNumber?: string | null;
 }
 
 /** A meter is running when its active power exceeds its standby level. */
@@ -96,7 +102,8 @@ export interface MachineLabel {
 
 export function machineLabel(meter: Meter): MachineLabel {
   const full = meter.machineName;
-  if (full === null) return { number: null, name: null };
+  if (full === null) return { number: meter.machineNumber ?? null, name: null };
+  if (meter.machineNumber !== undefined) return { number: meter.machineNumber, name: full };
   if (meter.verbatim === true) return { number: null, name: full };
 
   const at = full.lastIndexOf(NAME_SEPARATOR);

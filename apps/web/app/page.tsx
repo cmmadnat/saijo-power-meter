@@ -120,6 +120,7 @@ export default async function RealTimePage(props: PageProps<"/">) {
     meterId: row.meterId,
     meterNumber: row.meterNumber,
     department: row.department,
+    machineNumber: row.machineNumber,
     machineName: row.machineName ?? (labelling ? UNLABELED : null),
   }));
 

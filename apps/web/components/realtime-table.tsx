@@ -231,8 +231,9 @@ export function RealtimeTable({
   };
 }) {
   const router = useRouter();
-  const groupLabel = labelling ? "Topic" : "แผนก";
+  const groupLabel = labelling ? "แผนก / Topic" : "แผนก";
   const [department, setDepartment] = useState<string>(ALL);
+  const [search, setSearch] = useState("");
   const [live, setLive] = useState(true);
   // Grouping is on by default: 55 rows in five departments read as a list of
   // machines, and a supervisor's question is usually about a department.
@@ -257,10 +258,15 @@ export function RealtimeTable({
   }, [live, router]);
 
   const visible = useMemo(() => {
-    const filtered =
-      department === ALL
-        ? [...rows]
-        : rows.filter((row) => row.department === department);
+    const needle = search.trim().toLocaleLowerCase();
+    const filtered = rows.filter(
+      (row) =>
+        (department === ALL || row.department === department) &&
+        (needle === "" ||
+          [row.machineName, row.department, row.machineNumber, row.meterNumber].some(
+            (field) => field?.toLocaleLowerCase().includes(needle),
+          )),
+    );
     return filtered.sort((a, b) => {
       const primary = compare(a, b, sort.key, sort.direction);
       // Meter number is the tiebreak so equal values keep a stable, meaningful
@@ -269,7 +275,7 @@ export function RealtimeTable({
         ? primary
         : collator.compare(a.meterNumber, b.meterNumber);
     });
-  }, [rows, department, sort]);
+  }, [rows, department, search, sort]);
 
   /**
    * The rows as the table draws them: one flat list, or one list per
@@ -330,6 +336,16 @@ export function RealtimeTable({
             );
           })}
         </div>
+
+        <input
+          type="search"
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+          placeholder="ค้นหา · name, department, machine no."
+          aria-label="Search meters by name, department, machine number or meter number"
+          autoComplete="off"
+          className="w-64 border border-input bg-background px-2 py-1 text-xs outline-none focus-visible:border-accent-strong focus-visible:ring-1 focus-visible:ring-accent-strong"
+        />
 
         {department === ALL && (
           <button

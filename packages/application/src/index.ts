@@ -48,9 +48,11 @@ export {
 } from "./series.ts";
 export type { FleetTrend, FleetTrendInput, TrendPoint } from "./trend.ts";
 export { fleetTrend } from "./trend.ts";
-export type { MeterLabelStore } from "./labels.ts";
+export type { MeterLabel, MeterLabelInput, MeterLabelStore } from "./labels.ts";
 export {
   labelledRegistry,
   MAX_LABEL_LENGTH,
+  MAX_MACHINE_NUMBER_LENGTH,
+  normalizeMeterLabel,
   normalizeLabel,
 } from "./labels.ts";

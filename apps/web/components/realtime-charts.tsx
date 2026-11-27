@@ -30,6 +30,7 @@ export interface SelectableMeter {
   readonly meterId: string;
   readonly meterNumber: string;
   readonly department: string | null;
+  readonly machineNumber: string | null;
   readonly machineName: string | null;
 }
 
@@ -121,20 +122,30 @@ export function RealtimeCharts({
     navigate(next, windowId);
   };
 
+  const [search, setSearch] = useState("");
   const selectedCount = selection.filter((id) => id !== null).length;
   const full = selectedCount >= maxSeries;
 
   /** The 55 meters as the specification lists them: by department, in station order. */
   const groups = useMemo(() => {
     const byDepartment = new Map<string, SelectableMeter[]>();
+    const needle = search.trim().toLocaleLowerCase();
     for (const meter of meters) {
+      if (
+        needle !== "" &&
+        ![meter.machineName, meter.department, meter.machineNumber, meter.meterNumber].some(
+          (field) => field?.toLocaleLowerCase().includes(needle),
+        )
+      ) {
+        continue;
+      }
       const key = meter.department ?? "—";
       const existing = byDepartment.get(key);
       if (existing) existing.push(meter);
       else byDepartment.set(key, [meter]);
     }
     return [...byDepartment.entries()];
-  }, [meters]);
+  }, [meters, search]);
 
   const toChartSeries = (
     key: "activePowerKw" | "energyConsumedKwh",
@@ -183,6 +194,15 @@ export function RealtimeCharts({
           <p className="border-b border-border px-3 py-2 font-mono text-2xs uppercase tracking-wider text-muted-foreground">
             Power meter
           </p>
+          <input
+            type="search"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="ค้นหา · name, dept, machine no."
+            aria-label="Search meters by name, department, machine number or meter number"
+            autoComplete="off"
+            className="border-b border-border bg-background px-3 py-1.5 text-xs outline-none focus-visible:bg-muted/40"
+          />
           <div className="overflow-y-auto">
             {groups.map(([department, group]) => (
               <div key={department}>
@@ -225,6 +245,11 @@ export function RealtimeCharts({
                           <span className="truncate">
                             {meter.machineName ?? "—"}
                           </span>
+                          {meter.machineNumber !== null && (
+                            <span className="ms-auto shrink-0 font-mono text-2xs text-muted-foreground">
+                              {meter.machineNumber}
+                            </span>
+                          )}
                         </button>
                       </li>
                     );

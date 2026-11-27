@@ -33,6 +33,7 @@
 import {
   freshnessForInterval,
   type LatestReadingStore,
+  type MeterLabel,
   type MeterLabelStore,
   type ReadingRepository,
   type RollupBucket,
@@ -114,7 +115,7 @@ export async function createIncomingSource(
     config.labelsDocument ?? DEFAULT_LABELS_DOCUMENT,
   );
   let cachedLabels:
-    | { at: number; labels: Promise<ReadonlyMap<MeterId, string>> }
+    | { at: number; labels: Promise<ReadonlyMap<MeterId, MeterLabel>> }
     | undefined;
   const labels: MeterLabelStore = {
     labels() {
