@@ -202,12 +202,12 @@ export function RealtimeCharts({
             placeholder="ค้นหา · name, dept, location, machine no."
             aria-label="Search meters by name, department, location, machine number or meter number"
             autoComplete="off"
-            className="border-b border-border bg-background px-3 py-1.5 text-xs outline-none focus-visible:bg-muted/40"
+            className="border-b border-input bg-background px-3 py-1.5 text-xs outline-none focus-visible:bg-muted/40"
           />
           <div className="overflow-y-auto">
             {groups.map(([department, group]) => (
               <div key={department}>
-                <p className="sticky top-0 border-b border-border bg-muted/80 px-3 py-1 font-mono text-3xs uppercase tracking-wider text-muted-foreground backdrop-blur">
+                <p className="sticky top-0 border-b border-border bg-muted px-3 py-1 font-mono text-2xs uppercase tracking-wider text-foreground/80">
                   <span className="normal-case">{department}</span>
                 </p>
                 <ul>
@@ -243,7 +243,10 @@ export function RealtimeCharts({
                             }}
                           />
                           <span className="font-mono">{meter.meterNumber}</span>
-                          <span className="truncate">
+                          <span
+                            className="line-clamp-2 min-w-0 sm:line-clamp-1"
+                            title={`${meter.machineName ?? "—"}${meter.location ? ` · ${meter.location}` : ""}`}
+                          >
                             {meter.machineName ?? "—"}
                             {meter.location ? ` · ${meter.location}` : ""}
                           </span>
@@ -316,7 +319,10 @@ export function RealtimeCharts({
                           style={{ background: `var(--series-${s.slot})` }}
                         />
                         <span className="font-mono">{s.meterNumber}</span>
-                        <span className="truncate text-muted-foreground">
+                        <span
+                          className="line-clamp-2 min-w-0 text-muted-foreground sm:line-clamp-1"
+                          title={`${s.machineName ?? "—"}${s.machineNumber === null ? "" : ` · ${s.machineNumber}`}`}
+                        >
                           {s.machineName ?? "—"}
                           {s.machineNumber === null ? "" : ` · ${s.machineNumber}`}
                         </span>

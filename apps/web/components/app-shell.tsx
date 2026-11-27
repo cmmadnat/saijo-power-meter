@@ -115,12 +115,14 @@ export function AppShell({
         </div>
       </header>
 
-      <main className="mx-auto w-full max-w-400 flex-1 px-4 py-6">
+      <main className="mx-auto w-full max-w-400 flex-1 px-4 pt-6 pb-16">
         {children}
       </main>
 
       {/* The same mark, pinned to the viewport, so a screenshot cropped to a
-          chart or scrolled to the bottom of the table still carries it. */}
+          chart or scrolled to the bottom of the table still carries it. main's
+          bottom padding (pb-16) is more than the badge height plus its offset, so the
+          last card or table row can always scroll clear of it. */}
       {badge !== null && (
         <div className="pointer-events-none fixed right-3 bottom-3 z-50">
           <DataBadge label={badge} />

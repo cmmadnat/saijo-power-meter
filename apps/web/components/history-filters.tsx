@@ -98,7 +98,7 @@ export function HistoryFilters({
         แสดง
       </button>
 
-      <p className="ms-auto max-w-[36ch] font-mono text-2xs text-muted-foreground">
+      <p className="basis-full font-mono sm:ms-auto sm:max-w-[36ch] sm:basis-auto text-2xs text-muted-foreground">
         Asia/Bangkok. The end is exclusive: a reading at exactly the end time
         belongs to the next window.
       </p>
